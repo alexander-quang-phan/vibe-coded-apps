@@ -79,17 +79,17 @@ export default function Settings() {
   }
 
   return (
-    <div className="space-y-5 pb-12">
+    <div className="space-y-5 pb-12 animate-fade-up">
       <header className="space-y-1">
         <p className="text-sm text-muted-foreground">Make Trim feel like yours.</p>
-        <h1 className="text-3xl font-bold tracking-tight">Settings</h1>
+        <h1 className="text-3xl font-extrabold tracking-tight sm:text-4xl">Settings</h1>
       </header>
 
       {isLoading ? (
         <SettingsSkeleton />
       ) : (
         <>
-          <Card>
+          <Card className="lift border-border/60 bg-card/70 backdrop-blur">
             <CardContent className="space-y-4 p-5">
               <div>
                 <h2 className="font-semibold">Account</h2>
@@ -120,7 +120,7 @@ export default function Settings() {
             </CardContent>
           </Card>
 
-          <Card>
+          <Card className="lift border-border/60 bg-card/70 backdrop-blur">
             <CardContent className="space-y-4 p-5">
               <div>
                 <h2 className="font-semibold">Preferences</h2>
@@ -177,7 +177,7 @@ export default function Settings() {
             </CardContent>
           </Card>
 
-          <Card>
+          <Card className="lift border-border/60 bg-card/70 backdrop-blur">
             <CardContent className="space-y-3 p-5">
               <div>
                 <h2 className="font-semibold">Session</h2>

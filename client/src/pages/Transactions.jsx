@@ -201,6 +201,7 @@ export default function Transactions() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['transactions'] });
       queryClient.invalidateQueries({ queryKey: ['dashboard'] });
+      queryClient.invalidateQueries({ queryKey: ['wins'] });
       toast.success('Transaction removed');
     },
     onError: (err) => toast.error(err?.message || 'Could not delete'),
@@ -211,6 +212,7 @@ export default function Transactions() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['transactions'] });
       queryClient.invalidateQueries({ queryKey: ['dashboard'] });
+      queryClient.invalidateQueries({ queryKey: ['wins'] });
       toast.success('Updated');
       setEditing(null);
     },
@@ -233,19 +235,24 @@ export default function Transactions() {
   }
 
   return (
-    <div className="space-y-5 pb-12">
+    <div className="space-y-5 pb-12 animate-fade-up">
       <header className="flex items-end justify-between gap-3">
         <div className="space-y-1">
           <p className="text-sm text-muted-foreground">The full log, searchable and exportable.</p>
-          <h1 className="text-3xl font-bold tracking-tight">Transactions</h1>
+          <h1 className="text-3xl font-extrabold tracking-tight sm:text-4xl">Transactions</h1>
         </div>
-        <Button variant="outline" onClick={handleExport} disabled={!filtered.length}>
+        <Button
+          variant="outline"
+          onClick={handleExport}
+          disabled={!filtered.length}
+          className="border-border/60 bg-card/60 backdrop-blur"
+        >
           <Download className="h-4 w-4" />
           <span className="hidden sm:inline">Export CSV</span>
         </Button>
       </header>
 
-      <Card>
+      <Card className="border-border/60 bg-card/70 backdrop-blur">
         <CardContent className="space-y-3 p-4">
           <div className="grid gap-3 sm:grid-cols-[1fr,auto,auto,auto]">
             <div className="relative">
@@ -306,12 +313,16 @@ export default function Transactions() {
             </SegmentGroup>
           </div>
 
-          <div className="flex flex-wrap gap-4 text-sm">
-            <span className="text-muted-foreground">
+          <div className="flex flex-wrap items-center gap-2 text-sm">
+            <span className="rounded-full bg-secondary/60 px-2.5 py-0.5 text-xs font-medium text-muted-foreground">
               {filtered.length} {filtered.length === 1 ? 'entry' : 'entries'}
             </span>
-            <span className="text-emerald-400">+{formatMoney(totals.income, currency)}</span>
-            <span className="text-rose-400">−{formatMoney(totals.expenses, currency)}</span>
+            <span className="nums rounded-full bg-primary/10 px-2.5 py-0.5 text-xs font-medium text-primary">
+              +{formatMoney(totals.income, currency)}
+            </span>
+            <span className="nums rounded-full bg-rose-400/10 px-2.5 py-0.5 text-xs font-medium text-rose-400">
+              −{formatMoney(totals.expenses, currency)}
+            </span>
           </div>
         </CardContent>
       </Card>
@@ -331,26 +342,33 @@ export default function Transactions() {
           </button>
         </div>
       ) : filtered.length === 0 ? (
-        <Card>
+        <Card className="border-border/60 bg-card/70 backdrop-blur">
           <CardContent className="flex flex-col items-center gap-2 p-10 text-center">
-            <span className="text-3xl" aria-hidden>
+            <span className="text-4xl animate-float-slow" aria-hidden>
               🧾
             </span>
-            <p className="font-medium">Nothing to show here</p>
+            <p className="font-semibold">Nothing to show here</p>
             <p className="text-sm text-muted-foreground">
               Try loosening a filter, or tap the + button on Dashboard to log one.
             </p>
           </CardContent>
         </Card>
       ) : (
-        <Card>
-          <CardContent className="divide-y p-0">
+        <Card className="border-border/60 bg-card/70 backdrop-blur">
+          <CardContent className="divide-y divide-border/60 p-0">
             {filtered.map((t) => {
               const cat = catsById.get(t.category_id);
               const isIncome = t.type === 'income';
+              const color = cat?.color ?? '#64748b';
               return (
-                <div key={t.id} className="flex items-center gap-3 px-4 py-3">
-                  <span className="flex h-10 w-10 items-center justify-center rounded-lg bg-secondary text-lg">
+                <div
+                  key={t.id}
+                  className="group flex items-center gap-3 px-4 py-3 transition-colors hover:bg-accent/40"
+                >
+                  <span
+                    className="flex h-10 w-10 items-center justify-center rounded-xl text-lg ring-1 ring-border/60"
+                    style={{ backgroundColor: `${color}22` }}
+                  >
                     {cat?.icon ?? '📦'}
                   </span>
                   <div className="min-w-0 flex-1">
@@ -363,8 +381,8 @@ export default function Transactions() {
                   </div>
                   <div
                     className={cn(
-                      'text-sm font-semibold tabular-nums',
-                      isIncome ? 'text-emerald-400' : 'text-foreground',
+                      'nums text-sm font-semibold',
+                      isIncome ? 'text-primary' : 'text-foreground',
                     )}
                   >
                     {isIncome ? '+' : '−'}

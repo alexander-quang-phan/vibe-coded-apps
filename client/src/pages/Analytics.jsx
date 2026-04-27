@@ -56,37 +56,49 @@ export default function Analytics() {
   const trendingUp = delta !== null && delta > 0;
 
   return (
-    <div className="space-y-5 pb-12">
+    <div className="space-y-5 pb-12 animate-fade-up">
       <header className="space-y-1">
         <p className="text-sm text-muted-foreground">Six-month view. See where the money moves.</p>
-        <h1 className="text-3xl font-bold tracking-tight">Analytics</h1>
+        <h1 className="text-3xl font-extrabold tracking-tight sm:text-4xl">Analytics</h1>
       </header>
 
-      <Card>
-        <CardContent className="flex flex-wrap items-center justify-between gap-4 p-5">
+      <Card className="lift relative overflow-hidden border-border/60 bg-card/70 backdrop-blur">
+        <div
+          aria-hidden
+          className="pointer-events-none absolute -top-16 -right-12 h-44 w-44 rounded-full bg-primary/15 blur-3xl"
+        />
+        <CardContent className="relative flex flex-wrap items-center justify-between gap-4 p-5">
           <div>
-            <p className="text-xs uppercase tracking-wide text-muted-foreground">This month</p>
-            <p className="text-3xl font-bold tracking-tight">
+            <p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-muted-foreground">
+              This month
+            </p>
+            <p className="nums text-3xl font-extrabold tracking-tight text-gradient">
               {formatMoney(mom.thisMonth, currency)}
             </p>
           </div>
           <div>
-            <p className="text-xs uppercase tracking-wide text-muted-foreground">Last month</p>
-            <p className="text-2xl font-semibold text-muted-foreground">
+            <p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-muted-foreground">
+              Last month
+            </p>
+            <p className="nums text-2xl font-semibold text-muted-foreground">
               {formatMoney(mom.lastMonth, currency)}
             </p>
           </div>
           <div className="text-right">
-            <p className="text-xs uppercase tracking-wide text-muted-foreground">Change</p>
+            <p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-muted-foreground">
+              Change
+            </p>
             {delta === null ? (
               <p className="text-2xl font-semibold">—</p>
             ) : (
               <div
-                className={`flex items-center justify-end gap-1 text-2xl font-semibold ${
-                  trendingUp ? 'text-rose-400' : 'text-emerald-400'
+                className={`nums flex items-center justify-end gap-1 rounded-full px-3 py-0.5 text-lg font-bold ${
+                  trendingUp
+                    ? 'bg-rose-400/10 text-rose-400'
+                    : 'bg-primary/15 text-primary'
                 }`}
               >
-                {trendingUp ? <TrendingUp className="h-5 w-5" /> : <TrendingDown className="h-5 w-5" />}
+                {trendingUp ? <TrendingUp className="h-4 w-4" /> : <TrendingDown className="h-4 w-4" />}
                 {trendingUp ? '+' : ''}
                 {delta}%
               </div>
@@ -95,9 +107,11 @@ export default function Analytics() {
         </CardContent>
       </Card>
 
-      <Card>
+      <Card className="lift border-border/60 bg-card/70 backdrop-blur">
         <CardContent className="p-5">
-          <h2 className="mb-3 text-sm font-medium text-muted-foreground">Income vs. Expenses</h2>
+          <h2 className="mb-3 text-xs font-semibold uppercase tracking-[0.16em] text-muted-foreground">
+            Income vs. Expenses
+          </h2>
           <div className="h-72">
             <ResponsiveContainer width="100%" height="100%">
               <LineChart data={series} margin={{ top: 8, right: 8, left: -10, bottom: 0 }}>
@@ -158,9 +172,11 @@ export default function Analytics() {
         </CardContent>
       </Card>
 
-      <Card>
+      <Card className="lift border-border/60 bg-card/70 backdrop-blur">
         <CardContent className="p-5">
-          <h2 className="mb-3 text-sm font-medium text-muted-foreground">Top categories this month</h2>
+          <h2 className="mb-3 text-xs font-semibold uppercase tracking-[0.16em] text-muted-foreground">
+            Top categories this month
+          </h2>
           {topCategories.length === 0 ? (
             <p className="py-6 text-center text-sm text-muted-foreground">
               No expenses logged yet this month.
@@ -170,6 +186,7 @@ export default function Analytics() {
               {topCategories.map((c) => {
                 const max = topCategories[0].total;
                 const pct = max > 0 ? Math.round((c.total / max) * 100) : 0;
+                const color = c.color || '#10b981';
                 return (
                   <div key={c.categoryId}>
                     <div className="flex items-center justify-between text-sm">
@@ -177,12 +194,17 @@ export default function Analytics() {
                         <span className="text-lg">{c.icon}</span>
                         <span className="font-medium">{c.name}</span>
                       </span>
-                      <span className="tabular-nums">{formatMoney(c.total, currency)}</span>
+                      <span className="nums tabular-nums text-muted-foreground">
+                        {formatMoney(c.total, currency)}
+                      </span>
                     </div>
-                    <div className="mt-1.5 h-1.5 rounded-full bg-secondary">
+                    <div className="mt-1.5 h-2 overflow-hidden rounded-full bg-muted/70">
                       <div
-                        className="h-full rounded-full bg-primary transition-all"
-                        style={{ width: `${pct}%` }}
+                        className="shimmer-bar h-full rounded-full transition-all duration-700"
+                        style={{
+                          width: `${pct}%`,
+                          background: `linear-gradient(90deg, ${color}, ${color}cc)`,
+                        }}
                       />
                     </div>
                   </div>

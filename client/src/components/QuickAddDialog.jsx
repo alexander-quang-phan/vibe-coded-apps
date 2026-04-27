@@ -69,6 +69,7 @@ export function QuickAddDialog({ open, onOpenChange, currency = 'GBP' }) {
       queryClient.invalidateQueries({ queryKey: ['dashboard'] });
       queryClient.invalidateQueries({ queryKey: ['transactions'] });
       queryClient.invalidateQueries({ queryKey: ['me'] });
+      queryClient.invalidateQueries({ queryKey: ['wins'] });
 
       const d = res?.delta;
       if (d?.levelUp) {
@@ -164,16 +165,23 @@ export function QuickAddDialog({ open, onOpenChange, currency = 'GBP' }) {
                 disabled={!amountValid || mutation.isPending}
                 onClick={() => handleCategoryTap(c)}
                 className={cn(
-                  'group flex flex-col items-center gap-1 rounded-xl border border-border bg-secondary/40 p-3 text-xs font-medium transition-all',
-                  'hover:border-primary/40 hover:bg-accent hover:text-accent-foreground active:scale-95',
+                  'group relative flex flex-col items-center gap-1.5 overflow-hidden rounded-xl border border-border/70 bg-secondary/40 p-3 text-xs font-medium transition-all',
+                  'hover:-translate-y-0.5 hover:border-primary/50 hover:bg-accent hover:text-accent-foreground hover:shadow-md hover:shadow-primary/10',
+                  'active:scale-95 active:translate-y-0',
                   'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
                   'disabled:pointer-events-none disabled:opacity-40',
                 )}
+                style={{ ['--cat-color']: c.color }}
               >
-                <span className="text-2xl" aria-hidden>
+                <span
+                  aria-hidden
+                  className="absolute inset-x-0 -bottom-6 h-12 rounded-full opacity-0 blur-2xl transition-opacity group-hover:opacity-60"
+                  style={{ backgroundColor: c.color }}
+                />
+                <span className="relative text-2xl transition-transform duration-200 group-hover:scale-110" aria-hidden>
                   {c.icon}
                 </span>
-                <span className="truncate">{c.name}</span>
+                <span className="relative truncate">{c.name}</span>
               </button>
             ))}
             {categories.length === 0 ? (

@@ -11,6 +11,8 @@ import dashboardRouter from './routes/dashboard.js';
 import budgetsRouter from './routes/budgets.js';
 import analyticsRouter from './routes/analytics.js';
 import goalsRouter from './routes/goals.js';
+import winsRouter from './routes/wins.js';
+import subscriptionsRouter from './routes/subscriptions.js';
 
 const CLIENT_URL = process.env.CLIENT_URL;
 if (!CLIENT_URL) {
@@ -79,6 +81,8 @@ app.use('/api/dashboard', requireAuth, dashboardRouter);
 app.use('/api/budgets', requireAuth, budgetsRouter);
 app.use('/api/analytics', requireAuth, analyticsRouter);
 app.use('/api/goals', requireAuth, goalsRouter);
+app.use('/api/wins', requireAuth, winsRouter);
+app.use('/api/subscriptions', requireAuth, subscriptionsRouter);
 
 app.use((req, res) => {
   res.status(404).json({ error: 'Not found' });

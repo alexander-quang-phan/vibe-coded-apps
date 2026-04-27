@@ -50,6 +50,7 @@
 - Level card with XP progress bar and title ladder.
 - Category donut chart (expense breakdown) + budget alerts list (categories ≥75% used).
 - Recent 5 transactions.
+- Wins feed card (scrollable, latest 10) — derived from `GET /api/wins`. Surfaces under-budget weeks, streak milestones, banked shields, and savings contributions with before/after %. Playful empty state.
 - Quick-Add FAB bottom-right (safe-area-bottom).
 
 ### Quick-Add flow (critical)
@@ -87,6 +88,14 @@
 - Contribute dialog adds money; server detects milestone crossings (25/50/75/100%) and returns a flag the client uses to celebrate.
 - Progress bar + "£X to go" copy.
 
+### Subscriptions
+
+- Auto-detected list of recurring expenses, no manual marking required. Detection rule: ≥3 same-merchant charges at ~30-day or ~365-day intervals (±5d) with amounts within 10%.
+- Each row shows monthly cost, annualised cost, last charged, next expected, and total paid lifetime.
+- "Mark cancelled" toggle moves the row to a Cancelled section and surfaces the saved annual amount; toggling back to Active restores it. Decisions persist in `subscription_overrides` so a new month of detection doesn't overwrite them.
+- Dashboard mini-card above CategoryDonut nudges the user to audit ("You have N subscriptions, £X/month — audit them?"). Hidden when there are 0 active subs.
+- Empty state on the page itself when no subs are detected — friendly placeholder, never hides the nav link.
+
 ### Settings
 
 - Currency picker (GBP / USD / AUD / VND) — display only, no FX conversion.
@@ -103,11 +112,9 @@
 
 These were in the original vision but intentionally punted past MVP:
 
-- **Wins feed** — chronological "you under-budgeted Food by X this week" card stream on the dashboard.
 - **Weekly digest card** — Sunday summary with streak, XP, and a low-pressure tip.
 - **Recurring transactions executor** — `is_recurring` column is on the schema but no cron/Edge Function processes them yet.
 - **Profile / achievements page** — badges screen once badges are awarded.
-- **Wins feed / weekly digest** — copy and UI sketches not written.
 
 ## Design direction
 
@@ -115,6 +122,27 @@ These were in the original vision but intentionally punted past MVP:
 - **Accent: deep emerald.** Dark mode `--primary: 158 64% 52%`, light mode `158 64% 32%`. Conveys money + "trim/healthy".
 - **Feel:** Linear / Notion × fitness app. Clean, minimal, modern. Big type. Generous spacing on desktop, tight on mobile.
 - **Never a pure-red error state for user behaviour.** Destructive UI (delete confirms, failed requests) can use `text-destructive` sparingly; spending overshoots use rose-400 as a soft warning, not an error.
+
+### Visual language (ambient depth + motion)
+
+Trim layers a quiet, breathing visual system on top of the design tokens to feel less templated and more crafted. Defaults — don't undo them without a reason:
+
+- **Ambient mesh background.** `<div class="mesh-bg">` plus two large drifting `animate-blob` orbs sit fixed behind the app (`App.jsx`). Light/dark each have their own `--mesh-1/2/3` palette.
+- **Glassmorphic chrome.** Sticky header and the dashboard hero use `.glass` + `backdrop-blur`. Cards default to `bg-card/70 backdrop-blur` with a hairline `border-border/60`.
+- **Hover lift.** Cards use the `.lift` utility — 2px translate + soft primary-tinted shadow on hover. Pair with `bg-card/70 backdrop-blur` for the standard "interactive card" treatment.
+- **Gradient + shimmer progress bars.** All progress fills (level XP, budgets, savings goals, top categories, budget alerts) use `bg-gradient-to-r` with the `.shimmer-bar` overlay so they look alive while still loading.
+- **Tabular numerals.** Money values use the `.nums` utility (`font-variant-numeric: tabular-nums`) so digits don't dance during count-ups or filtering.
+- **Gradient text.** The `.text-gradient` utility (emerald → gold) is reserved for the wordmark and the hero balance / "this month" totals — don't sprinkle it on body copy.
+- **Motion vocabulary** (defined in `tailwind.config.js`):
+  - `animate-flame` on the streak icon — gentle flicker.
+  - `animate-blob` on background orbs — slow drift.
+  - `animate-float-slow` on empty-state emojis (🌱 🎯 🧾 ✨) — they bob.
+  - `animate-ring-pulse` on the FAB's outer ring — draws the eye without nagging.
+  - `animate-fade-up` (with stagger via `style={{ animationDelay }}`) for hero/section reveal on dashboard load.
+  - `.sheen-mask` runs a slow diagonal sheen across the hero card.
+  - All motion is suppressed under `prefers-reduced-motion: reduce`.
+- **Hero balance card.** The Dashboard opens with a single wide gradient-bordered card that animates the net balance up from 0 (`useCountUp` in `Dashboard.jsx`). In/Out chips sit alongside; the small Streak / Shields / Logs cards moved underneath. Avoid going back to a 3-up uniform stat grid — it's the main thing that made the page feel AI-templated.
+- **Quick-Add category chips** lift on hover and reveal a soft glow in the category's own color so the grid feels alive even before tapping.
 
 ## Money model
 

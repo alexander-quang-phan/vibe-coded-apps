@@ -20,7 +20,7 @@ Single-tenant-per-user SaaS. Every row in every table is owned by exactly one `u
 
 ## RLS (defence in depth)
 
-- Every user-data table (`user_stats`, `categories`, `transactions`, `budgets`, `savings_goals`, `savings_contributions`) has `ENABLE ROW LEVEL SECURITY`.
+- Every user-data table (`user_stats`, `categories`, `transactions`, `budgets`, `savings_goals`, `savings_contributions`, `subscription_overrides`) has `ENABLE ROW LEVEL SECURITY`.
 - Policies are `USING (auth.uid() = user_id)` and `WITH CHECK (auth.uid() = user_id)`.
 - `savings_contributions` derives `user_id` from the parent goal's `user_id`.
 - Supabase's Data API also requires Postgres object grants. App tables grant privileges to `service_role` only; `anon` and `authenticated` are not granted direct table access because the browser must go through Express.

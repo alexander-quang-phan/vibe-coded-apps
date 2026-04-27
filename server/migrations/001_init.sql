@@ -103,6 +103,7 @@ create table if not exists public.savings_contributions (
   user_id     uuid not null references auth.users(id) on delete cascade,
   goal_id     uuid not null references public.savings_goals(id) on delete cascade,
   amount      numeric(14, 2) not null check (amount > 0),
+  note        text,
   date        date not null default current_date,
   created_at  timestamptz not null default now()
 );

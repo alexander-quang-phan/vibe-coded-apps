@@ -4,47 +4,67 @@ import { cn } from '@/lib/utils';
 
 export function RecentTransactions({ transactions, currency }) {
   return (
-    <Card>
+    <Card className="lift relative overflow-hidden border-border/60 bg-card/70 backdrop-blur">
       <CardContent className="p-6">
         <div className="flex items-baseline justify-between">
-          <h3 className="text-sm font-medium text-muted-foreground">Recent activity</h3>
+          <h3 className="text-xs font-semibold uppercase tracking-[0.16em] text-muted-foreground">
+            Recent activity
+          </h3>
           <span className="text-xs text-muted-foreground">Last 5</span>
         </div>
 
         {transactions.length === 0 ? (
-          <div className="flex h-28 flex-col items-center justify-center text-center">
-            <p className="text-sm font-medium">Nothing logged yet</p>
-            <p className="text-xs text-muted-foreground">Tap the + button to add your first transaction.</p>
+          <div className="flex h-32 flex-col items-center justify-center text-center">
+            <span className="text-3xl animate-float-slow" aria-hidden>
+              ✨
+            </span>
+            <p className="mt-1 text-sm font-medium">Nothing logged yet</p>
+            <p className="text-xs text-muted-foreground">
+              Tap the + button to add your first transaction.
+            </p>
           </div>
         ) : (
-          <ul className="mt-4 divide-y divide-border">
-            {transactions.map((t) => (
-              <li key={t.id} className="flex items-center gap-3 py-3">
-                <div
-                  className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full text-lg"
-                  style={{ backgroundColor: `${t.category?.color ?? '#64748b'}22` }}
+          <ul className="mt-3 space-y-1">
+            {transactions.map((t) => {
+              const color = t.category?.color ?? '#64748b';
+              return (
+                <li
+                  key={t.id}
+                  className="group relative flex items-center gap-3 rounded-xl px-2 py-2.5 transition-colors hover:bg-accent/50"
                 >
-                  {t.category?.icon ?? '📦'}
-                </div>
-                <div className="min-w-0 flex-1">
-                  <p className="truncate text-sm font-medium">
-                    {t.description?.trim() || t.category?.name || 'Transaction'}
+                  {/* Left edge accent strip on hover */}
+                  <span
+                    aria-hidden
+                    className="absolute inset-y-2 left-0 w-0.5 rounded-full opacity-0 transition-opacity group-hover:opacity-100"
+                    style={{ backgroundColor: color }}
+                  />
+                  <div
+                    className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl text-lg ring-1 ring-border/60"
+                    style={{ backgroundColor: `${color}22` }}
+                  >
+                    {t.category?.icon ?? '📦'}
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate text-sm font-medium">
+                      {t.description?.trim() || t.category?.name || 'Transaction'}
+                    </p>
+                    <p className="text-xs text-muted-foreground">
+                      {t.category?.name ?? 'Uncategorised'} ·{' '}
+                      {formatDate(t.date, { format: 'relative' })}
+                    </p>
+                  </div>
+                  <p
+                    className={cn(
+                      'nums shrink-0 text-sm font-semibold',
+                      t.type === 'income' ? 'text-primary' : 'text-foreground',
+                    )}
+                  >
+                    {t.type === 'income' ? '+' : '−'}
+                    {formatMoney(t.amount, currency)}
                   </p>
-                  <p className="text-xs text-muted-foreground">
-                    {t.category?.name ?? 'Uncategorised'} · {formatDate(t.date, { format: 'relative' })}
-                  </p>
-                </div>
-                <p
-                  className={cn(
-                    'shrink-0 text-sm font-semibold tabular-nums',
-                    t.type === 'income' ? 'text-primary' : 'text-foreground',
-                  )}
-                >
-                  {t.type === 'income' ? '+' : '−'}
-                  {formatMoney(t.amount, currency)}
-                </p>
-              </li>
-            ))}
+                </li>
+              );
+            })}
           </ul>
         )}
       </CardContent>

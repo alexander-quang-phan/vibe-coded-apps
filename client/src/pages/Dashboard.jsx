@@ -1,26 +1,148 @@
+import { useEffect, useRef, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { Flame, Wallet, Shield } from 'lucide-react';
+import { Flame, Wallet, Shield, ArrowDownLeft, ArrowUpRight, Sparkles } from 'lucide-react';
 import { useApi } from '@/hooks/useApi';
 import { StatCard } from '@/components/StatCard';
 import { LevelCard } from '@/components/LevelCard';
 import { CategoryDonut } from '@/components/CategoryDonut';
 import { RecentTransactions } from '@/components/RecentTransactions';
 import { BudgetAlerts } from '@/components/BudgetAlerts';
+import { SubscriptionsCard } from '@/components/SubscriptionsCard';
+import { WinsFeed } from '@/components/WinsFeed';
 import { QuickAddButton } from '@/components/QuickAddButton';
 import { formatMoney } from '@/lib/format';
 
 function DashboardSkeleton() {
   return (
-    <div className="animate-pulse space-y-4">
-      <div className="h-7 w-48 rounded-md bg-muted" />
-      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
-        {Array.from({ length: 3 }).map((_, i) => (
-          <div key={i} className="h-24 rounded-xl bg-muted" />
+    <div className="animate-pulse space-y-5">
+      <div className="space-y-2">
+        <div className="h-4 w-32 rounded-md bg-muted" />
+        <div className="h-9 w-56 rounded-md bg-muted" />
+      </div>
+      <div className="h-44 rounded-2xl bg-muted" />
+      <div className="grid grid-cols-2 gap-3">
+        {Array.from({ length: 2 }).map((_, i) => (
+          <div key={i} className="h-24 rounded-2xl bg-muted" />
         ))}
       </div>
-      <div className="h-64 rounded-xl bg-muted" />
-      <div className="h-64 rounded-xl bg-muted" />
+      <div className="h-28 rounded-2xl bg-muted" />
+      <div className="grid gap-4 lg:grid-cols-2">
+        <div className="h-64 rounded-2xl bg-muted" />
+        <div className="h-64 rounded-2xl bg-muted" />
+      </div>
     </div>
+  );
+}
+
+/**
+ * Animate a number from 0 → target. Pure RAF loop, eases out.
+ * Respects prefers-reduced-motion by snapping to the value.
+ */
+function useCountUp(target, duration = 900) {
+  const [value, setValue] = useState(0);
+  const startedAt = useRef(null);
+  const fromRef = useRef(0);
+
+  useEffect(() => {
+    const reduce =
+      typeof window !== 'undefined' &&
+      window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+    if (reduce) {
+      setValue(target);
+      return;
+    }
+    fromRef.current = value;
+    startedAt.current = null;
+    let raf = 0;
+    const tick = (t) => {
+      if (startedAt.current === null) startedAt.current = t;
+      const elapsed = t - startedAt.current;
+      const p = Math.min(1, elapsed / duration);
+      // easeOutCubic
+      const eased = 1 - Math.pow(1 - p, 3);
+      setValue(fromRef.current + (target - fromRef.current) * eased);
+      if (p < 1) raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [target, duration]);
+
+  return value;
+}
+
+function greetingFor(date = new Date()) {
+  const h = date.getHours();
+  if (h < 5) return 'Burning the midnight oil';
+  if (h < 12) return 'Good morning';
+  if (h < 17) return 'Good afternoon';
+  if (h < 22) return 'Good evening';
+  return 'Up late';
+}
+
+function HeroBalance({ income, expenses, balance, currency, displayName }) {
+  const animated = useCountUp(Math.abs(balance));
+  const positive = balance >= 0;
+  const sign = positive ? '' : '−';
+  const display = `${sign}${formatMoney(animated, currency)}`;
+
+  return (
+    <section className="relative animate-fade-up">
+      <div className="gradient-border sheen-mask relative overflow-hidden rounded-2xl border border-border/60 bg-card/70 p-6 shadow-xl shadow-primary/[0.06] backdrop-blur sm:p-8">
+        {/* Soft radial accent in the corner */}
+        <div
+          aria-hidden
+          className="pointer-events-none absolute -right-16 -top-20 h-64 w-64 rounded-full bg-primary/20 blur-3xl"
+        />
+        <div
+          aria-hidden
+          className="pointer-events-none absolute -bottom-24 -left-10 h-56 w-56 rounded-full bg-emerald-400/10 blur-3xl"
+        />
+
+        <div className="relative flex flex-col gap-5 sm:flex-row sm:items-end sm:justify-between">
+          <div className="space-y-2">
+            <p className="inline-flex items-center gap-1.5 text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">
+              <Sparkles className="h-3.5 w-3.5 text-primary" />
+              {displayName ? `${greetingFor()}, ${displayName}` : greetingFor()}
+            </p>
+            <p className="text-sm text-muted-foreground">Net this month</p>
+            <p
+              className={
+                'nums text-5xl font-extrabold leading-none tracking-tight sm:text-6xl ' +
+                (positive ? 'text-gradient' : 'text-foreground')
+              }
+            >
+              {display}
+            </p>
+          </div>
+
+          <div className="flex gap-2 self-stretch sm:self-end">
+            <div className="flex-1 rounded-xl border border-border/70 bg-background/40 px-4 py-3 backdrop-blur-sm sm:flex-initial">
+              <div className="flex items-center gap-2 text-xs uppercase tracking-wider text-muted-foreground">
+                <span className="flex h-5 w-5 items-center justify-center rounded-full bg-primary/15 text-primary">
+                  <ArrowDownLeft className="h-3 w-3" strokeWidth={3} />
+                </span>
+                In
+              </div>
+              <p className="mt-1 nums text-base font-semibold text-primary">
+                {formatMoney(income, currency)}
+              </p>
+            </div>
+            <div className="flex-1 rounded-xl border border-border/70 bg-background/40 px-4 py-3 backdrop-blur-sm sm:flex-initial">
+              <div className="flex items-center gap-2 text-xs uppercase tracking-wider text-muted-foreground">
+                <span className="flex h-5 w-5 items-center justify-center rounded-full bg-rose-400/15 text-rose-400">
+                  <ArrowUpRight className="h-3 w-3" strokeWidth={3} />
+                </span>
+                Out
+              </div>
+              <p className="mt-1 nums text-base font-semibold">
+                {formatMoney(expenses, currency)}
+              </p>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
   );
 }
 
@@ -35,7 +157,7 @@ export default function Dashboard() {
 
   if (isError) {
     return (
-      <div className="space-y-3 rounded-xl border border-destructive/40 bg-destructive/10 p-6 text-center">
+      <div className="space-y-3 rounded-2xl border border-destructive/40 bg-destructive/10 p-6 text-center">
         <p className="text-sm font-medium">Couldn't load your dashboard.</p>
         <p className="text-xs text-muted-foreground">{error?.message}</p>
         <button
@@ -49,55 +171,69 @@ export default function Dashboard() {
   }
 
   const currency = data.preferences.currency;
+  const displayName = data.preferences.displayName;
   const { month, categoryBreakdown, recentTransactions, budgetAlerts, stats } = data;
 
-  const balancePrefix = month.balance >= 0 ? '+' : '−';
-  const balanceDisplay = `${balancePrefix}${formatMoney(Math.abs(month.balance), currency)}`;
-
   return (
-    <div className="space-y-5 pb-24">
-      <header className="space-y-1">
-        <p className="text-sm text-muted-foreground">Welcome back — here's this month.</p>
-        <h1 className="text-3xl font-bold tracking-tight">Dashboard</h1>
-      </header>
+    <div className="space-y-6 pb-24">
+      <HeroBalance
+        income={month.income}
+        expenses={month.expenses}
+        balance={month.balance}
+        currency={currency}
+        displayName={displayName}
+      />
 
-      <section className="grid grid-cols-2 gap-3 sm:grid-cols-3">
-        <StatCard
-          label="Balance"
-          value={balanceDisplay}
-          sub={`${formatMoney(month.income, currency)} in · ${formatMoney(month.expenses, currency)} out`}
-          icon={<Wallet className="h-5 w-5" />}
-          className="col-span-2 sm:col-span-1"
-        />
+      <section
+        className="grid grid-cols-2 gap-3 animate-fade-up sm:grid-cols-3"
+        style={{ animationDelay: '60ms' }}
+      >
         <StatCard
           label="Streak"
           value={`${stats.currentStreak} ${stats.currentStreak === 1 ? 'day' : 'days'}`}
           sub={
             stats.shields > 0
-              ? `🛡️ ${stats.shields} shield${stats.shields > 1 ? 's' : ''} banked`
+              ? `${stats.shields} shield${stats.shields > 1 ? 's' : ''} banked`
               : `Longest: ${stats.longestStreak}`
           }
-          icon={<Flame className="h-5 w-5" />}
+          icon={<Flame className="h-5 w-5 animate-flame" />}
           accent="streak"
+          className="col-span-2 sm:col-span-1"
         />
         <StatCard
           label="Shields"
           value={stats.shields}
           sub="Earn 1 per 7-day streak"
           icon={<Shield className="h-5 w-5" />}
+          accent="info"
+        />
+        <StatCard
+          label="This month"
+          value={month.transactionCount}
+          sub={month.transactionCount === 1 ? 'transaction logged' : 'transactions logged'}
+          icon={<Wallet className="h-5 w-5" />}
           accent="muted"
           className="hidden sm:block"
         />
       </section>
 
-      <LevelCard
-        level={stats.level}
-        title={stats.title}
-        xpIntoLevel={stats.xpIntoLevel}
-        xpForNextLevel={stats.xpForNextLevel}
-      />
+      <div className="animate-fade-up" style={{ animationDelay: '120ms' }}>
+        <LevelCard
+          level={stats.level}
+          title={stats.title}
+          xpIntoLevel={stats.xpIntoLevel}
+          xpForNextLevel={stats.xpForNextLevel}
+        />
+      </div>
 
-      <section className="grid gap-4 lg:grid-cols-2">
+      <div className="animate-fade-up" style={{ animationDelay: '150ms' }}>
+        <SubscriptionsCard currency={currency} />
+      </div>
+
+      <section
+        className="grid gap-4 animate-fade-up lg:grid-cols-2"
+        style={{ animationDelay: '180ms' }}
+      >
         <CategoryDonut
           breakdown={categoryBreakdown}
           totalExpenses={month.expenses}
@@ -106,7 +242,13 @@ export default function Dashboard() {
         <BudgetAlerts alerts={budgetAlerts} currency={currency} />
       </section>
 
-      <RecentTransactions transactions={recentTransactions} currency={currency} />
+      <div className="animate-fade-up" style={{ animationDelay: '240ms' }}>
+        <RecentTransactions transactions={recentTransactions} currency={currency} />
+      </div>
+
+      <div className="animate-fade-up" style={{ animationDelay: '300ms' }}>
+        <WinsFeed />
+      </div>
 
       <QuickAddButton currency={currency} />
     </div>

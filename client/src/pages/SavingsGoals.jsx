@@ -14,7 +14,6 @@ import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { Progress } from '@/components/ui/progress';
 import { Skeleton } from '@/components/ui/skeleton';
 import { useApi } from '@/hooks/useApi';
 import { formatMoney } from '@/lib/format';
@@ -27,11 +26,21 @@ function GoalCard({ goal, currency, onEdit, onDelete, onContribute }) {
   const remaining = Math.max(goal.targetAmount - goal.currentAmount, 0);
 
   return (
-    <Card>
-      <CardContent className="space-y-4 p-5">
+    <Card className="lift relative overflow-hidden border-border/60 bg-card/70 backdrop-blur">
+      {/* Soft glow that brightens as you near 100% */}
+      <div
+        aria-hidden
+        className="pointer-events-none absolute -top-16 -right-12 h-44 w-44 rounded-full blur-3xl"
+        style={{
+          background: goal.completed
+            ? 'radial-gradient(closest-side, hsl(var(--gold) / 0.35), transparent)'
+            : `radial-gradient(closest-side, hsl(var(--primary) / ${0.12 + percent / 400}), transparent)`,
+        }}
+      />
+      <CardContent className="relative space-y-4 p-5">
         <div className="flex items-start justify-between gap-3">
           <div className="flex items-center gap-3">
-            <span className="flex h-12 w-12 items-center justify-center rounded-xl bg-secondary text-2xl">
+            <span className="flex h-12 w-12 items-center justify-center rounded-2xl bg-gradient-to-br from-secondary to-secondary/40 text-2xl ring-1 ring-border/60">
               {goal.emoji || '🎯'}
             </span>
             <div>
@@ -62,24 +71,40 @@ function GoalCard({ goal, currency, onEdit, onDelete, onContribute }) {
 
         <div>
           <div className="flex items-baseline justify-between">
-            <span className="text-2xl font-bold tracking-tight">
+            <span className="nums text-2xl font-bold tracking-tight">
               {formatMoney(goal.currentAmount, currency)}
             </span>
-            <span className="text-sm text-muted-foreground">
+            <span className="nums text-sm text-muted-foreground">
               of {formatMoney(goal.targetAmount, currency)}
             </span>
           </div>
-          <Progress className="mt-2 h-2" value={percent} />
+          <div className="mt-2 h-2.5 overflow-hidden rounded-full bg-muted/70">
+            <div
+              className="shimmer-bar h-full rounded-full transition-all duration-700"
+              style={{
+                width: `${percent}%`,
+                background: goal.completed
+                  ? 'linear-gradient(90deg, hsl(var(--gold)) 0%, hsl(var(--primary)) 100%)'
+                  : 'linear-gradient(90deg, hsl(var(--primary)) 0%, hsl(var(--primary) / 0.85) 60%, hsl(var(--gold) / 0.95) 100%)',
+              }}
+            />
+          </div>
           <div className="mt-2 flex items-center justify-between text-xs">
-            <span className="font-medium text-primary">{percent}%</span>
-            <span className="text-muted-foreground">
+            <span className="nums rounded-full bg-primary/15 px-2 py-0.5 font-semibold text-primary">
+              {percent}%
+            </span>
+            <span className="nums text-muted-foreground">
               {goal.completed ? 'Complete! 🎉' : `${formatMoney(remaining, currency)} to go`}
             </span>
           </div>
         </div>
 
         {!goal.completed ? (
-          <Button variant="outline" className="w-full" onClick={() => onContribute(goal)}>
+          <Button
+            variant="outline"
+            className="w-full border-primary/30 bg-primary/5 text-primary hover:bg-primary/10"
+            onClick={() => onContribute(goal)}
+          >
             <PiggyBank className="h-4 w-4" /> Add money
           </Button>
         ) : null}
@@ -293,6 +318,7 @@ export default function SavingsGoals() {
     mutationFn: ({ id, payload }) => api.patch(`/api/goals/${id}`, payload),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['goals'] });
+      queryClient.invalidateQueries({ queryKey: ['wins'] });
       toast.success('Goal updated');
       setGoalOpen(false);
       setEditing(null);
@@ -303,6 +329,7 @@ export default function SavingsGoals() {
     mutationFn: (id) => api.del(`/api/goals/${id}`),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['goals'] });
+      queryClient.invalidateQueries({ queryKey: ['wins'] });
       toast.success('Goal removed');
     },
     onError: (err) => toast.error(err?.message || 'Could not delete'),
@@ -311,6 +338,7 @@ export default function SavingsGoals() {
     mutationFn: ({ id, payload }) => api.post(`/api/goals/${id}/contributions`, payload),
     onSuccess: (res) => {
       queryClient.invalidateQueries({ queryKey: ['goals'] });
+      queryClient.invalidateQueries({ queryKey: ['wins'] });
       setContributingGoal(null);
       if (res.justCompleted) {
         celebrateGoalCompleted();
@@ -334,17 +362,18 @@ export default function SavingsGoals() {
   const goals = data?.goals ?? [];
 
   return (
-    <div className="space-y-5 pb-12">
+    <div className="space-y-5 pb-12 animate-fade-up">
       <header className="flex items-end justify-between gap-3">
         <div className="space-y-1">
           <p className="text-sm text-muted-foreground">Save on purpose. Watch it grow.</p>
-          <h1 className="text-3xl font-bold tracking-tight">Savings goals</h1>
+          <h1 className="text-3xl font-extrabold tracking-tight sm:text-4xl">Savings goals</h1>
         </div>
         <Button
           onClick={() => {
             setEditing(null);
             setGoalOpen(true);
           }}
+          className="bg-gradient-to-br from-primary to-emerald-700 shadow-md shadow-primary/30 transition-transform hover:scale-[1.02]"
         >
           <Plus className="h-4 w-4" />
           <span className="hidden sm:inline">New goal</span>
@@ -366,13 +395,17 @@ export default function SavingsGoals() {
           </button>
         </div>
       ) : goals.length === 0 ? (
-        <Card>
-          <CardContent className="flex flex-col items-center gap-3 p-10 text-center">
-            <span className="text-4xl" aria-hidden>
+        <Card className="relative overflow-hidden border-border/60 bg-card/70 backdrop-blur">
+          <div
+            aria-hidden
+            className="pointer-events-none absolute -top-20 left-1/2 h-48 w-48 -translate-x-1/2 rounded-full bg-primary/15 blur-3xl"
+          />
+          <CardContent className="relative flex flex-col items-center gap-3 p-10 text-center">
+            <span className="text-5xl animate-float-slow" aria-hidden>
               🎯
             </span>
             <div className="space-y-1">
-              <p className="font-medium">No goals yet</p>
+              <p className="font-semibold">No goals yet</p>
               <p className="text-sm text-muted-foreground">
                 Pick something to save toward — a trip, an emergency fund, a new laptop.
               </p>
@@ -382,6 +415,7 @@ export default function SavingsGoals() {
                 setEditing(null);
                 setGoalOpen(true);
               }}
+              className="bg-gradient-to-br from-primary to-emerald-700 shadow-md shadow-primary/30"
             >
               <Plus className="h-4 w-4" /> Create your first goal
             </Button>

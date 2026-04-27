@@ -21,17 +21,31 @@ import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { Progress } from '@/components/ui/progress';
 import { Skeleton } from '@/components/ui/skeleton';
 import { useApi } from '@/hooks/useApi';
 import { formatMoney } from '@/lib/format';
 import { cn } from '@/lib/utils';
 
 function progressTone(percent) {
-  if (percent >= 1) return { color: 'bg-rose-400', copy: "You've gone over — want to adjust next month?" };
-  if (percent >= 0.9) return { color: 'bg-amber-400', copy: 'Getting close — tread lightly.' };
-  if (percent >= 0.75) return { color: 'bg-amber-300', copy: 'On track, but watch the last stretch.' };
-  return { color: 'bg-primary', copy: 'You have room to breathe.' };
+  if (percent >= 1)
+    return {
+      bar: 'from-rose-400 to-rose-500',
+      copy: "You've gone over — want to adjust next month?",
+    };
+  if (percent >= 0.9)
+    return {
+      bar: 'from-amber-300 to-amber-500',
+      copy: 'Getting close — tread lightly.',
+    };
+  if (percent >= 0.75)
+    return {
+      bar: 'from-amber-200 to-amber-400',
+      copy: 'On track, but watch the last stretch.',
+    };
+  return {
+    bar: 'from-emerald-400 to-primary',
+    copy: 'You have room to breathe.',
+  };
 }
 
 function BudgetCard({ budget, currency, onEdit, onDelete }) {
@@ -39,13 +53,22 @@ function BudgetCard({ budget, currency, onEdit, onDelete }) {
   const tone = progressTone(percent);
   const remaining = budget.limit - budget.spent;
   const cat = budget.category;
+  const color = cat?.color ?? '#10b981';
 
   return (
-    <Card>
-      <CardContent className="space-y-3 p-5">
+    <Card className="lift relative overflow-hidden border-border/60 bg-card/70 backdrop-blur">
+      <div
+        aria-hidden
+        className="pointer-events-none absolute -top-12 -right-10 h-32 w-32 rounded-full opacity-30 blur-3xl"
+        style={{ backgroundColor: color }}
+      />
+      <CardContent className="relative space-y-3 p-5">
         <div className="flex items-start justify-between gap-3">
           <div className="flex items-center gap-3">
-            <span className="flex h-10 w-10 items-center justify-center rounded-lg bg-secondary text-xl">
+            <span
+              className="flex h-11 w-11 items-center justify-center rounded-xl text-xl ring-1 ring-border/60"
+              style={{ backgroundColor: `${color}22` }}
+            >
               {cat?.icon ?? '💰'}
             </span>
             <div>
@@ -70,23 +93,24 @@ function BudgetCard({ budget, currency, onEdit, onDelete }) {
 
         <div>
           <div className="flex items-baseline justify-between gap-2">
-            <span className="text-2xl font-bold tracking-tight">
+            <span className="nums text-2xl font-bold tracking-tight">
               {formatMoney(budget.spent, currency)}
             </span>
-            <span className="text-sm text-muted-foreground">
+            <span className="nums text-sm text-muted-foreground">
               of {formatMoney(budget.limit, currency)}
             </span>
           </div>
-          <Progress
-            className="mt-2 h-2"
-            value={Math.round(percent * 100)}
-            indicatorClassName={tone.color}
-          />
+          <div className="mt-2 h-2 overflow-hidden rounded-full bg-muted/70">
+            <div
+              className={`shimmer-bar h-full rounded-full bg-gradient-to-r ${tone.bar} transition-all duration-700`}
+              style={{ width: `${Math.min(100, Math.round(percent * 100))}%` }}
+            />
+          </div>
           <div className="mt-2 flex items-center justify-between text-xs">
             <span className="text-muted-foreground">{tone.copy}</span>
             <span
               className={cn(
-                'font-medium',
+                'nums font-medium',
                 remaining >= 0 ? 'text-muted-foreground' : 'text-rose-400',
               )}
             >
@@ -239,6 +263,7 @@ export default function Budgets() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['budgets'] });
       queryClient.invalidateQueries({ queryKey: ['dashboard'] });
+      queryClient.invalidateQueries({ queryKey: ['wins'] });
       toast.success('Budget created');
       setDialogOpen(false);
     },
@@ -250,6 +275,7 @@ export default function Budgets() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['budgets'] });
       queryClient.invalidateQueries({ queryKey: ['dashboard'] });
+      queryClient.invalidateQueries({ queryKey: ['wins'] });
       toast.success('Budget updated');
       setDialogOpen(false);
       setEditing(null);
@@ -262,6 +288,7 @@ export default function Budgets() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['budgets'] });
       queryClient.invalidateQueries({ queryKey: ['dashboard'] });
+      queryClient.invalidateQueries({ queryKey: ['wins'] });
       toast.success('Budget removed');
     },
     onError: (err) => toast.error(err?.message || 'Could not delete'),
@@ -276,17 +303,18 @@ export default function Budgets() {
   }
 
   return (
-    <div className="space-y-5 pb-12">
+    <div className="space-y-5 pb-12 animate-fade-up">
       <header className="flex items-end justify-between gap-3">
         <div className="space-y-1">
           <p className="text-sm text-muted-foreground">Set a ceiling, we'll keep count.</p>
-          <h1 className="text-3xl font-bold tracking-tight">Budgets</h1>
+          <h1 className="text-3xl font-extrabold tracking-tight sm:text-4xl">Budgets</h1>
         </div>
         <Button
           onClick={() => {
             setEditing(null);
             setDialogOpen(true);
           }}
+          className="bg-gradient-to-br from-primary to-emerald-700 shadow-md shadow-primary/30 transition-transform hover:scale-[1.02]"
         >
           <Plus className="h-4 w-4" />
           <span className="hidden sm:inline">New budget</span>
@@ -308,13 +336,17 @@ export default function Budgets() {
           </button>
         </div>
       ) : budgets.length === 0 ? (
-        <Card>
-          <CardContent className="flex flex-col items-center gap-3 p-10 text-center">
-            <span className="text-4xl" aria-hidden>
+        <Card className="relative overflow-hidden border-border/60 bg-card/70 backdrop-blur">
+          <div
+            aria-hidden
+            className="pointer-events-none absolute -top-20 left-1/2 h-48 w-48 -translate-x-1/2 rounded-full bg-primary/15 blur-3xl"
+          />
+          <CardContent className="relative flex flex-col items-center gap-3 p-10 text-center">
+            <span className="text-5xl animate-float-slow" aria-hidden>
               🎯
             </span>
             <div className="space-y-1">
-              <p className="font-medium">No budgets yet</p>
+              <p className="font-semibold">No budgets yet</p>
               <p className="text-sm text-muted-foreground">
                 Pick a spending category and give it a ceiling.
               </p>
@@ -324,6 +356,7 @@ export default function Budgets() {
                 setEditing(null);
                 setDialogOpen(true);
               }}
+              className="bg-gradient-to-br from-primary to-emerald-700 shadow-md shadow-primary/30"
             >
               <Plus className="h-4 w-4" /> Create your first budget
             </Button>

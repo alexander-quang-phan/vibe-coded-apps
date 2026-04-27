@@ -9,7 +9,7 @@
  */
 @layer base {
   :root {
-    --background: 0 0% 100%;
+    --background: 150 30% 98%;
     --foreground: 222 47% 11%;
 
     --card: 0 0% 100%;
@@ -20,6 +20,7 @@
 
     --primary: 158 64% 32%;
     --primary-foreground: 0 0% 100%;
+    --primary-soft: 158 64% 92%;
 
     --secondary: 210 40% 96%;
     --secondary-foreground: 222 47% 11%;
@@ -35,12 +36,18 @@
 
     --success: 158 64% 42%;
     --warning: 38 92% 50%;
+    --gold: 42 95% 55%;
 
     --border: 214 32% 91%;
     --input: 214 32% 91%;
     --ring: 158 64% 32%;
 
-    --radius: 0.75rem;
+    --radius: 0.95rem;
+
+    /* Mesh blob colors — light mode */
+    --mesh-1: 158 75% 78%;
+    --mesh-2: 200 85% 80%;
+    --mesh-3: 42 95% 80%;
   }
 
   .dark {
@@ -55,6 +62,7 @@
 
     --primary: 158 64% 52%;
     --primary-foreground: 150 30% 8%;
+    --primary-soft: 158 64% 18%;
 
     --secondary: 217 20% 16%;
     --secondary-foreground: 210 40% 98%;
@@ -70,10 +78,16 @@
 
     --success: 158 64% 52%;
     --warning: 38 92% 55%;
+    --gold: 42 95% 60%;
 
     --border: 215 20% 18%;
     --input: 215 20% 18%;
     --ring: 158 64% 52%;
+
+    /* Mesh blob colors — dark mode */
+    --mesh-1: 158 70% 40%;
+    --mesh-2: 200 70% 35%;
+    --mesh-3: 280 60% 35%;
   }
 }
 
@@ -88,8 +102,14 @@
   }
   body {
     @apply bg-background text-foreground antialiased;
-    font-feature-settings: 'cv11', 'ss01';
+    font-feature-settings: 'cv11', 'ss01', 'ss03';
     -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+  /* Selection */
+  ::selection {
+    background: hsl(var(--primary) / 0.25);
+    color: hsl(var(--foreground));
   }
 }
 
@@ -105,5 +125,159 @@
   }
   .no-spin {
     -moz-appearance: textfield;
+  }
+
+  /*
+   * Ambient mesh: three soft blurred radial blobs that breathe.
+   * Sits behind the entire app via a fixed positioning wrapper in App.jsx.
+   * Uses --mesh-* tokens so dark/light render in their own palette.
+   */
+  .mesh-bg {
+    background:
+      radial-gradient(38rem 32rem at 12% 8%, hsl(var(--mesh-1) / 0.32), transparent 60%),
+      radial-gradient(34rem 28rem at 92% 18%, hsl(var(--mesh-2) / 0.22), transparent 60%),
+      radial-gradient(40rem 32rem at 70% 90%, hsl(var(--mesh-3) / 0.20), transparent 60%);
+  }
+
+  /*
+   * Subtle dotted grid for backgrounds; respects light/dark via currentColor alpha.
+   */
+  .bg-grid-soft {
+    background-image: radial-gradient(currentColor 1px, transparent 1px);
+    background-size: 18px 18px;
+    color: hsl(var(--foreground) / 0.06);
+  }
+
+  /* Glassmorphic surface — used in the sticky header and hero card */
+  .glass {
+    background-color: hsl(var(--card) / 0.55);
+    backdrop-filter: blur(18px) saturate(180%);
+    -webkit-backdrop-filter: blur(18px) saturate(180%);
+    border-color: hsl(var(--border) / 0.6);
+  }
+
+  /* Lift on hover — for cards/buttons that should feel touchable */
+  .lift {
+    transition:
+      transform 250ms cubic-bezier(0.22, 1, 0.36, 1),
+      box-shadow 250ms cubic-bezier(0.22, 1, 0.36, 1),
+      border-color 250ms ease;
+  }
+  .lift:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 18px 40px -22px hsl(var(--primary) / 0.45);
+  }
+
+  /* Gradient text — used sparingly for the wordmark + hero numbers */
+  .text-gradient {
+    background: linear-gradient(
+      135deg,
+      hsl(var(--primary)) 0%,
+      hsl(var(--primary) / 0.7) 40%,
+      hsl(var(--gold) / 0.85) 100%
+    );
+    background-clip: text;
+    -webkit-background-clip: text;
+    color: transparent;
+  }
+
+  /* Tabular numerals for money */
+  .nums {
+    font-variant-numeric: tabular-nums;
+    font-feature-settings: 'tnum';
+  }
+
+  /* Shimmer overlay — perfect for progress fills */
+  .shimmer-bar {
+    position: relative;
+    overflow: hidden;
+  }
+  .shimmer-bar::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(
+      90deg,
+      transparent,
+      hsl(0 0% 100% / 0.25),
+      transparent
+    );
+    background-size: 200% 100%;
+    animation: shimmer 2.4s linear infinite;
+    pointer-events: none;
+  }
+
+  /* Diagonal sheen — for the level/balance hero */
+  .sheen-mask {
+    position: relative;
+    overflow: hidden;
+  }
+  .sheen-mask::after {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: -50%;
+    width: 50%;
+    height: 100%;
+    background: linear-gradient(
+      90deg,
+      transparent,
+      hsl(0 0% 100% / 0.08),
+      transparent
+    );
+    transform: skewX(-12deg);
+    animation: sheen 4.2s ease-in-out infinite;
+    animation-delay: 1.2s;
+    pointer-events: none;
+  }
+
+  /* Soft glow — to halo important elements */
+  .glow-primary {
+    box-shadow:
+      0 0 0 1px hsl(var(--primary) / 0.18),
+      0 8px 30px -6px hsl(var(--primary) / 0.45);
+  }
+
+  /* Gradient border via mask — used by hero card */
+  .gradient-border {
+    position: relative;
+  }
+  .gradient-border::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    padding: 1px;
+    border-radius: inherit;
+    background: linear-gradient(
+      135deg,
+      hsl(var(--primary) / 0.6),
+      transparent 35%,
+      transparent 65%,
+      hsl(var(--gold) / 0.5)
+    );
+    -webkit-mask:
+      linear-gradient(#000 0 0) content-box,
+      linear-gradient(#000 0 0);
+    -webkit-mask-composite: xor;
+    mask-composite: exclude;
+    pointer-events: none;
+  }
+
+  /* Reduced motion: ease everything off */
+  @media (prefers-reduced-motion: reduce) {
+    .animate-flame,
+    .animate-float-slow,
+    .animate-blob,
+    .animate-ring-pulse,
+    .animate-shimmer,
+    .animate-gradient-shift,
+    .animate-sheen,
+    .shimmer-bar::after,
+    .sheen-mask::after {
+      animation: none !important;
+    }
+    .lift {
+      transition: none !important;
+    }
   }
 }

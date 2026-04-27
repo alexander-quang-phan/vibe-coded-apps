@@ -11,6 +11,7 @@ import Transactions from './pages/Transactions';
 import Budgets from './pages/Budgets';
 import Analytics from './pages/Analytics';
 import SavingsGoals from './pages/SavingsGoals';
+import Subscriptions from './pages/Subscriptions';
 import Settings from './pages/Settings';
 import Login from './pages/Login';
 import Signup from './pages/Signup';
@@ -47,6 +48,7 @@ ReactDOM.createRoot(document.getElementById('root')).render(
               <Route path="/budgets" element={<Budgets />} />
               <Route path="/analytics" element={<Analytics />} />
               <Route path="/savings" element={<SavingsGoals />} />
+              <Route path="/subscriptions" element={<Subscriptions />} />
               <Route path="/settings" element={<Settings />} />
             </Route>
             <Route path="*" element={<Navigate to="/dashboard" replace />} />
