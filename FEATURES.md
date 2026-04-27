@@ -48,6 +48,7 @@
 - Streak stat card with flame icon; sub shows shields banked or longest streak.
 - Shields stat card (desktop only).
 - Level card with XP progress bar and title ladder.
+- Month-end projection card (above CategoryDonut) — linear extrapolation of current-month spend, delta vs. summed monthly budgets, one-line pace label vs. last month. Cold-start guard until day 3 with ≥1 transaction. Hidden in simple_mode (Task 6.5 owns its own equivalent).
 - Category donut chart (expense breakdown) + budget alerts list (categories ≥75% used).
 - Recent 5 transactions.
 - Wins feed card (scrollable, latest 10) — derived from `GET /api/wins`. Surfaces under-budget weeks, streak milestones, banked shields, and savings contributions with before/after %. Playful empty state.

@@ -202,6 +202,7 @@ export default function Transactions() {
       queryClient.invalidateQueries({ queryKey: ['transactions'] });
       queryClient.invalidateQueries({ queryKey: ['dashboard'] });
       queryClient.invalidateQueries({ queryKey: ['wins'] });
+      queryClient.invalidateQueries({ queryKey: ['projections'] });
       toast.success('Transaction removed');
     },
     onError: (err) => toast.error(err?.message || 'Could not delete'),
@@ -213,6 +214,7 @@ export default function Transactions() {
       queryClient.invalidateQueries({ queryKey: ['transactions'] });
       queryClient.invalidateQueries({ queryKey: ['dashboard'] });
       queryClient.invalidateQueries({ queryKey: ['wins'] });
+      queryClient.invalidateQueries({ queryKey: ['projections'] });
       toast.success('Updated');
       setEditing(null);
     },

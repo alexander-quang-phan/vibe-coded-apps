@@ -130,7 +130,7 @@ Out of scope: cancellation links/automation (legal landmine), price-change alert
 
 ---
 
-### ▢ Task 6.3 — Month-end projection card
+### ✅ Task 6.3 — Month-end projection card
 
 **Chat prompt:**
 ```

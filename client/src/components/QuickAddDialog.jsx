@@ -70,6 +70,7 @@ export function QuickAddDialog({ open, onOpenChange, currency = 'GBP' }) {
       queryClient.invalidateQueries({ queryKey: ['transactions'] });
       queryClient.invalidateQueries({ queryKey: ['me'] });
       queryClient.invalidateQueries({ queryKey: ['wins'] });
+      queryClient.invalidateQueries({ queryKey: ['projections'] });
 
       const d = res?.delta;
       if (d?.levelUp) {

@@ -32,7 +32,7 @@
 │   ├── lib/gamification.js  # Pure streak/XP/shield/level logic
 │   ├── lib/subscriptions.js # Pure recurring-charge detection on a tx list
 │   ├── middleware/auth.js   # requireAuth — verifies Supabase JWT, sets req.user
-│   ├── routes/              # me, categories, transactions, dashboard, budgets, analytics, goals, wins, subscriptions
+│   ├── routes/              # me, categories, transactions, dashboard, budgets, analytics, goals, wins, subscriptions, projections
 │   ├── migrations/001_init.sql  # Full schema + RLS + triggers
 │   └── .env                 # PORT, CLIENT_URL, SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, SUPABASE_JWT_SECRET
 │
@@ -94,12 +94,13 @@ All routes require a valid Supabase JWT except `/api/health`. Express router nam
 - `GET  /api/wins` — derives at-most-10 recent positive events ({ type, title, body, at, icon }) from transactions vs budgets (rolling 7d), `user_stats` streak/shields, and savings contributions. No new tables.
 - `GET  /api/subscriptions` — runs `detectSubscriptions` on the user's expense transactions, merges `subscription_overrides`, returns `{ subscriptions[], summary }`. Default rule: ≥3 same-merchant charges at ~30d or ~365d intervals (±5d) with amounts within 10%.
 - `PATCH /api/subscriptions/:merchantKey` — upsert into `subscription_overrides` to mark a detected subscription `active` or `cancelled`. Decisions survive re-detection.
+- `GET  /api/projections/month` — linear-extrapolation forecast for current-month expenses. Returns `{ ready, projectedSpend, monthlyBudget, delta, spendSoFar, daysElapsed, daysInMonth, paceLabel }`. `ready: false` when day-of-month < 3 or zero transactions logged this month (cold-start guard). `monthlyBudget`/`delta` are null when the user has no monthly budgets set.
 
 ## Client data-flow rules
 
 - **One auth source of truth:** `useAuth` hook wraps the Supabase client. Exposes `{ session, user, isLoading, signIn, signUp, signOut }`.
 - **One API binding:** `useApi` returns `{ get, post, patch, del }` bound to the current `session.access_token`. Re-memoised on token change so TanStack Query refreshes.
-- **Query keys stay stable:** `['me']`, `['dashboard']`, `['transactions']`, `['categories']`, `['budgets']`, `['goals']`, `['analytics', 6]`, `['wins']`, `['subscriptions']`. Mutations invalidate their downstream queries.
+- **Query keys stay stable:** `['me']`, `['dashboard']`, `['transactions']`, `['categories']`, `['budgets']`, `['goals']`, `['analytics', 6]`, `['wins']`, `['subscriptions']`, `['projections', 'month']`. Mutations invalidate their downstream queries.
 - **Theme:** HTML gets `class="dark"` by default; toggle persists to `localStorage['trim-theme']`. An inline script in `index.html` applies the stored value before React mounts (no flash).
 - **Currency display:** read from `/api/me` preferences; never hardcode.
 - **Visual system:** design tokens live in `client/src/index.css` (`:root` + `.dark`). Custom utilities (`.mesh-bg`, `.glass`, `.lift`, `.shimmer-bar`, `.sheen-mask`, `.text-gradient`, `.nums`, `.gradient-border`) and a small motion vocabulary (`animate-flame`, `animate-blob`, `animate-float-slow`, `animate-ring-pulse`, `animate-fade-up`, `animate-pop-in`, `animate-shimmer`) are declared in `tailwind.config.js`. All animations honour `prefers-reduced-motion`. See FEATURES.md → Design direction → Visual language for usage rules.

@@ -264,6 +264,7 @@ export default function Budgets() {
       queryClient.invalidateQueries({ queryKey: ['budgets'] });
       queryClient.invalidateQueries({ queryKey: ['dashboard'] });
       queryClient.invalidateQueries({ queryKey: ['wins'] });
+      queryClient.invalidateQueries({ queryKey: ['projections'] });
       toast.success('Budget created');
       setDialogOpen(false);
     },
@@ -276,6 +277,7 @@ export default function Budgets() {
       queryClient.invalidateQueries({ queryKey: ['budgets'] });
       queryClient.invalidateQueries({ queryKey: ['dashboard'] });
       queryClient.invalidateQueries({ queryKey: ['wins'] });
+      queryClient.invalidateQueries({ queryKey: ['projections'] });
       toast.success('Budget updated');
       setDialogOpen(false);
       setEditing(null);
@@ -289,6 +291,7 @@ export default function Budgets() {
       queryClient.invalidateQueries({ queryKey: ['budgets'] });
       queryClient.invalidateQueries({ queryKey: ['dashboard'] });
       queryClient.invalidateQueries({ queryKey: ['wins'] });
+      queryClient.invalidateQueries({ queryKey: ['projections'] });
       toast.success('Budget removed');
     },
     onError: (err) => toast.error(err?.message || 'Could not delete'),

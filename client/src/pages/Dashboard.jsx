@@ -8,6 +8,7 @@ import { CategoryDonut } from '@/components/CategoryDonut';
 import { RecentTransactions } from '@/components/RecentTransactions';
 import { BudgetAlerts } from '@/components/BudgetAlerts';
 import { SubscriptionsCard } from '@/components/SubscriptionsCard';
+import { MonthProjection } from '@/components/MonthProjection';
 import { WinsFeed } from '@/components/WinsFeed';
 import { QuickAddButton } from '@/components/QuickAddButton';
 import { formatMoney } from '@/lib/format';
@@ -172,6 +173,7 @@ export default function Dashboard() {
 
   const currency = data.preferences.currency;
   const displayName = data.preferences.displayName;
+  const simpleMode = data.preferences.simpleMode;
   const { month, categoryBreakdown, recentTransactions, budgetAlerts, stats } = data;
 
   return (
@@ -226,13 +228,19 @@ export default function Dashboard() {
         />
       </div>
 
-      <div className="animate-fade-up" style={{ animationDelay: '150ms' }}>
+      {simpleMode ? null : (
+        <div className="animate-fade-up" style={{ animationDelay: '150ms' }}>
+          <MonthProjection currency={currency} />
+        </div>
+      )}
+
+      <div className="animate-fade-up" style={{ animationDelay: '170ms' }}>
         <SubscriptionsCard currency={currency} />
       </div>
 
       <section
         className="grid gap-4 animate-fade-up lg:grid-cols-2"
-        style={{ animationDelay: '180ms' }}
+        style={{ animationDelay: '200ms' }}
       >
         <CategoryDonut
           breakdown={categoryBreakdown}
