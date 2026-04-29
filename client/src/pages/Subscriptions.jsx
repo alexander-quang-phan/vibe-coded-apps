@@ -6,6 +6,7 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { useApi } from '@/hooks/useApi';
 import { SubscriptionRow } from '@/components/SubscriptionRow';
 import { formatMoney } from '@/lib/format';
+import { subscriptionLabel } from '@/lib/subscriptions';
 
 function SummaryCard({ summary, currency }) {
   return (
@@ -102,20 +103,37 @@ export default function Subscriptions() {
     onSuccess: (_data, { sub, status }) => {
       queryClient.invalidateQueries({ queryKey: ['subscriptions'] });
       queryClient.invalidateQueries({ queryKey: ['wins'] });
+      const label = subscriptionLabel(sub, currency);
       if (status === 'cancelled') {
         toast.success(
-          `${sub.name} cancelled — that's ${formatMoney(sub.annualCost, currency)} a year back. 🎉`,
+          `${label} cancelled — that's ${formatMoney(sub.annualCost, currency)} a year back. 🎉`,
         );
       } else {
-        toast.success(`${sub.name} marked active.`);
+        toast.success(`${label} marked active.`);
       }
     },
     onError: (err) => toast.error(err?.message || 'Could not update subscription'),
     onSettled: () => setPendingKey(null),
   });
 
+  const renameMutation = useMutation({
+    mutationFn: ({ merchantKey, displayName }) =>
+      api.patch(`/api/subscriptions/${encodeURIComponent(merchantKey)}`, { displayName }),
+    onMutate: ({ merchantKey }) => setPendingKey(merchantKey),
+    onSuccess: (_data, { displayName }) => {
+      queryClient.invalidateQueries({ queryKey: ['subscriptions'] });
+      toast.success(displayName ? `Saved as ${displayName}.` : 'Name cleared.');
+    },
+    onError: (err) => toast.error(err?.message || 'Could not save name'),
+    onSettled: () => setPendingKey(null),
+  });
+
   function handleToggle(sub, nextStatus) {
     toggleMutation.mutate({ merchantKey: sub.merchantKey, status: nextStatus, sub });
+  }
+
+  function handleRename(sub, displayName) {
+    renameMutation.mutate({ merchantKey: sub.merchantKey, displayName });
   }
 
   return (
@@ -167,6 +185,7 @@ export default function Subscriptions() {
                     subscription={sub}
                     currency={currency}
                     onToggle={handleToggle}
+                    onRename={handleRename}
                     pending={pendingKey === sub.merchantKey}
                   />
                 ))}
@@ -186,6 +205,7 @@ export default function Subscriptions() {
                     subscription={sub}
                     currency={currency}
                     onToggle={handleToggle}
+                    onRename={handleRename}
                     pending={pendingKey === sub.merchantKey}
                   />
                 ))}

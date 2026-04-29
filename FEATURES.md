@@ -96,6 +96,7 @@
 - "Mark cancelled" toggle moves the row to a Cancelled section and surfaces the saved annual amount; toggling back to Active restores it. Decisions persist in `subscription_overrides` so a new month of detection doesn't overwrite them.
 - Dashboard mini-card above CategoryDonut nudges the user to audit ("You have N subscriptions, £X/month — audit them?"). Hidden when there are 0 active subs.
 - Empty state on the page itself when no subs are detected — friendly placeholder, never hides the nav link.
+- **Known limitation (Task 6.2.1):** today's detector groups by transaction description text, so quick-logged transactions (no description, the 3-tap default) are invisible to it. Task 6.2.1 closes the gap with a `(category, amount-cluster, cadence)` fallback and inline naming on the audit page.
 
 ### Settings
 

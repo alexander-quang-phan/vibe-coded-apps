@@ -130,6 +130,44 @@ Out of scope: cancellation links/automation (legal landmine), price-change alert
 
 ---
 
+### ▢ Task 6.2.1 — Description-free subscription detection
+
+**Chat prompt:**
+```
+Extend Task 6.2 so the subscription detector works for users who don't type a description on every transaction. The 3-tap golden flow leaves description empty, so today's description-grouped detector finds nothing for most users — that's the actual product gap, not a polish item.
+
+What:
+- When a transaction has no description, group it by (category_id, amount-cluster, cadence) instead of merchant string. Existing rule still applies: ≥3 charges, ~30d or ~365d cadence (±5d), amounts within 10%.
+- An unnamed detected sub appears on /subscriptions as a row labelled e.g. "Monthly £12.99 Entertainment".
+- The row has an inline "Name this" text input. User types "Netflix" once; the name persists and inherits to next month's detection.
+- Dashboard nudge uses the user-given name when present.
+
+How:
+- Migration: add `display_name text null` to `subscription_overrides`.
+- Detection (server/lib/subscriptions.js): if `normaliseMerchant(description)` returns null, generate a synthetic merchantKey from the cluster (see ASK below for bucket strategy). Existing description-based path stays unchanged.
+- Server (routes/subscriptions.js): extend `PATCH /api/subscriptions/:merchantKey` to accept `{ status?, displayName? }`. Validate displayName: trim, max 40 chars. URL-encode synthetic keys (they contain colons).
+- Client: SubscriptionRow renders an inline rename input when the override has no display_name OR the merchant was inferred (synthetic key). Submit → PATCH → invalidate `['subscriptions']`. Show user-given name everywhere the row label appears.
+- Display fallback order: override.displayName → description-derived name → synthetic placeholder.
+
+Before coding, ASK with recommended defaults:
+- Synthetic key bucket strategy:
+  (a) Nearest £5 / $5 (recommended — stable across small price hikes, predictable. Collides only if two same-category subs sit in the same £5 bucket — rare).
+  (b) Anchor-and-tolerance — record the cluster anchor amount on first detection, accept ±10% drift forever after.
+  Pick (a) unless we hit collision problems in dogfooding.
+- Default label for unnamed subs: "Monthly £12.99 Entertainment" (recommended) vs "Unnamed subscription · Entertainment".
+- Should naming write back to the underlying transactions' description column? Recommend NO — keep transactions immutable, the override carries the display name.
+
+Acceptance criteria:
+- A user with 3 monthly £12.99 Entertainment expenses (no description) sees a row labelled in the chosen unnamed format on /subscriptions.
+- Inline-renaming the row to "Netflix" persists across page reload and survives a re-run of detection.
+- A 4th transaction in the same cluster next month re-detects under the same merchantKey and inherits the name without re-prompting.
+- Description-based detection (Task 6.2) still works unchanged for users who do type descriptions — the new path is strictly a fallback.
+
+Out of scope: bulk re-categorisation of past transactions, OCR / receipt import, smart category suggestion (Task 6.9), Open Banking auto-import (further-deferred).
+```
+
+---
+
 ### ✅ Task 6.3 — Month-end projection card
 
 **Chat prompt:**

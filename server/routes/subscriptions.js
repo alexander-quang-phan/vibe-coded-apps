@@ -5,11 +5,22 @@ import { detectSubscriptions } from '../lib/subscriptions.js';
 
 const router = Router();
 
-const merchantKeyParam = /^[a-z0-9 ]{1,100}$/;
+const DESCRIPTION_KEY = /^[a-z0-9 ]{1,100}$/;
+const SYNTHETIC_KEY = /^auto:(?:[a-f0-9-]{36}|none):\d+:(?:monthly|annual)$/;
+const MAX_DISPLAY_NAME = 40;
 
-const patchSchema = z.object({
-  status: z.enum(['active', 'cancelled']),
-});
+const patchSchema = z
+  .object({
+    status: z.enum(['active', 'cancelled']).optional(),
+    displayName: z.string().nullable().optional(),
+  })
+  .refine((d) => d.status !== undefined || d.displayName !== undefined, {
+    message: 'Provide status or displayName',
+  });
+
+function isValidMerchantKey(key) {
+  return DESCRIPTION_KEY.test(key) || SYNTHETIC_KEY.test(key);
+}
 
 function summarise(subscriptions) {
   const active = subscriptions.filter((s) => s.status === 'active');
@@ -37,7 +48,7 @@ router.get('/', async (req, res, next) => {
         .order('date', { ascending: true }),
       supabase
         .from('subscription_overrides')
-        .select('merchant_key, status, decided_at')
+        .select('merchant_key, status, display_name, decided_at')
         .eq('user_id', req.user.id),
       supabase
         .from('categories')
@@ -62,6 +73,7 @@ router.get('/', async (req, res, next) => {
           ? { id: cat.id, name: cat.name, icon: cat.icon, color: cat.color }
           : null,
         status: override?.status ?? 'active',
+        displayName: override?.display_name ?? null,
         decidedAt: override?.decided_at ?? null,
       };
     });
@@ -75,7 +87,7 @@ router.get('/', async (req, res, next) => {
 router.patch('/:merchantKey', async (req, res, next) => {
   try {
     const merchantKey = decodeURIComponent(req.params.merchantKey);
-    if (!merchantKeyParam.test(merchantKey)) {
+    if (!isValidMerchantKey(merchantKey)) {
       return res.status(400).json({ error: 'Invalid merchant key' });
     }
 
@@ -84,18 +96,39 @@ router.patch('/:merchantKey', async (req, res, next) => {
       return res.status(400).json({ error: 'Invalid update', details: parsed.error.flatten() });
     }
 
+    const status = parsed.data.status;
+    let displayName = parsed.data.displayName;
+    if (typeof displayName === 'string') {
+      displayName = displayName.trim();
+      if (displayName.length === 0) displayName = null;
+      else if (displayName.length > MAX_DISPLAY_NAME) {
+        return res
+          .status(400)
+          .json({ error: `Display name must be ${MAX_DISPLAY_NAME} characters or fewer.` });
+      }
+    }
+
+    const { data: existing, error: readErr } = await supabase
+      .from('subscription_overrides')
+      .select('status, display_name, decided_at')
+      .eq('user_id', req.user.id)
+      .eq('merchant_key', merchantKey)
+      .maybeSingle();
+    if (readErr) throw readErr;
+
+    const merged = {
+      user_id: req.user.id,
+      merchant_key: merchantKey,
+      status: status ?? existing?.status ?? 'active',
+      display_name:
+        displayName !== undefined ? displayName : existing?.display_name ?? null,
+      decided_at: new Date().toISOString(),
+    };
+
     const { data, error } = await supabase
       .from('subscription_overrides')
-      .upsert(
-        {
-          user_id: req.user.id,
-          merchant_key: merchantKey,
-          status: parsed.data.status,
-          decided_at: new Date().toISOString(),
-        },
-        { onConflict: 'user_id,merchant_key' },
-      )
-      .select('merchant_key, status, decided_at')
+      .upsert(merged, { onConflict: 'user_id,merchant_key' })
+      .select('merchant_key, status, display_name, decided_at')
       .single();
 
     if (error) throw error;
@@ -104,6 +137,7 @@ router.patch('/:merchantKey', async (req, res, next) => {
       override: {
         merchantKey: data.merchant_key,
         status: data.status,
+        displayName: data.display_name,
         decidedAt: data.decided_at,
       },
     });
