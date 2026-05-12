@@ -80,20 +80,23 @@ export default function Subscriptions() {
   const summary = data?.summary ?? {
     activeCount: 0,
     cancelledCount: 0,
+    dismissedCount: 0,
     activeMonthly: 0,
     activeAnnual: 0,
     cancelledMonthly: 0,
     cancelledAnnual: 0,
   };
 
-  const { active, cancelled } = useMemo(() => {
+  const { active, cancelled, dismissed } = useMemo(() => {
     const a = [];
     const c = [];
+    const d = [];
     for (const s of subscriptions) {
       if (s.status === 'cancelled') c.push(s);
+      else if (s.status === 'dismissed') d.push(s);
       else a.push(s);
     }
-    return { active: a, cancelled: c };
+    return { active: a, cancelled: c, dismissed: d };
   }, [subscriptions]);
 
   const toggleMutation = useMutation({
@@ -108,6 +111,10 @@ export default function Subscriptions() {
         toast.success(
           `${label} cancelled — that's ${formatMoney(sub.annualCost, currency)} a year back. 🎉`,
         );
+      } else if (status === 'dismissed') {
+        toast.success(`Dismissed — won't show up again.`);
+      } else if (sub.status === 'dismissed') {
+        toast.success(`${label} restored.`);
       } else {
         toast.success(`${label} marked active.`);
       }
@@ -200,6 +207,26 @@ export default function Subscriptions() {
               </h2>
               <div className="space-y-3">
                 {cancelled.map((sub) => (
+                  <SubscriptionRow
+                    key={sub.merchantKey}
+                    subscription={sub}
+                    currency={currency}
+                    onToggle={handleToggle}
+                    onRename={handleRename}
+                    pending={pendingKey === sub.merchantKey}
+                  />
+                ))}
+              </div>
+            </section>
+          ) : null}
+
+          {dismissed.length > 0 ? (
+            <section className="space-y-3">
+              <h2 className="text-sm font-medium text-muted-foreground">
+                Dismissed · {dismissed.length === 1 ? 'not a subscription' : 'not subscriptions'}
+              </h2>
+              <div className="space-y-3">
+                {dismissed.map((sub) => (
                   <SubscriptionRow
                     key={sub.merchantKey}
                     subscription={sub}

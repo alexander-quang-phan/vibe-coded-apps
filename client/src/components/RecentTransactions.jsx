@@ -1,8 +1,10 @@
+import { Trash2 } from 'lucide-react';
 import { Card, CardContent } from '@/components/ui/card';
+import { Button } from '@/components/ui/button';
 import { formatMoney, formatDate } from '@/lib/format';
 import { cn } from '@/lib/utils';
 
-export function RecentTransactions({ transactions, currency }) {
+export function RecentTransactions({ transactions, currency, onDelete, pendingDeleteId }) {
   return (
     <Card className="lift relative overflow-hidden border-border/60 bg-card/70 backdrop-blur">
       <CardContent className="p-6">
@@ -27,10 +29,14 @@ export function RecentTransactions({ transactions, currency }) {
           <ul className="mt-3 space-y-1">
             {transactions.map((t) => {
               const color = t.category?.color ?? '#64748b';
+              const pending = pendingDeleteId === t.id;
               return (
                 <li
                   key={t.id}
-                  className="group relative flex items-center gap-3 rounded-xl px-2 py-2.5 transition-colors hover:bg-accent/50"
+                  className={cn(
+                    'group relative flex items-center gap-3 rounded-xl px-2 py-2.5 transition-colors hover:bg-accent/50',
+                    pending && 'opacity-50',
+                  )}
                 >
                   {/* Left edge accent strip on hover */}
                   <span
@@ -62,6 +68,20 @@ export function RecentTransactions({ transactions, currency }) {
                     {t.type === 'income' ? '+' : '−'}
                     {formatMoney(t.amount, currency)}
                   </p>
+                  {onDelete ? (
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-8 w-8 shrink-0 text-muted-foreground opacity-60 transition-opacity hover:text-foreground group-hover:opacity-100 sm:opacity-0"
+                      onClick={() => {
+                        if (confirm('Delete this transaction?')) onDelete(t);
+                      }}
+                      disabled={pending}
+                      aria-label="Delete transaction"
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                    </Button>
+                  ) : null}
                 </li>
               );
             })}

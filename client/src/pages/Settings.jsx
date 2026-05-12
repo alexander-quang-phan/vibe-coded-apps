@@ -16,6 +16,7 @@ import { Label } from '@/components/ui/label';
 import { Skeleton } from '@/components/ui/skeleton';
 import { useApi } from '@/hooks/useApi';
 import { useAuth } from '@/hooks/useAuth';
+import { CategoryManager } from '@/components/CategoryManager';
 
 const CURRENCIES = [
   { code: 'GBP', label: 'GBP · British Pound' },
@@ -176,6 +177,8 @@ export default function Settings() {
               </div>
             </CardContent>
           </Card>
+
+          <CategoryManager />
 
           <Card className="lift border-border/60 bg-card/70 backdrop-blur">
             <CardContent className="space-y-3 p-5">

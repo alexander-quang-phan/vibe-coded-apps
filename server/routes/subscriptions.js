@@ -11,7 +11,7 @@ const MAX_DISPLAY_NAME = 40;
 
 const patchSchema = z
   .object({
-    status: z.enum(['active', 'cancelled']).optional(),
+    status: z.enum(['active', 'cancelled', 'dismissed']).optional(),
     displayName: z.string().nullable().optional(),
   })
   .refine((d) => d.status !== undefined || d.displayName !== undefined, {
@@ -25,11 +25,13 @@ function isValidMerchantKey(key) {
 function summarise(subscriptions) {
   const active = subscriptions.filter((s) => s.status === 'active');
   const cancelled = subscriptions.filter((s) => s.status === 'cancelled');
+  const dismissed = subscriptions.filter((s) => s.status === 'dismissed');
   const activeMonthly = active.reduce((sum, s) => sum + s.monthlyCost, 0);
   const cancelledMonthly = cancelled.reduce((sum, s) => sum + s.monthlyCost, 0);
   return {
     activeCount: active.length,
     cancelledCount: cancelled.length,
+    dismissedCount: dismissed.length,
     activeMonthly: Number(activeMonthly.toFixed(2)),
     activeAnnual: Number((activeMonthly * 12).toFixed(2)),
     cancelledMonthly: Number(cancelledMonthly.toFixed(2)),

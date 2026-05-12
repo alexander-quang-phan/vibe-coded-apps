@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
-import { useQuery } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { toast } from 'sonner';
 import { Flame, Wallet, Shield, ArrowDownLeft, ArrowUpRight, Sparkles } from 'lucide-react';
 import { useApi } from '@/hooks/useApi';
 import { StatCard } from '@/components/StatCard';
@@ -149,9 +150,22 @@ function HeroBalance({ income, expenses, balance, currency, displayName }) {
 
 export default function Dashboard() {
   const api = useApi();
+  const queryClient = useQueryClient();
   const { data, isLoading, isError, error, refetch } = useQuery({
     queryKey: ['dashboard'],
     queryFn: () => api.get('/api/dashboard'),
+  });
+
+  const deleteTxMutation = useMutation({
+    mutationFn: (id) => api.del(`/api/transactions/${id}`),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['dashboard'] });
+      queryClient.invalidateQueries({ queryKey: ['transactions'] });
+      queryClient.invalidateQueries({ queryKey: ['wins'] });
+      queryClient.invalidateQueries({ queryKey: ['projections'] });
+      toast.success('Transaction removed');
+    },
+    onError: (err) => toast.error(err?.message || 'Could not delete'),
   });
 
   if (isLoading) return <DashboardSkeleton />;
@@ -251,7 +265,12 @@ export default function Dashboard() {
       </section>
 
       <div className="animate-fade-up" style={{ animationDelay: '240ms' }}>
-        <RecentTransactions transactions={recentTransactions} currency={currency} />
+        <RecentTransactions
+          transactions={recentTransactions}
+          currency={currency}
+          onDelete={(t) => deleteTxMutation.mutate(t.id)}
+          pendingDeleteId={deleteTxMutation.isPending ? deleteTxMutation.variables : null}
+        />
       </div>
 
       <div className="animate-fade-up" style={{ animationDelay: '300ms' }}>

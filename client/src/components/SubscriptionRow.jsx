@@ -9,13 +9,24 @@ import { cn } from '@/lib/utils';
 export function SubscriptionRow({ subscription, currency, onToggle, onRename, pending }) {
   const sub = subscription;
   const cancelled = sub.status === 'cancelled';
+  const dismissed = sub.status === 'dismissed';
+  const inactive = cancelled || dismissed;
   const cat = sub.category;
   const cadenceLabel = sub.cadence === 'annual' ? 'Annual' : 'Monthly';
   const label = subscriptionLabel(sub, currency);
-  const showRename = shouldShowRename(sub);
+  const showRename = shouldShowRename(sub) && !dismissed;
+
+  let primaryAction;
+  if (cancelled) {
+    primaryAction = { label: 'Mark active', next: 'active', variant: 'outline' };
+  } else if (dismissed) {
+    primaryAction = { label: 'Restore', next: 'active', variant: 'outline' };
+  } else {
+    primaryAction = { label: 'Mark cancelled', next: 'cancelled', variant: 'secondary' };
+  }
 
   return (
-    <Card className={cn(cancelled && 'opacity-70')}>
+    <Card className={cn(inactive && 'opacity-70')}>
       <CardContent className="flex flex-col gap-4 p-5">
         <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
           <div className="flex min-w-0 items-center gap-3">
@@ -49,7 +60,7 @@ export function SubscriptionRow({ subscription, currency, onToggle, onRename, pe
             <Stat label="Per year" value={formatMoney(sub.annualCost, currency)} />
             <Stat label="Last charged" value={formatDate(sub.lastCharged)} />
             <Stat
-              label={cancelled ? 'Was due' : 'Next expected'}
+              label={inactive ? 'Was due' : 'Next expected'}
               value={formatDate(sub.nextExpected)}
             />
           </div>
@@ -61,18 +72,26 @@ export function SubscriptionRow({ subscription, currency, onToggle, onRename, pe
                 {formatMoney(sub.totalPaid, currency)}
               </span>
             </p>
-            <Button
-              variant={cancelled ? 'outline' : 'secondary'}
-              size="sm"
-              disabled={pending}
-              onClick={() => onToggle(sub, cancelled ? 'active' : 'cancelled')}
-            >
-              {pending
-                ? 'Saving…'
-                : cancelled
-                  ? 'Mark active'
-                  : 'Mark cancelled'}
-            </Button>
+            <div className="flex flex-wrap items-center gap-2 sm:flex-col sm:items-end">
+              <Button
+                variant={primaryAction.variant}
+                size="sm"
+                disabled={pending}
+                onClick={() => onToggle(sub, primaryAction.next)}
+              >
+                {pending ? 'Saving…' : primaryAction.label}
+              </Button>
+              {sub.inferred && !inactive ? (
+                <button
+                  type="button"
+                  disabled={pending}
+                  onClick={() => onToggle(sub, 'dismissed')}
+                  className="text-xs text-muted-foreground underline-offset-4 hover:text-foreground hover:underline disabled:opacity-50"
+                >
+                  Not a subscription
+                </button>
+              ) : null}
+            </div>
           </div>
         </div>
 

@@ -19,6 +19,7 @@ export async function apiFetch(path, { method = 'GET', body, token, signal } = {
     const payload = await res.json().catch(() => ({}));
     const err = new Error(payload.error || `Request failed with status ${res.status}`);
     err.status = res.status;
+    err.body = payload;
     throw err;
   }
 
