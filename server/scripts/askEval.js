@@ -26,13 +26,24 @@ import Anthropic from '@anthropic-ai/sdk';
 import { buildAskContext } from '../lib/askContext.js';
 import { buildAskSystem, ASK_MODEL, ASK_MAX_TOKENS } from '../lib/askPrompt.js';
 
-// Verify before relying on. Anthropic pricing for Sonnet 4.6 era.
-const PRICING = {
-  input_per_mtok: 3.0,
-  output_per_mtok: 15.0,
-  cache_read_per_mtok: 0.3,
-  cache_create_per_mtok: 3.75,
+// Verify before relying on. Per-model Anthropic pricing (USD per million tokens).
+const MODEL_PRICING = {
+  'claude-sonnet-4-6': {
+    input: 3.0,
+    output: 15.0,
+    cache_read: 0.3,
+    cache_create: 3.75,
+  },
+  'claude-haiku-4-5': {
+    input: 1.0,
+    output: 5.0,
+    cache_read: 0.1,
+    cache_create: 1.25,
+  },
 };
+function pricingFor(model) {
+  return MODEL_PRICING[model] || MODEL_PRICING['claude-sonnet-4-6'];
+}
 const JUDGE_MODEL = 'claude-haiku-4-5';
 const TODAY = '2026-05-12';
 const RUNS = 3;
@@ -552,14 +563,15 @@ VERDICT: PASS or FAIL — <short reason, under 25 words>`;
 }
 
 function estimateCostUsd(usage) {
+  const p = pricingFor(ASK_MODEL);
   const cached = usage.cacheReadTokens || 0;
   const cacheCreate = usage.cacheCreateTokens || 0;
   const inputNonCached = Math.max(0, (usage.inputTokens || 0) - cached - cacheCreate);
   return (
-    (inputNonCached / 1_000_000) * PRICING.input_per_mtok +
-    (cached / 1_000_000) * PRICING.cache_read_per_mtok +
-    (cacheCreate / 1_000_000) * PRICING.cache_create_per_mtok +
-    ((usage.outputTokens || 0) / 1_000_000) * PRICING.output_per_mtok
+    (inputNonCached / 1_000_000) * p.input +
+    (cached / 1_000_000) * p.cache_read +
+    (cacheCreate / 1_000_000) * p.cache_create +
+    ((usage.outputTokens || 0) / 1_000_000) * p.output
   );
 }
 

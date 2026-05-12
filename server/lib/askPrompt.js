@@ -56,7 +56,10 @@ ${JSON.stringify(context, null, 2)}`;
   ];
 }
 
-export const ASK_MODEL = 'claude-sonnet-4-6';
+// Haiku 4.5 passed the ship gate at 100% with TTFT p95 ~1.3s, total p95 ~3.8s,
+// avg cost $0.0038/turn — Sonnet 4.6 also passes quality (~98%) but TTFT p95
+// runs ~5s which is too slow for a chatbot UX. Override via env var if needed.
+export const ASK_MODEL = process.env.ASK_MODEL || 'claude-haiku-4-5';
 export const ASK_MAX_TOKENS = 1500;
 export const ASK_HISTORY_VISIBLE = 50;
 export const ASK_HISTORY_TO_MODEL = 10;
