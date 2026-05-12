@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { supabase } from '../lib/supabase.js';
 import { applyLogEvent } from '../lib/gamification.js';
+import { parseTransactionText } from '../lib/parser.js';
 
 const router = Router();
 
@@ -21,6 +22,10 @@ const updateSchema = z.object({
   type: z.enum(['income', 'expense']).optional(),
   description: z.string().trim().max(200).optional().nullable(),
   date: isoDate.optional(),
+});
+
+const parseSchema = z.object({
+  text: z.string().trim().min(1).max(500),
 });
 
 function todayISO() {
@@ -99,6 +104,46 @@ router.post('/', async (req, res, next) => {
     console.log('[tx:create]', { userId: req.user.id, txId: tx.id });
 
     res.status(201).json({ transaction: tx, delta });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// Natural-language parse → returns a draft for QuickAdd to pre-fill. Never writes.
+router.post('/parse', async (req, res, next) => {
+  try {
+    const parsed = parseSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ error: 'Invalid input', details: parsed.error.flatten() });
+    }
+
+    const [{ data: cats, error: catErr }, { data: stats, error: statsErr }] = await Promise.all([
+      supabase
+        .from('categories')
+        .select('id, name, type')
+        .eq('user_id', req.user.id),
+      supabase
+        .from('user_stats')
+        .select('currency')
+        .eq('user_id', req.user.id)
+        .maybeSingle(),
+    ]);
+    if (catErr) throw catErr;
+    if (statsErr) throw statsErr;
+
+    const result = await parseTransactionText({
+      text: parsed.data.text,
+      categories: cats || [],
+      currency: stats?.currency || 'GBP',
+      today: todayISO(),
+    });
+
+    if (!result.ok) {
+      const status = result.reason === 'unavailable' ? 503 : 422;
+      return res.status(status).json({ error: 'parse_failed', reason: result.reason });
+    }
+
+    res.json({ parsed: result.data });
   } catch (err) {
     next(err);
   }
