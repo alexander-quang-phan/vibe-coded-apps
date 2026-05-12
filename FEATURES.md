@@ -105,12 +105,12 @@
 
 ### Ask Trim (the marquee differentiator)
 
-- **What it is:** `/ask` — a chat tab where the user types a question about their own finances and Trim answers in plain language, grounded in their actual data.
+- **What it is:** a floating chatbot — Sparkles FAB pinned bottom-left on every authenticated page (mirrors the QuickAdd FAB on the right). Click to expand a glassmorphic chat panel anchored over the same corner; click X or press Escape to close. The widget (`client/src/components/AskChatbot.jsx`) is the only entry point — no `/ask` route. Mounted once at the `App` shell so it survives navigation between pages.
 - **Voice:** the same FEATURES.md tone rules apply, with extra teeth — never shaming, never red, never tells the user they "can't afford" something. Frames trade-offs and lets the user decide.
 - **Capabilities:** **answer-only for v1.** The chat does not create budgets, log transactions, adjust goals, or take any action — even if asked. If the user wants to act, the assistant points them at the right Trim page.
 - **Context bundle:** assembled server-side by `server/lib/askContext.js` from the last 90 days of transactions, current budgets, savings goals + recent contributions, and `user_stats`. Pure function; same shape feeds prod and the eval script.
 - **Streaming:** server returns SSE; client uses `fetch().body.getReader()` and dispatches `user_message` / `delta` / `done` / `error` events. Token-by-token updates show in a glassmorphic chat bubble while the response arrives.
-- **History:** every turn persists to `ask_messages`. `GET /api/ask/history` returns the latest 50 oldest-first for scrollback. "Clear" wipes the user's history via `DELETE /api/ask/history`.
+- **History:** every turn persists to `ask_messages`. `GET /api/ask/history` (lazy-loaded on first open of the chatbot, not on every page mount) returns the latest 50 oldest-first for scrollback. "Clear" wipes the user's history via `DELETE /api/ask/history`.
 - **Empty state:** four suggested prompts ("How much did I spend on food last month?" etc.) the user can tap to seed the conversation.
 - **Safety:** the system prompt explicitly forbids revealing itself, sending data anywhere, and switching personas. Adversarial prompts ("ignore previous instructions", role-play overrides) are handled by the prompt, not by a separate filter layer.
 - **Prompt cache:** the static rules block is marked `cache_control: ephemeral`. Within the 5-minute cache window, follow-up turns pay roughly 10% of input cost on the rules block — material when users ask 3–4 questions in a row.

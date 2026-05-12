@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { Link, NavLink, Outlet, useNavigate } from 'react-router-dom';
 import { LogOut, Moon, Sun, Scissors } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { AskChatbot } from '@/components/AskChatbot';
 import { useAuth } from '@/hooks/useAuth';
 import { cn } from '@/lib/utils';
 
@@ -12,7 +13,6 @@ const links = [
   { to: '/savings', label: 'Savings' },
   { to: '/subscriptions', label: 'Subscriptions' },
   { to: '/analytics', label: 'Analytics' },
-  { to: '/ask', label: 'Ask Trim' },
   { to: '/settings', label: 'Settings' },
 ];
 
@@ -146,6 +146,8 @@ export default function App() {
       <main className="container px-4 py-6 sm:py-8">
         <Outlet />
       </main>
+
+      <AskChatbot />
     </div>
   );
 }

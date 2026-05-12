@@ -20,7 +20,7 @@
 │   │   ├── hooks/           # useAuth, useApi
 │   │   ├── lib/             # api.js, format.js, confetti.js, utils.js, supabase client
 │   │   ├── pages/           # Dashboard, Transactions, Budgets, Analytics, SavingsGoals, Subscriptions, Settings, Login, Signup
-│   │   ├── App.jsx          # Auth-aware shell + nav + theme toggle
+│   │   ├── App.jsx          # Auth-aware shell + nav + theme toggle + Ask Trim chatbot
 │   │   └── main.jsx         # QueryClient + AuthProvider + Router
 │   ├── index.html           # Sets `class="dark"` and reads localStorage 'trim-theme'
 │   ├── tailwind.config.js   # HSL CSS variable token mapping
