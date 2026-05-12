@@ -258,30 +258,41 @@ export function AskChatbot() {
 
   return (
     <>
-      {/* Floating action button — opens the panel. */}
-      <button
-        type="button"
-        onClick={() => setIsOpen((o) => !o)}
-        aria-label={isOpen ? 'Close Ask Trim' : 'Open Ask Trim'}
-        aria-expanded={isOpen}
-        className={cn(
-          'fixed bottom-6 left-4 z-40 safe-bottom sm:bottom-8 sm:left-8',
-          'group relative flex h-14 w-14 items-center justify-center rounded-full sm:h-16 sm:w-16',
-          'bg-gradient-to-br from-primary to-emerald-700 text-primary-foreground',
-          'shadow-xl shadow-primary/40 ring-1 ring-white/15 transition-all',
-          'hover:scale-[1.06] hover:shadow-2xl hover:shadow-primary/50 active:scale-95',
-          'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background',
-        )}
-      >
-        {isOpen ? (
-          <X className="h-6 w-6 transition-transform" strokeWidth={2.6} />
-        ) : (
-          <Sparkles
-            className="h-6 w-6 transition-transform group-hover:rotate-12"
-            strokeWidth={2.4}
+      {/* Floating action button — mirrors the QuickAdd "+" on the right. */}
+      <div className="fixed bottom-6 left-4 z-40 safe-bottom sm:bottom-8 sm:left-8">
+        {/* Pulsing ring beneath the button — same affordance as the QuickAdd FAB. Hidden while open so the X reads as the focus. */}
+        {!isOpen ? (
+          <span
+            aria-hidden
+            className="absolute inset-0 rounded-full bg-primary/40 animate-ring-pulse"
           />
-        )}
-      </button>
+        ) : null}
+        <button
+          type="button"
+          onClick={() => setIsOpen((o) => !o)}
+          aria-label={isOpen ? 'Close Ask Trim' : 'Open Ask Trim'}
+          aria-expanded={isOpen}
+          className={cn(
+            'group relative flex h-14 w-14 items-center justify-center rounded-full sm:h-16 sm:w-16',
+            'bg-gradient-to-br from-primary to-emerald-700 text-primary-foreground',
+            'shadow-xl shadow-primary/40 ring-1 ring-white/15 transition-all',
+            'hover:scale-[1.06] hover:shadow-2xl hover:shadow-primary/50 active:scale-95',
+            'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background',
+          )}
+        >
+          {isOpen ? (
+            <X
+              className="h-7 w-7 transition-transform duration-300 group-hover:rotate-90"
+              strokeWidth={2.6}
+            />
+          ) : (
+            <Sparkles
+              className="h-7 w-7 transition-transform duration-300 group-hover:rotate-12"
+              strokeWidth={2.4}
+            />
+          )}
+        </button>
+      </div>
 
       {/* Chat panel — slides up from the bottom-left. */}
       <div
