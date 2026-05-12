@@ -14,6 +14,7 @@ import goalsRouter from './routes/goals.js';
 import winsRouter from './routes/wins.js';
 import subscriptionsRouter from './routes/subscriptions.js';
 import projectionsRouter from './routes/projections.js';
+import askRouter from './routes/ask.js';
 
 const CLIENT_URL = process.env.CLIENT_URL;
 if (!CLIENT_URL) {
@@ -70,6 +71,18 @@ export const authLimiter = rateLimit({
   message: { error: 'Too many auth attempts, please try again later.' },
 });
 
+// Tight limiter for /api/ask — every chat turn costs real money (Claude
+// Sonnet + up to 1500 output tokens). Keyed off the authenticated user id
+// when available so multiple users behind one NAT don't squeeze each other.
+const askLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  limit: 20,
+  keyGenerator: (req) => req.user?.id || req.ip,
+  standardHeaders: 'draft-7',
+  legacyHeaders: false,
+  message: { error: "You've been chatting a lot — try again in a bit." },
+});
+
 app.get('/api/health', (_req, res) => {
   res.json({ status: 'ok', uptime: process.uptime() });
 });
@@ -85,6 +98,7 @@ app.use('/api/goals', requireAuth, goalsRouter);
 app.use('/api/wins', requireAuth, winsRouter);
 app.use('/api/subscriptions', requireAuth, subscriptionsRouter);
 app.use('/api/projections', requireAuth, projectionsRouter);
+app.use('/api/ask', requireAuth, askLimiter, askRouter);
 
 app.use((req, res) => {
   res.status(404).json({ error: 'Not found' });

@@ -12,6 +12,7 @@ const links = [
   { to: '/savings', label: 'Savings' },
   { to: '/subscriptions', label: 'Subscriptions' },
   { to: '/analytics', label: 'Analytics' },
+  { to: '/ask', label: 'Ask Trim' },
   { to: '/settings', label: 'Settings' },
 ];
 

@@ -13,6 +13,7 @@ Single-tenant-per-user SaaS. Every row in every table is owned by exactly one `u
 | `SUPABASE_SERVICE_ROLE_KEY` | **Server only** (`server/.env`) | Bypasses RLS. Used for every data query from Express. |
 | `SUPABASE_URL` | **Server only** (`server/.env`) | Used as the JWKS fetch origin for verifying user tokens. |
 | `SUPABASE_JWT_SECRET` | Unused today (kept for rollback) | Only needed if the project is flipped back to legacy HS256 signing. |
+| `ANTHROPIC_API_KEY` | **Server only** (`server/.env`) | Powers `POST /api/transactions/parse` (natural-language QuickAdd) and `POST /api/ask` (Ask Trim chat). Never exposed to the browser — the client posts plain text and receives either a sanitised draft (parse) or a streamed answer (ask). |
 | `VITE_SUPABASE_ANON_KEY` | Browser (`client/.env`) | Public. Used **only** by the Supabase Auth SDK (signup / login / refresh). |
 | `VITE_SUPABASE_URL` | Browser (`client/.env`) | Public. Auth SDK target. |
 
@@ -53,6 +54,7 @@ No route is exposed without `requireAuth` except `/api/health`.
 
 - Global: 100 req / 15 min (`globalLimiter`), mounted before any route.
 - Auth-sensitive routes (when we add our own `/api/auth/*` wrappers): 10 / 15 min (`authLimiter`, exported).
+- `/api/ask`: 20 / hour (`askLimiter`), keyed off `req.user.id`. Every chat turn invokes Claude Sonnet 4.6 with up to 1500 output tokens — the dedicated limit caps both runaway-client and cost-based-DoS scenarios. Mounted *after* `requireAuth` so the per-user key resolves.
 - `standardHeaders: 'draft-7'`, `legacyHeaders: false`, friendly JSON `message`.
 - **`app.set('trust proxy', 1)`** is required on Railway, otherwise `express-rate-limit` keys off the proxy IP.
 

@@ -49,10 +49,12 @@
 - Shields stat card (desktop only).
 - Level card with XP progress bar and title ladder.
 - Month-end projection card (above CategoryDonut) — linear extrapolation of current-month spend, delta vs. summed monthly budgets, one-line pace label vs. last month. Cold-start guard until day 3 with ≥1 transaction. Hidden in simple_mode (Task 6.5 owns its own equivalent).
-- Category donut chart (expense breakdown) + budget alerts list (categories ≥75% used).
-- Recent 5 transactions.
+- "Can I afford this?" check (under the hero) — compact amount input + horizontal expense-category chip row, debounced 300ms. Calls `POST /api/affordability` and renders three remaining/impact lines plus a friendly verdict ("Comfortably yes" / "Tight but yes" / "Would push you over"). Goal-impact line uses the soonest-target_date open goal; line is omitted when there are no open goals or no recent contributions. Hidden in simple_mode.
+- Category donut chart (expense breakdown) + budget alerts list (categories ≥75% used). Hidden in simple_mode (replaced by the SimpleMonthCard).
+- Recent 5 transactions, with inline delete on hover (full edit/delete log lives on /transactions).
 - Wins feed card (scrollable, latest 10) — derived from `GET /api/wins`. Surfaces under-budget weeks, streak milestones, banked shields, and savings contributions with before/after %. Playful empty state.
 - Quick-Add FAB bottom-right (safe-area-bottom).
+- **Simple-mode Dashboard** (when `user_stats.simple_mode = true`): the donut + budget alerts pair and the MonthProjection card are replaced by a single SimpleMonthCard — one big "£X left this month" headline plus a gradient progress bar against `user_stats.monthly_limit`. If the limit hasn't been set yet, the same slot renders an inline "Set your monthly limit" form rather than bouncing the user to Settings.
 
 ### Quick-Add flow (critical)
 
@@ -61,6 +63,8 @@
 - Category chip grid — **tapping a chip auto-submits**. No separate submit button for the golden path.
 - Hidden "Add a note or change the date" toggle for the rare case.
 - On success: invalidate `['dashboard', 'transactions', 'me']`, trigger appropriate confetti, show toast.
+- **"Type it instead" path (Task 6.6):** a sparkle-chip toggle at the top of the dialog swaps the structured form for a single freeform textarea ("e.g. spent 12 quid on tacos last night"). Submitting calls `POST /api/transactions/parse`, which returns a draft. The dialog snaps back to the structured form with amount/type/description/date pre-filled and the suggested category chip ringed in emerald — the user still taps a chip to log. Parse never auto-saves. Failure / low confidence / API unavailable falls back to a friendly amber prompt ("couldn't quite read that — mind trying again?") with a "Use chips" escape hatch.
+- **Simple-mode variant:** when `user_stats.simple_mode = true`, the Income/Expense segments, chip grid, and advanced toggle all hide; the dialog collapses to amount + a single "Log" button. The transaction is filed against the seeded "Other" expense category. This is the deliberate 2-tap exception to the otherwise-3-tap rule (FEATURES.md → philosophy → simple mode).
 
 ### Transactions
 
@@ -94,16 +98,30 @@
 - Auto-detected list of recurring expenses, no manual marking required. Detection rule: ≥3 same-merchant charges at ~30-day or ~365-day intervals (±5d) with amounts within 10%.
 - Each row shows monthly cost, annualised cost, last charged, next expected, and total paid lifetime.
 - "Mark cancelled" toggle moves the row to a Cancelled section and surfaces the saved annual amount; toggling back to Active restores it. Decisions persist in `subscription_overrides` so a new month of detection doesn't overwrite them.
+- Inferred (synthetic-key) rows get an extra "Not a subscription" link that flips status to `dismissed` — separate from cancelled, no celebratory toast, excluded from the saved-money totals. Dismissed rows live in their own quiet section, restorable.
 - Dashboard mini-card above CategoryDonut nudges the user to audit ("You have N subscriptions, £X/month — audit them?"). Hidden when there are 0 active subs.
 - Empty state on the page itself when no subs are detected — friendly placeholder, never hides the nav link.
 - **Known limitation (Task 6.2.1):** today's detector groups by transaction description text, so quick-logged transactions (no description, the 3-tap default) are invisible to it. Task 6.2.1 closes the gap with a `(category, amount-cluster, cadence)` fallback and inline naming on the audit page.
 
+### Ask Trim (the marquee differentiator)
+
+- **What it is:** `/ask` — a chat tab where the user types a question about their own finances and Trim answers in plain language, grounded in their actual data.
+- **Voice:** the same FEATURES.md tone rules apply, with extra teeth — never shaming, never red, never tells the user they "can't afford" something. Frames trade-offs and lets the user decide.
+- **Capabilities:** **answer-only for v1.** The chat does not create budgets, log transactions, adjust goals, or take any action — even if asked. If the user wants to act, the assistant points them at the right Trim page.
+- **Context bundle:** assembled server-side by `server/lib/askContext.js` from the last 90 days of transactions, current budgets, savings goals + recent contributions, and `user_stats`. Pure function; same shape feeds prod and the eval script.
+- **Streaming:** server returns SSE; client uses `fetch().body.getReader()` and dispatches `user_message` / `delta` / `done` / `error` events. Token-by-token updates show in a glassmorphic chat bubble while the response arrives.
+- **History:** every turn persists to `ask_messages`. `GET /api/ask/history` returns the latest 50 oldest-first for scrollback. "Clear" wipes the user's history via `DELETE /api/ask/history`.
+- **Empty state:** four suggested prompts ("How much did I spend on food last month?" etc.) the user can tap to seed the conversation.
+- **Safety:** the system prompt explicitly forbids revealing itself, sending data anywhere, and switching personas. Adversarial prompts ("ignore previous instructions", role-play overrides) are handled by the prompt, not by a separate filter layer.
+- **Prompt cache:** the static rules block is marked `cache_control: ephemeral`. Within the 5-minute cache window, follow-up turns pay roughly 10% of input cost on the rules block — material when users ask 3–4 questions in a row.
+- **Ship gate (`server/scripts/askEval.js`):** 20-question eval over five personas (standard, newbie, empty, goals-complete, heavy-spender) covering factual recall, forward-looking, edge cases, tone enforcement, and adversarial. Hybrid grading — substring checks for factual, Haiku-as-judge for everything else. Runs 3× to check variance. Reports latency p50/p95, average $-cost. Required to pass ≥85% AND meet latency/cost ceilings before shipping. Tone-variant comparison via `ASK_PROMPT_VARIANT=cold-open` env (default is `one-shot` with an example exchange anchored in the system prompt).
+
 ### Settings
 
 - Currency picker (GBP / USD / AUD / VND) — display only, no FX conversion.
-- Simple mode toggle.
+- Simple mode toggle. Flipping it on without a `monthly_limit` set hands the user off to the SimpleMonthCard's inline limit form on the Dashboard rather than bouncing them around.
 - Display name.
-- Manage custom categories (future nice-to-have).
+- Manage categories (Task 6.11): rename, recolour, change icon, add new, delete with reassign-to-Other recovery flow. Default categories are personalisable but the seeded "Other" / "Other Income" are protected from deletion (they're the reassign safety net).
 
 ### Login / Signup
 
