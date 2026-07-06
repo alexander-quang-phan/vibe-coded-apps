@@ -20,7 +20,10 @@ server/.env
 .vscode/
 .idea/
 *.swp
-.claude/
+# Claude Code: track shared config (settings.json, skills/, hooks/) so
+# worktrees inherit it; keep local-only and generated stuff ignored.
+.claude/worktrees/
+.claude/settings.local.json
 
 # Logs
 logs/

@@ -1,0 +1,16 @@
+{
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR/.claude/hooks/build-plan-check.sh\"",
+            "timeout": 15,
+            "statusMessage": "Checking BUILD_PLAN.md/FEATURES.md are current"
+          }
+        ]
+      }
+    ]
+  }
+}
