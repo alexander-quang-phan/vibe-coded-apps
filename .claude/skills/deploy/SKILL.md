@@ -7,6 +7,9 @@ description: Ship Trim to production (Railway) safely — merge, build-check, pu
 
 Hosting: Railway, two services built from this GitHub repo (`client/` static site, `server/` Express). Deploys happen from `main` — see TRIM.md "Deployment (Railway)" for service config and env vars.
 
+## Step 0 — confirm the target
+Alex has previously said "deploy" when he meant "run it locally so I can look at it" (May 2026 sessions). If there's any chance that's the case — early-stage feature, no explicit mention of "live"/"production"/"push" — ask one question first: **"Live site on Railway, or just running locally?"** A wrong local run costs a minute; a wrong production push is public.
+
 ## Steps
 
 1. **Get the work onto main.**
