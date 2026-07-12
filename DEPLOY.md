@@ -1,13 +1,43 @@
 # Deploying Trim
 
-Two services on Railway (API + static client) talking to your existing Supabase
-project. Follow top to bottom; every step is copy-paste-able. Nothing here
-requires touching code.
+## ✅ It's live (Vercel free tier, deployed 2026-07-13)
+
+| What | URL |
+|---|---|
+| **The app** (share this) | https://trim-budget.vercel.app |
+| API | https://trim-api-jade.vercel.app (`/api/health` to check) |
+| Vercel projects | `trim-budget` (client) + `trim-api` (server), account `alexander-quang-phan` |
+
+Both run on Vercel's free Hobby plan — $0/mo. The server runs as a serverless
+function (`server/api/index.js` wraps the same Express app; `vercel.json`
+routes everything to it). Two free-tier caveats:
+
+- **Rate limiting is per-function-instance** on serverless, so the
+  20-asks/hour cap is approximate rather than exact. Fine at friends-and-family
+  scale.
+- **Supabase free tier still pauses after ~1 week idle** (see §1). Daily use
+  keeps it awake.
+
+**To redeploy after code changes:** `cd server && vercel deploy --prod` and/or
+`cd client && vercel deploy --prod`. Env vars live in the Vercel dashboard →
+project → Settings → Environment Variables.
+
+**Remaining manual steps (2 min, Supabase dashboard):**
+1. Authentication → URL Configuration → Site URL → `https://trim-budget.vercel.app`.
+2. Authentication → Passwords → enable leaked password protection.
+3. Before sharing widely: Authentication → Sign In / Providers → Email → turn on
+   "Confirm email".
+
+---
+
+The rest of this guide is the original **Railway** path — a paid (~$5/mo)
+alternative with a long-running server (exact rate limits, no serverless
+caveats). Use it if you outgrow the free tier.
 
 ```
-Browser --> client (Railway static)         Supabase (Auth + Postgres)
+Browser --> client (static host)            Supabase (Auth + Postgres)
    |           |                                   ^
-   +-- auth ---+---- JWT --> server (Railway) -----+
+   +-- auth ---+---- JWT --> server (API) ---------+
                +------------ /api/* ^
 ```
 
