@@ -1,9 +1,10 @@
 import { useEffect, useState } from 'react';
+import { Pencil } from 'lucide-react';
 import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { formatMoney, formatDate } from '@/lib/format';
-import { subscriptionLabel, shouldShowRename } from '@/lib/subscriptions';
+import { subscriptionLabel } from '@/lib/subscriptions';
 import { cn } from '@/lib/utils';
 
 export function SubscriptionRow({ subscription, currency, onToggle, onRename, pending }) {
@@ -14,7 +15,12 @@ export function SubscriptionRow({ subscription, currency, onToggle, onRename, pe
   const cat = sub.category;
   const cadenceLabel = sub.cadence === 'annual' ? 'Annual' : 'Monthly';
   const label = subscriptionLabel(sub, currency);
-  const showRename = shouldShowRename(sub) && !dismissed;
+
+  // Unnamed inferred rows open the rename form by default — naming them is
+  // the whole point (Task 6.2.1). Everything else gets a quiet Rename button.
+  const needsName = sub.inferred && !sub.displayName;
+  const [renaming, setRenaming] = useState(false);
+  const showRenameForm = !dismissed && (needsName || renaming);
 
   let primaryAction;
   if (cancelled) {
@@ -26,7 +32,7 @@ export function SubscriptionRow({ subscription, currency, onToggle, onRename, pe
   }
 
   return (
-    <Card className={cn(inactive && 'opacity-70')}>
+    <Card className={cn('border-border/60 bg-card/70 backdrop-blur', inactive && 'opacity-70')}>
       <CardContent className="flex flex-col gap-4 p-5">
         <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
           <div className="flex min-w-0 items-center gap-3">
@@ -43,10 +49,21 @@ export function SubscriptionRow({ subscription, currency, onToggle, onRename, pe
                 <span className="rounded-full border border-border/60 bg-secondary/40 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
                   {cadenceLabel}
                 </span>
-                {sub.inferred && !sub.displayName ? (
+                {needsName ? (
                   <span className="rounded-full border border-primary/30 bg-primary/10 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-primary">
                     Inferred
                   </span>
+                ) : null}
+                {!showRenameForm && !dismissed ? (
+                  <button
+                    type="button"
+                    onClick={() => setRenaming(true)}
+                    className="inline-flex items-center gap-1 text-[11px] text-muted-foreground transition-colors hover:text-foreground"
+                    aria-label={`Rename ${label}`}
+                  >
+                    <Pencil className="h-3 w-3" aria-hidden />
+                    Rename
+                  </button>
                 ) : null}
               </div>
               <p className="truncate text-xs text-muted-foreground">
@@ -81,7 +98,7 @@ export function SubscriptionRow({ subscription, currency, onToggle, onRename, pe
               >
                 {pending ? 'Saving…' : primaryAction.label}
               </Button>
-              {sub.inferred && !inactive ? (
+              {!inactive ? (
                 <button
                   type="button"
                   disabled={pending}
@@ -95,15 +112,20 @@ export function SubscriptionRow({ subscription, currency, onToggle, onRename, pe
           </div>
         </div>
 
-        {showRename ? (
-          <RenameForm sub={sub} onRename={onRename} pending={pending} />
+        {showRenameForm ? (
+          <RenameForm
+            sub={sub}
+            onRename={onRename}
+            pending={pending}
+            onDone={() => setRenaming(false)}
+          />
         ) : null}
       </CardContent>
     </Card>
   );
 }
 
-function RenameForm({ sub, onRename, pending }) {
+function RenameForm({ sub, onRename, pending, onDone }) {
   const [value, setValue] = useState(sub.displayName ?? '');
 
   useEffect(() => {
@@ -121,6 +143,7 @@ function RenameForm({ sub, onRename, pending }) {
     e.preventDefault();
     if (!dirty || pending) return;
     onRename(sub, trimmed.length === 0 ? null : trimmed);
+    onDone();
   }
 
   return (
@@ -136,15 +159,16 @@ function RenameForm({ sub, onRename, pending }) {
         className="h-9 text-sm"
         disabled={pending}
         aria-label={`Name for ${sub.merchantKey}`}
+        autoFocus={!sub.inferred}
       />
-      <Button
-        type="submit"
-        size="sm"
-        variant="secondary"
-        disabled={pending || !dirty}
-      >
+      <Button type="submit" size="sm" variant="secondary" disabled={pending || !dirty}>
         {pending ? 'Saving…' : sub.displayName ? 'Update' : 'Save name'}
       </Button>
+      {!sub.inferred || sub.displayName ? (
+        <Button type="button" size="sm" variant="ghost" onClick={onDone} disabled={pending}>
+          Cancel
+        </Button>
+      ) : null}
     </form>
   );
 }

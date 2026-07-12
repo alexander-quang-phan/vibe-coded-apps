@@ -23,12 +23,25 @@ function bounds(d = new Date()) {
   };
 }
 
-function paceLabelFor(currentDailyPace, lastMonthDailyPace) {
-  if (!lastMonthDailyPace) return 'tracking calmly';
-  const ratio = currentDailyPace / lastMonthDailyPace;
+function paceLabelFor(projectedSpend, lastMonthSpend) {
+  if (!lastMonthSpend) return 'tracking calmly';
+  const ratio = projectedSpend / lastMonthSpend;
   if (ratio > 1.1) return 'spending faster than last month';
   if (ratio < 0.9) return 'ahead of pace';
   return 'tracking calmly';
+}
+
+// One dominant charge early in the month (rent on the 1st) used to explode the
+// linear projection ("on pace to overshoot by £5,600"). When a single
+// transaction is >40% of the month's spend so far, treat it as a one-off:
+// count it once, and project the run-rate from everything else.
+function projectSpend({ amounts, spendSoFar, daysElapsed, daysInMonth }) {
+  const largest = amounts.length > 0 ? Math.max(...amounts) : 0;
+  if (spendSoFar > 0 && largest / spendSoFar > 0.4) {
+    const rest = spendSoFar - largest;
+    return spendSoFar + (rest / daysElapsed) * (daysInMonth - daysElapsed);
+  }
+  return (spendSoFar / daysElapsed) * daysInMonth;
 }
 
 router.get('/month', async (req, res, next) => {
@@ -38,7 +51,6 @@ router.get('/month', async (req, res, next) => {
       nextFirstISO,
       lastMonthFirstISO,
       daysInMonth,
-      daysInLastMonth,
       daysElapsed,
     } = bounds();
 
@@ -85,10 +97,13 @@ router.get('/month', async (req, res, next) => {
       });
     }
 
-    const projectedSpend = (spendSoFar / daysElapsed) * daysInMonth;
+    const projectedSpend = projectSpend({
+      amounts: thisMonthRes.data.map((t) => Number(t.amount)),
+      spendSoFar,
+      daysElapsed,
+      daysInMonth,
+    });
     const delta = monthlyBudget !== null ? monthlyBudget - projectedSpend : null;
-    const currentDailyPace = spendSoFar / daysElapsed;
-    const lastMonthDailyPace = daysInLastMonth > 0 ? lastMonthSpend / daysInLastMonth : 0;
 
     res.json({
       ready: true,
@@ -98,7 +113,7 @@ router.get('/month', async (req, res, next) => {
       spendSoFar: Number(spendSoFar.toFixed(2)),
       daysElapsed,
       daysInMonth,
-      paceLabel: paceLabelFor(currentDailyPace, lastMonthDailyPace),
+      paceLabel: paceLabelFor(projectedSpend, lastMonthSpend),
     });
   } catch (err) {
     next(err);

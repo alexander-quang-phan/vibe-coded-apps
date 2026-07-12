@@ -113,8 +113,13 @@ router.post('/', async (req, res, next) => {
     sseWrite(res, { type: 'user_message', message: userRow });
 
     const controller = new AbortController();
-    const onClose = () => controller.abort();
-    req.on('close', onClose);
+    // Abort the Anthropic stream only when the client actually goes away.
+    // (`req` fires 'close' as soon as the request body is consumed on Node 16+,
+    // which would kill the stream instantly — it must be `res`.)
+    const onClose = () => {
+      if (!res.writableEnded) controller.abort();
+    };
+    res.on('close', onClose);
 
     const client = new Anthropic({ apiKey });
     let assistantText = '';
@@ -153,17 +158,17 @@ router.post('/', async (req, res, next) => {
     } catch (streamErr) {
       // Client aborted (page navigated away, tab closed) — quietly stop.
       if (controller.signal.aborted) {
-        req.off('close', onClose);
+        res.off('close', onClose);
         return;
       }
       console.error('[ask] stream error', streamErr.message);
       sseWrite(res, { type: 'error', message: 'stream_failed' });
       res.end();
-      req.off('close', onClose);
+      res.off('close', onClose);
       return;
     }
 
-    req.off('close', onClose);
+    res.off('close', onClose);
 
     // Persist the assistant message if we got anything back.
     let assistantRow = null;

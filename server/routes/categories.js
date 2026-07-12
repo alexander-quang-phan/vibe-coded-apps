@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import { supabase } from '../lib/supabase.js';
+import { suggestCategoryName } from '../lib/categoryKeywords.js';
 
 const router = Router();
 
@@ -39,6 +40,73 @@ router.get('/', async (req, res, next) => {
 
     if (error) throw error;
     res.json({ categories: data });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// GET /api/categories/suggest?desc=… (Task 6.9)
+// History first (what did the user file this merchant under before?), then
+// the keyword map for first-time merchants. Highlight-only on the client —
+// never auto-selects.
+router.get('/suggest', async (req, res, next) => {
+  try {
+    const desc = String(req.query.desc ?? '').trim();
+    if (desc.length < 2) {
+      return res.json({ categoryId: null, confidence: 'none', source: 'none' });
+    }
+
+    // Match on the first two words, mirroring the subscription detector's
+    // merchant normalisation.
+    const term = desc
+      .toLowerCase()
+      .replace(/[^a-z0-9 ]+/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .split(' ')
+      .slice(0, 2)
+      .join(' ');
+    if (!term) {
+      return res.json({ categoryId: null, confidence: 'none', source: 'none' });
+    }
+
+    const { data: matches, error } = await supabase
+      .from('transactions')
+      .select('category_id')
+      .eq('user_id', req.user.id)
+      .ilike('description', `%${term}%`)
+      .limit(200);
+    if (error) throw error;
+
+    if (matches && matches.length > 0) {
+      const counts = new Map();
+      for (const m of matches) {
+        counts.set(m.category_id, (counts.get(m.category_id) ?? 0) + 1);
+      }
+      const [categoryId, count] = [...counts.entries()].sort((a, b) => b[1] - a[1])[0];
+      return res.json({
+        categoryId,
+        confidence: count >= 3 ? 'high' : 'medium',
+        source: 'history',
+      });
+    }
+
+    const keywordName = suggestCategoryName(desc);
+    if (keywordName) {
+      const { data: cat, error: catErr } = await supabase
+        .from('categories')
+        .select('id')
+        .eq('user_id', req.user.id)
+        .eq('name', keywordName)
+        .eq('type', 'expense')
+        .maybeSingle();
+      if (catErr) throw catErr;
+      if (cat) {
+        return res.json({ categoryId: cat.id, confidence: 'medium', source: 'keyword' });
+      }
+    }
+
+    res.json({ categoryId: null, confidence: 'none', source: 'none' });
   } catch (err) {
     next(err);
   }

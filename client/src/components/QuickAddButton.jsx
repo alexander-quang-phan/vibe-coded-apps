@@ -3,7 +3,7 @@ import { Plus } from 'lucide-react';
 import { QuickAddDialog } from '@/components/QuickAddDialog';
 import { cn } from '@/lib/utils';
 
-export function QuickAddButton({ currency, className }) {
+export function QuickAddButton({ currency, simpleMode = false, className }) {
   const [open, setOpen] = useState(false);
   return (
     <>
@@ -36,7 +36,7 @@ export function QuickAddButton({ currency, className }) {
           />
         </button>
       </div>
-      <QuickAddDialog open={open} onOpenChange={setOpen} currency={currency} />
+      <QuickAddDialog open={open} onOpenChange={setOpen} currency={currency} simpleMode={simpleMode} />
     </>
   );
 }

@@ -299,6 +299,10 @@ export function AskChatbot() {
         role="dialog"
         aria-label="Ask Trim chat"
         aria-hidden={!isOpen}
+        // `inert` keeps the closed panel out of tab order and screen readers
+        // while staying mounted for the slide animation. (Empty string form
+        // for React 18 attribute passthrough.)
+        inert={isOpen ? undefined : ''}
         className={cn(
           'fixed z-40 flex flex-col rounded-2xl border border-border/60 bg-card/95 shadow-2xl shadow-primary/10 backdrop-blur-xl',
           'transition-all duration-200 ease-out',

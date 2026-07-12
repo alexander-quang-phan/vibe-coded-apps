@@ -48,11 +48,10 @@
 - Streak stat card with flame icon; sub shows shields banked or longest streak.
 - Shields stat card (desktop only).
 - Level card with XP progress bar and title ladder.
-- Month-end projection card (above CategoryDonut) — linear extrapolation of current-month spend, delta vs. summed monthly budgets, one-line pace label vs. last month. Cold-start guard until day 3 with ≥1 transaction. Hidden in simple_mode (Task 6.5 owns its own equivalent).
+- Month-end projection card (above the category card) — linear extrapolation of current-month spend, delta vs. summed monthly budgets, one-line pace label vs. last month's total. Cold-start guard until day 3 with ≥1 transaction; outlier guard counts a single dominant charge (>40% of spend-so-far, i.e. rent) once instead of extrapolating it. Hidden in simple_mode (SimpleMonthCard owns that slot).
 - "Can I afford this?" check (under the hero) — compact amount input + horizontal expense-category chip row, debounced 300ms. Calls `POST /api/affordability` and renders three remaining/impact lines plus a friendly verdict ("Comfortably yes" / "Tight but yes" / "Would push you over"). Goal-impact line uses the soonest-target_date open goal; line is omitted when there are no open goals or no recent contributions. Hidden in simple_mode.
-- Category donut chart (expense breakdown) + budget alerts list (categories ≥75% used). Hidden in simple_mode (replaced by the SimpleMonthCard).
-- Recent 5 transactions, with inline delete on hover (full edit/delete log lives on /transactions).
-- Wins feed card (scrollable, latest 10) — derived from `GET /api/wins`. Surfaces under-budget weeks, streak milestones, banked shields, and savings contributions with before/after %. Playful empty state.
+- "This month by category" card (Task 6.A merged the old donut + budget-alerts pair): donut + top-5 list + a "Budgets to watch" column of categories ≥75% used, one card. Hidden in simple_mode (replaced by the SimpleMonthCard).
+- Recent 5 transactions + a 3-entry "Recent wins" peek side-by-side (lg). The peek links to /wins, which hosts the full feed (latest 10, playful empty state) — Task 6.A moved it off the Dashboard. No SubscriptionsCard on the Dashboard anymore; the audit nudge is the summary strip on /subscriptions itself.
 - Quick-Add FAB bottom-right (safe-area-bottom).
 - **Simple-mode Dashboard** (when `user_stats.simple_mode = true`): the donut + budget alerts pair and the MonthProjection card are replaced by a single SimpleMonthCard — one big "£X left this month" headline plus a gradient progress bar against `user_stats.monthly_limit`. If the limit hasn't been set yet, the same slot renders an inline "Set your monthly limit" form rather than bouncing the user to Settings.
 
@@ -62,6 +61,7 @@
 - Expense/Income segmented control.
 - Category chip grid — **tapping a chip auto-submits**. No separate submit button for the golden path.
 - Hidden "Add a note or change the date" toggle for the rare case.
+- **Merchant memory (Task 6.9):** typing in the note field (debounced 250ms) asks `GET /api/categories/suggest` and rings the suggested chip in emerald — history first, keyword map for first-time merchants. Highlight-only, never auto-selects; suggestion failures are silent.
 - On success: invalidate `['dashboard', 'transactions', 'me']`, trigger appropriate confetti, show toast.
 - **"Type it instead" path (Task 6.6):** a sparkle-chip toggle at the top of the dialog swaps the structured form for a single freeform textarea ("e.g. spent 12 quid on tacos last night"). Submitting calls `POST /api/transactions/parse`, which returns a draft. The dialog snaps back to the structured form with amount/type/description/date pre-filled and the suggested category chip ringed in emerald — the user still taps a chip to log. Parse never auto-saves. Failure / low confidence / API unavailable falls back to a friendly amber prompt ("couldn't quite read that — mind trying again?") with a "Use chips" escape hatch.
 - **Simple-mode variant:** when `user_stats.simple_mode = true`, the Income/Expense segments, chip grid, and advanced toggle all hide; the dialog collapses to amount + a single "Log" button. The transaction is filed against the seeded "Other" expense category. This is the deliberate 2-tap exception to the otherwise-3-tap rule (FEATURES.md → philosophy → simple mode).
@@ -98,8 +98,9 @@
 - Auto-detected list of recurring expenses, no manual marking required. Detection rule: ≥3 same-merchant charges at ~30-day or ~365-day intervals (±5d) with amounts within 10%.
 - Each row shows monthly cost, annualised cost, last charged, next expected, and total paid lifetime.
 - "Mark cancelled" toggle moves the row to a Cancelled section and surfaces the saved annual amount; toggling back to Active restores it. Decisions persist in `subscription_overrides` so a new month of detection doesn't overwrite them.
-- Inferred (synthetic-key) rows get an extra "Not a subscription" link that flips status to `dismissed` — separate from cancelled, no celebratory toast, excluded from the saved-money totals. Dismissed rows live in their own quiet section, restorable.
-- Dashboard mini-card above CategoryDonut nudges the user to audit ("You have N subscriptions, £X/month — audit them?"). Hidden when there are 0 active subs.
+- Every active row gets a "Not a subscription" link that flips status to `dismissed` — separate from cancelled, no celebratory toast, excluded from the saved-money totals. (Originally inferred-rows-only; dogfooding showed described rows false-positive too — rent is a recurring charge but not a subscription.) Dismissed rows live in their own quiet section, restorable.
+- Renaming is a compact affordance: unnamed inferred rows open the name form by default (naming them is the point); every other row gets a small "Rename" pencil button instead of a permanently-open input.
+- No Dashboard mini-card anymore (Task 6.A) — the audit nudge is the summary strip at the top of /subscriptions.
 - Empty state on the page itself when no subs are detected — friendly placeholder, never hides the nav link.
 - **Known limitation (Task 6.2.1):** today's detector groups by transaction description text, so quick-logged transactions (no description, the 3-tap default) are invisible to it. Task 6.2.1 closes the gap with a `(category, amount-cluster, cadence)` fallback and inline naming on the audit page.
 

@@ -12,9 +12,3 @@ export function subscriptionLabel(sub, currency) {
   const category = sub.category?.name ?? 'Subscription';
   return `${cadence} ${amount} ${category}`;
 }
-
-// Inferred subs always offer rename so the user can refine the label later;
-// description-derived subs only show the input until they've been named once.
-export function shouldShowRename(sub) {
-  return sub.inferred || !sub.displayName;
-}

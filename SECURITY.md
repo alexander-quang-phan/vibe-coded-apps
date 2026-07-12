@@ -120,6 +120,10 @@ helmet({
 - [ ] `001_init.sql` trigger `handle_new_user` is present (creates `user_stats` + 12 defaults on signup).
 - [ ] Email confirmation: set per team preference (dev: off; prod: on).
 - [ ] Service-role key rotated if it ever appeared in logs or commits.
+- [ ] Production `CLIENT_URL` (e.g. `https://trim-client-production.up.railway.app`) set on the API service — see DEPLOY.md.
+- [ ] `ANTHROPIC_API_KEY` present on the **server service only** — never in client env.
+- [ ] Supabase Auth "leaked password protection" toggled on (Authentication → Passwords).
+- [ ] `server/migrations/009_lock_down_definer_functions.sql` applied (revokes public EXECUTE on trigger functions — Supabase advisor 0028/0029).
 
 ## When in doubt
 
