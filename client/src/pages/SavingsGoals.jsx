@@ -47,12 +47,7 @@ function GoalCard({ goal, currency, onEdit, onDelete, onContribute }) {
               <h3 className="font-semibold leading-tight">{goal.name}</h3>
               {goal.targetDate ? (
                 <p className="text-xs text-muted-foreground">
-                  by{' '}
-                  {new Date(`${goal.targetDate}T00:00:00`).toLocaleDateString(undefined, {
-                    month: 'short',
-                    day: 'numeric',
-                    year: 'numeric',
-                  })}
+                  by {new Date(`${goal.targetDate}T00:00:00`).toLocaleDateString('en-GB')}
                 </p>
               ) : (
                 <p className="text-xs text-muted-foreground">No deadline</p>

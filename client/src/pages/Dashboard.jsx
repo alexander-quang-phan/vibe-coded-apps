@@ -1,11 +1,10 @@
 import { useEffect, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
-import { Flame, Wallet, Shield, ArrowDownLeft, ArrowUpRight, Sparkles } from 'lucide-react';
+import { ArrowDownLeft, ArrowUpRight, Sparkles } from 'lucide-react';
 import { useApi } from '@/hooks/useApi';
-import { StatCard } from '@/components/StatCard';
 import { AffordabilityCheck } from '@/components/AffordabilityCheck';
-import { LevelCard } from '@/components/LevelCard';
+import { PulseStrip } from '@/components/PulseStrip';
 import { CategoryDonut } from '@/components/CategoryDonut';
 import { SimpleMonthCard } from '@/components/SimpleMonthCard';
 import { RecentTransactions } from '@/components/RecentTransactions';
@@ -110,7 +109,7 @@ function HeroBalance({ income, expenses, balance, currency, displayName }) {
             <p className="text-sm text-muted-foreground">Net this month</p>
             <p
               className={
-                'nums text-5xl font-extrabold leading-none tracking-tight sm:text-6xl ' +
+                'nums text-5xl font-extrabold leading-none tracking-tight sm:text-7xl ' +
                 (positive ? 'text-gradient' : 'text-foreground')
               }
             >
@@ -206,45 +205,8 @@ export default function Dashboard() {
         </div>
       )}
 
-      <section
-        className="grid grid-cols-2 gap-3 animate-fade-up sm:grid-cols-3"
-        style={{ animationDelay: '60ms' }}
-      >
-        <StatCard
-          label="Streak"
-          value={`${stats.currentStreak} ${stats.currentStreak === 1 ? 'day' : 'days'}`}
-          sub={
-            stats.shields > 0
-              ? `${stats.shields} shield${stats.shields > 1 ? 's' : ''} banked`
-              : `Longest: ${stats.longestStreak}`
-          }
-          icon={<Flame className="h-5 w-5 animate-flame" />}
-          accent="streak"
-          className="col-span-2 sm:col-span-1"
-        />
-        <StatCard
-          label="Shields"
-          value={stats.shields}
-          sub="Earn 1 per 7 days"
-          icon={<Shield className="h-5 w-5" />}
-          accent="info"
-        />
-        <StatCard
-          label="Logged"
-          value={month.transactionCount}
-          sub={month.transactionCount === 1 ? 'transaction this month' : 'transactions this month'}
-          icon={<Wallet className="h-5 w-5" />}
-          accent="muted"
-        />
-      </section>
-
-      <div className="animate-fade-up" style={{ animationDelay: '120ms' }}>
-        <LevelCard
-          level={stats.level}
-          title={stats.title}
-          xpIntoLevel={stats.xpIntoLevel}
-          xpForNextLevel={stats.xpForNextLevel}
-        />
+      <div className="animate-fade-up" style={{ animationDelay: '60ms' }}>
+        <PulseStrip stats={stats} transactionCount={month.transactionCount} />
       </div>
 
       {simpleMode ? (

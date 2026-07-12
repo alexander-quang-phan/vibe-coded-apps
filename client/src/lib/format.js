@@ -15,6 +15,8 @@ export function formatMoney(amount, currency = 'GBP', { compact = false } = {}) 
   }).format(amount ?? 0);
 }
 
+// Absolute dates render as dd/mm/yyyy everywhere (Alex's preference);
+// 'relative' keeps the friendly Today/Yesterday labels for the last week.
 export function formatDate(iso, { format = 'short' } = {}) {
   if (!iso) return '';
   const d = new Date(`${iso}T00:00:00`);
@@ -26,5 +28,5 @@ export function formatDate(iso, { format = 'short' } = {}) {
     if (diffDays === 1) return 'Yesterday';
     if (diffDays > 1 && diffDays < 7) return `${diffDays} days ago`;
   }
-  return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+  return d.toLocaleDateString('en-GB'); // dd/mm/yyyy
 }
