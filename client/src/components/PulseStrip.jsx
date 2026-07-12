@@ -49,7 +49,7 @@ export function PulseStrip({ stats, transactionCount }) {
                 {stats.currentStreak === 1 ? 'day' : 'days'}
               </span>
             </p>
-            <p className="mt-0.5 truncate text-xs text-muted-foreground">
+            <p className="mt-0.5 text-xs leading-snug text-muted-foreground">
               {stats.shields > 0
                 ? `${stats.shields} shield${stats.shields > 1 ? 's' : ''} banked`
                 : `Longest: ${stats.longestStreak}`}
@@ -64,7 +64,7 @@ export function PulseStrip({ stats, transactionCount }) {
           iconTone="bg-sky-500/15 text-sky-400 ring-sky-500/20"
           label="Shields"
           value={stats.shields}
-          sub="Earn 1 per 7 days"
+          sub="1 per 7-day run"
         />
 
         {/* Logged this month */}
@@ -128,7 +128,7 @@ function Gauge({ icon, iconTone, label, value, sub, className }) {
           {label}
         </p>
         <p className="nums text-xl font-bold leading-tight tracking-tight">{value}</p>
-        <p className="truncate text-[11px] text-muted-foreground">{sub}</p>
+        <p className="text-[11px] leading-snug text-muted-foreground">{sub}</p>
       </div>
     </div>
   );
