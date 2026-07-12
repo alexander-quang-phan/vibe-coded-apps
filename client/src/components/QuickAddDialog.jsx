@@ -33,7 +33,7 @@ function minorToMajorStr(minor, currency) {
   return currency === 'VND' ? String(major) : major.toFixed(2);
 }
 
-export function QuickAddDialog({ open, onOpenChange, currency = 'GBP' }) {
+export function QuickAddDialog({ open, onOpenChange, currency = 'GBP', simpleMode = false }) {
   const api = useApi();
   const queryClient = useQueryClient();
 
@@ -75,6 +75,24 @@ export function QuickAddDialog({ open, onOpenChange, currency = 'GBP' }) {
     queryFn: () => api.get('/api/categories'),
     enabled: open,
   });
+
+  // Task 6.9 — merchant memory. As the user types a note, ask the server
+  // which category they usually file this merchant under and ring that chip.
+  // Highlight-only: a wrong silent auto-pick is worse than a missed hint.
+  useEffect(() => {
+    if (!open || simpleMode || mode !== 'structured') return;
+    const desc = description.trim();
+    if (desc.length < 2) return;
+    const timer = setTimeout(async () => {
+      try {
+        const res = await api.get(`/api/categories/suggest?desc=${encodeURIComponent(desc)}`);
+        if (res?.categoryId) setSuggestedCategoryId(res.categoryId);
+      } catch {
+        // Suggestions are a bonus — never surface an error for one.
+      }
+    }, 250);
+    return () => clearTimeout(timer);
+  }, [description, open, simpleMode, mode, api]);
 
   const categories = useMemo(() => {
     const all = categoriesData?.categories ?? [];
@@ -169,6 +187,24 @@ export function QuickAddDialog({ open, onOpenChange, currency = 'GBP' }) {
     });
   }
 
+  // Simple mode files everything against the seeded "Other" expense category
+  // — the deliberate 2-tap exception to the 3-tap rule (FEATURES.md).
+  function handleSimpleLog() {
+    if (!amountValid || mutation.isPending) return;
+    const all = categoriesData?.categories ?? [];
+    const fallback =
+      all.find((c) => c.type === 'expense' && c.name === 'Other' && c.is_default) ??
+      all.find((c) => c.type === 'expense');
+    if (!fallback) return;
+    mutation.mutate({
+      categoryId: fallback.id,
+      amount,
+      type: 'expense',
+      description: null,
+      date,
+    });
+  }
+
   function handleParse() {
     const text = freeformText.trim();
     if (!text || parseMutation.isPending) return;
@@ -192,13 +228,15 @@ export function QuickAddDialog({ open, onOpenChange, currency = 'GBP' }) {
         <DialogHeader>
           <DialogTitle>Log a transaction</DialogTitle>
           <DialogDescription>
-            {mode === 'freeform'
-              ? 'Describe it in your own words — we’ll turn it into a draft.'
-              : "Amount, then tap a category. That's it."}
+            {simpleMode
+              ? 'Amount, then Log. Two taps and done.'
+              : mode === 'freeform'
+                ? 'Describe it in your own words — we’ll turn it into a draft.'
+                : "Amount, then tap a category. That's it."}
           </DialogDescription>
         </DialogHeader>
 
-        <div className="-mt-1 flex justify-end">
+        <div className={simpleMode ? 'hidden' : '-mt-1 flex justify-end'}>
           {mode === 'structured' ? (
             <button
               type="button"
@@ -275,15 +313,17 @@ export function QuickAddDialog({ open, onOpenChange, currency = 'GBP' }) {
           </div>
         ) : (
           <>
-            {/* Step 1: type */}
-            <SegmentGroup className="self-start">
-              <SegmentButton active={type === 'expense'} onClick={() => setType('expense')}>
-                Expense
-              </SegmentButton>
-              <SegmentButton active={type === 'income'} onClick={() => setType('income')}>
-                Income
-              </SegmentButton>
-            </SegmentGroup>
+            {/* Step 1: type (hidden in simple mode — everything is an expense) */}
+            {simpleMode ? null : (
+              <SegmentGroup className="self-start">
+                <SegmentButton active={type === 'expense'} onClick={() => setType('expense')}>
+                  Expense
+                </SegmentButton>
+                <SegmentButton active={type === 'income'} onClick={() => setType('income')}>
+                  Income
+                </SegmentButton>
+              </SegmentGroup>
+            )}
 
             {/* Step 2: amount */}
             <div className="space-y-2">
@@ -308,8 +348,27 @@ export function QuickAddDialog({ open, onOpenChange, currency = 'GBP' }) {
               </div>
             </div>
 
+            {/* Simple mode: one Log button instead of the chip grid */}
+            {simpleMode ? (
+              <Button
+                type="button"
+                className="h-12 w-full text-base font-semibold"
+                onClick={handleSimpleLog}
+                disabled={!amountValid || mutation.isPending}
+              >
+                {mutation.isPending ? (
+                  <>
+                    <Loader2 className="mr-2 h-4 w-4 animate-spin" aria-hidden />
+                    Logging…
+                  </>
+                ) : (
+                  'Log'
+                )}
+              </Button>
+            ) : null}
+
             {/* Step 3: category chips — auto-submits on tap */}
-            <div className="space-y-2">
+            <div className={simpleMode ? 'hidden' : 'space-y-2'}>
               <Label>Category</Label>
               <div className="grid grid-cols-3 gap-2 sm:grid-cols-4">
                 {categories.map((c) => {
@@ -359,7 +418,7 @@ export function QuickAddDialog({ open, onOpenChange, currency = 'GBP' }) {
             </div>
 
             {/* Advanced: date + description (hidden by default to keep 3-tap promise) */}
-            <div>
+            <div className={simpleMode ? 'hidden' : undefined}>
               <button
                 type="button"
                 onClick={() => setShowMore((v) => !v)}

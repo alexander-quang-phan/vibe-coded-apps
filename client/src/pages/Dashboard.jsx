@@ -4,11 +4,11 @@ import { toast } from 'sonner';
 import { Flame, Wallet, Shield, ArrowDownLeft, ArrowUpRight, Sparkles } from 'lucide-react';
 import { useApi } from '@/hooks/useApi';
 import { StatCard } from '@/components/StatCard';
+import { AffordabilityCheck } from '@/components/AffordabilityCheck';
 import { LevelCard } from '@/components/LevelCard';
 import { CategoryDonut } from '@/components/CategoryDonut';
+import { SimpleMonthCard } from '@/components/SimpleMonthCard';
 import { RecentTransactions } from '@/components/RecentTransactions';
-import { BudgetAlerts } from '@/components/BudgetAlerts';
-import { SubscriptionsCard } from '@/components/SubscriptionsCard';
 import { MonthProjection } from '@/components/MonthProjection';
 import { WinsFeed } from '@/components/WinsFeed';
 import { QuickAddButton } from '@/components/QuickAddButton';
@@ -200,6 +200,12 @@ export default function Dashboard() {
         displayName={displayName}
       />
 
+      {simpleMode ? null : (
+        <div className="animate-fade-up" style={{ animationDelay: '40ms' }}>
+          <AffordabilityCheck currency={currency} />
+        </div>
+      )}
+
       <section
         className="grid grid-cols-2 gap-3 animate-fade-up sm:grid-cols-3"
         style={{ animationDelay: '60ms' }}
@@ -219,17 +225,16 @@ export default function Dashboard() {
         <StatCard
           label="Shields"
           value={stats.shields}
-          sub="Earn 1 per 7-day streak"
+          sub="Earn 1 per 7 days"
           icon={<Shield className="h-5 w-5" />}
           accent="info"
         />
         <StatCard
-          label="This month"
+          label="Logged"
           value={month.transactionCount}
-          sub={month.transactionCount === 1 ? 'transaction logged' : 'transactions logged'}
+          sub={month.transactionCount === 1 ? 'transaction this month' : 'transactions this month'}
           icon={<Wallet className="h-5 w-5" />}
           accent="muted"
-          className="hidden sm:block"
         />
       </section>
 
@@ -242,42 +247,45 @@ export default function Dashboard() {
         />
       </div>
 
-      {simpleMode ? null : (
+      {simpleMode ? (
+        <div className="animate-fade-up" style={{ animationDelay: '150ms' }}>
+          <SimpleMonthCard
+            spent={month.expenses}
+            currency={currency}
+            monthlyLimit={data.preferences.monthlyLimit ?? null}
+          />
+        </div>
+      ) : (
         <div className="animate-fade-up" style={{ animationDelay: '150ms' }}>
           <MonthProjection currency={currency} />
         </div>
       )}
 
-      <div className="animate-fade-up" style={{ animationDelay: '170ms' }}>
-        <SubscriptionsCard currency={currency} />
-      </div>
+      {simpleMode ? null : (
+        <div className="animate-fade-up" style={{ animationDelay: '200ms' }}>
+          <CategoryDonut
+            breakdown={categoryBreakdown}
+            totalExpenses={month.expenses}
+            currency={currency}
+            alerts={budgetAlerts}
+          />
+        </div>
+      )}
 
       <section
         className="grid gap-4 animate-fade-up lg:grid-cols-2"
-        style={{ animationDelay: '200ms' }}
+        style={{ animationDelay: '240ms' }}
       >
-        <CategoryDonut
-          breakdown={categoryBreakdown}
-          totalExpenses={month.expenses}
-          currency={currency}
-        />
-        <BudgetAlerts alerts={budgetAlerts} currency={currency} />
-      </section>
-
-      <div className="animate-fade-up" style={{ animationDelay: '240ms' }}>
         <RecentTransactions
           transactions={recentTransactions}
           currency={currency}
           onDelete={(t) => deleteTxMutation.mutate(t.id)}
           pendingDeleteId={deleteTxMutation.isPending ? deleteTxMutation.variables : null}
         />
-      </div>
+        <WinsFeed variant="peek" />
+      </section>
 
-      <div className="animate-fade-up" style={{ animationDelay: '300ms' }}>
-        <WinsFeed />
-      </div>
-
-      <QuickAddButton currency={currency} />
+      <QuickAddButton currency={currency} simpleMode={simpleMode} />
     </div>
   );
 }

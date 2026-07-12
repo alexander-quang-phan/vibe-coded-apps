@@ -36,7 +36,9 @@
 
     --success: 158 64% 42%;
     --warning: 38 92% 50%;
-    --gold: 42 95% 55%;
+    /* Darker than dark-mode gold: the hero number's gradient tail must stay
+       ≥3:1 against the near-white background. */
+    --gold: 42 90% 40%;
 
     --border: 214 32% 91%;
     --input: 214 32% 91%;

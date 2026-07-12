@@ -1,5 +1,6 @@
 import { useQuery } from '@tanstack/react-query';
-import { Sparkles } from 'lucide-react';
+import { Link } from 'react-router-dom';
+import { ArrowRight, Sparkles } from 'lucide-react';
 import { Card, CardContent } from '@/components/ui/card';
 import { useApi } from '@/hooks/useApi';
 
@@ -20,26 +21,43 @@ function formatWinDate(value) {
   return date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
 }
 
-export function WinsFeed() {
+/**
+ * variant="peek" — compact 3-row teaser for the Dashboard with a link to
+ * /wins (Task 6.A moved the full feed to its own page).
+ * variant="full" — the whole feed, used by pages/Wins.jsx.
+ */
+export function WinsFeed({ variant = 'full' }) {
   const api = useApi();
+  const isPeek = variant === 'peek';
   const { data, isLoading, isError } = useQuery({
     queryKey: ['wins'],
     queryFn: () => api.get('/api/wins'),
   });
 
-  const wins = data?.wins ?? [];
+  const allWins = data?.wins ?? [];
+  const wins = isPeek ? allWins.slice(0, 3) : allWins;
 
   return (
     <Card className="lift relative overflow-hidden border-border/60 bg-card/70 backdrop-blur">
       <CardContent className="p-6">
         <div className="flex items-baseline justify-between gap-3">
           <h3 className="text-xs font-semibold uppercase tracking-[0.16em] text-muted-foreground">
-            Wins feed
+            {isPeek ? 'Recent wins' : 'Wins feed'}
           </h3>
-          <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
-            <Sparkles className="h-3.5 w-3.5 text-primary" />
-            Latest 10
-          </span>
+          {isPeek ? (
+            <Link
+              to="/wins"
+              className="inline-flex items-center gap-1 text-xs font-medium text-primary hover:underline underline-offset-4"
+            >
+              All wins
+              <ArrowRight className="h-3 w-3" aria-hidden />
+            </Link>
+          ) : (
+            <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
+              <Sparkles className="h-3.5 w-3.5 text-primary" />
+              Latest 10
+            </span>
+          )}
         </div>
 
         {isLoading ? (
@@ -75,7 +93,7 @@ export function WinsFeed() {
             </p>
           </div>
         ) : (
-          <ul className="mt-4 max-h-80 space-y-2 overflow-y-auto pr-1">
+          <ul className={isPeek ? 'mt-4 space-y-2' : 'mt-4 max-h-80 space-y-2 overflow-y-auto pr-1'}>
             {wins.map((win, index) => (
               <li
                 key={`${win.type}-${win.at}-${index}`}

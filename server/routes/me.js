@@ -9,6 +9,8 @@ const prefsSchema = z.object({
   currency: z.enum(['GBP', 'USD', 'AUD', 'VND']).optional(),
   simpleMode: z.boolean().optional(),
   displayName: z.string().trim().max(50).optional().nullable(),
+  // Simple-mode monthly cap (Task 6.5). Null clears it.
+  monthlyLimit: z.number().positive().finite().max(1_000_000_000).optional().nullable(),
 });
 
 router.get('/', async (req, res, next) => {
@@ -40,6 +42,7 @@ router.get('/', async (req, res, next) => {
         currency: stats.currency,
         simpleMode: stats.simple_mode,
         displayName: stats.display_name,
+        monthlyLimit: stats.monthly_limit === null ? null : Number(stats.monthly_limit),
       },
       stats: {
         currentStreak: stats.current_streak,
@@ -69,6 +72,9 @@ router.patch('/', async (req, res, next) => {
     if (parsed.data.displayName !== undefined) {
       payload.display_name = parsed.data.displayName || null;
     }
+    if (parsed.data.monthlyLimit !== undefined) {
+      payload.monthly_limit = parsed.data.monthlyLimit;
+    }
     if (Object.keys(payload).length === 0) {
       return res.status(400).json({ error: 'Nothing to update' });
     }
@@ -77,7 +83,7 @@ router.patch('/', async (req, res, next) => {
       .from('user_stats')
       .update(payload)
       .eq('user_id', req.user.id)
-      .select('currency, simple_mode, display_name')
+      .select('currency, simple_mode, display_name, monthly_limit')
       .single();
     if (error) throw error;
 
@@ -86,6 +92,7 @@ router.patch('/', async (req, res, next) => {
         currency: data.currency,
         simpleMode: data.simple_mode,
         displayName: data.display_name,
+        monthlyLimit: data.monthly_limit === null ? null : Number(data.monthly_limit),
       },
     });
   } catch (err) {

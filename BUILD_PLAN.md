@@ -41,8 +41,8 @@ Task: <paste the Chat prompt from BUILD_PLAN.md here>
 | Service-role grants repair | ✅ | Migration 002 fixes `permission denied for table ...`. |
 | Savings contribution note repair | ✅ | Migration 003 aligns contribution notes with the API/UI. |
 | Visual polish pass | ✅ | Mesh background, glass chrome, hero balance, animated streak/XP/FAB, hover-lift cards, gradient progress. |
-| **6 – Deferred features** | **⏳** | **One chat each. See tasks below.** |
-| 7 – Deploy | ⏳ | Separate chat (Task 6.15). |
+| **6 – Deferred features** | **✅ (except 6.12, 6.13)** | 6.A, 6.4, 6.5, 6.9 shipped 2026-07. **Audit note:** 6.4 and 6.5 were ticked ✅ in May but the code was never actually written (no affordability route/component; no monthly_limit anywhere) — caught and built during the 2026-07 validation pass. |
+| 7 – Deploy | ✅ | Railway config + DEPLOY.md landed (Task 6.15). Supabase project restored + migrations 008/009 applied. |
 
 ---
 
@@ -330,7 +330,7 @@ Out of scope: voice input, multi-transaction parsing in one message, receipt OCR
 
 ## Tier 2 — Differentiators
 
-### ▢ Task 6.A — Dashboard slim-down (prerequisite for Tier 2/3 card adds)
+### ✅ Task 6.A — Dashboard slim-down (prerequisite for Tier 2/3 card adds)
 
 **Chat prompt:**
 ```
@@ -371,7 +371,7 @@ Settings or other page layouts, adding new wins-feed event types.
 
 ---
 
-### ▢ Task 6.9 — Smart category suggestion (merchant memory)
+### ✅ Task 6.9 — Smart category suggestion (merchant memory)
 
 **Chat prompt:**
 ```
@@ -537,7 +537,7 @@ Out of scope: email digest, push notifications, multi-action prompts.
 
 ---
 
-### ▢ Task 6.15 — Deploy to Railway
+### ✅ Task 6.15 — Deploy to Railway
 
 **Chat prompt:**
 ```

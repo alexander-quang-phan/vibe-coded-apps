@@ -55,7 +55,8 @@ export function RecentTransactions({ transactions, currency, onDelete, pendingDe
                       {t.description?.trim() || t.category?.name || 'Transaction'}
                     </p>
                     <p className="text-xs text-muted-foreground">
-                      {t.category?.name ?? 'Uncategorised'} ·{' '}
+                      {/* Skip the category when it's already the title (no-note quick-adds) */}
+                      {t.description?.trim() ? `${t.category?.name ?? 'Uncategorised'} · ` : ''}
                       {formatDate(t.date, { format: 'relative' })}
                     </p>
                   </div>

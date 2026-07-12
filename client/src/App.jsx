@@ -130,7 +130,7 @@ export default function App() {
               to={l.to}
               className={({ isActive }) =>
                 cn(
-                  'whitespace-nowrap rounded-full px-3 py-1.5 text-xs font-medium transition-colors',
+                  'whitespace-nowrap rounded-full px-3.5 py-2 text-[13px] font-medium transition-colors',
                   isActive
                     ? 'bg-primary text-primary-foreground shadow-sm shadow-primary/30'
                     : 'text-muted-foreground hover:text-foreground',

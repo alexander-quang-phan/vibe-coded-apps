@@ -144,6 +144,7 @@ router.get('/', async (req, res, next) => {
         currency: stats.currency,
         simpleMode: stats.simple_mode,
         displayName: stats.display_name,
+        monthlyLimit: stats.monthly_limit === null ? null : Number(stats.monthly_limit),
       },
     });
   } catch (err) {

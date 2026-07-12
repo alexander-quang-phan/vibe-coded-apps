@@ -14,6 +14,7 @@ import goalsRouter from './routes/goals.js';
 import winsRouter from './routes/wins.js';
 import subscriptionsRouter from './routes/subscriptions.js';
 import projectionsRouter from './routes/projections.js';
+import affordabilityRouter from './routes/affordability.js';
 import askRouter from './routes/ask.js';
 
 const CLIENT_URL = process.env.CLIENT_URL;
@@ -98,6 +99,7 @@ app.use('/api/goals', requireAuth, goalsRouter);
 app.use('/api/wins', requireAuth, winsRouter);
 app.use('/api/subscriptions', requireAuth, subscriptionsRouter);
 app.use('/api/projections', requireAuth, projectionsRouter);
+app.use('/api/affordability', requireAuth, affordabilityRouter);
 app.use('/api/ask', requireAuth, askLimiter, askRouter);
 
 app.use((req, res) => {
