@@ -43,7 +43,7 @@ System sans stack (Tailwind default) with `font-feature-settings: 'cv11','ss01',
 - Radius token `--radius: 0.95rem`; cards render `rounded-2xl`, chips/buttons `rounded-xl`/`rounded-full`.
 - Page rhythm: `space-y-5`/`space-y-6`; card padding `p-5`/`p-6`.
 - Shell: sticky `.glass` header (desktop center nav, mobile horizontal pill nav with ≥44px targets), `container px-4` main, two FABs — Ask Trim bottom-left, QuickAdd "+" bottom-right, both `safe-bottom`.
-- Dashboard order: hero balance → affordability check → 3-stat row → level card → projection → category card (donut | top-5 | budgets-to-watch) → recent activity + wins peek. Simple mode swaps projection/affordability/category for one SimpleMonthCard. Never regress to a uniform 3-up stat grid — that's the AI-template look this app deliberately avoids.
+- Dashboard order: hero balance → affordability check → **PulseStrip** (one instrument-cluster card: focal streak segment | shields | logged | level + XP bar, hairline-divided, 2×2 on mobile) → projection → category card (donut | top-5 | budgets-to-watch) → recent activity + wins peek. Simple mode swaps projection/affordability/category for one SimpleMonthCard. Never regress to a uniform grid of identical stat cards — that's the AI-template look this app deliberately avoids (the 2026-07 bolder pass replaced exactly that with PulseStrip).
 
 ## Components
 
