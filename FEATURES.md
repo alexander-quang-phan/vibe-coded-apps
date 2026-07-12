@@ -61,7 +61,7 @@
 - Amount input auto-focuses on open.
 - Expense/Income segmented control.
 - Category chip grid — **tapping a chip auto-submits**. No separate submit button for the golden path.
-- Hidden "Add a note or change the date" toggle for the rare case.
+- Hidden "Note, date, or make it recurring" toggle for the rare case. The recurring sub-form (Task 6.12) lives here so the 3-tap golden path stays clean — tick "Make this recurring", pick Monthly/Weekly, tap a category chip, and the server creates both the transaction and a paired `recurrences` schedule. Expense-only because /subscriptions is the management surface and it's expense-only by design.
 - On success: invalidate `['dashboard', 'transactions', 'me']`, trigger appropriate confetti, show toast.
 - **"Type it instead" path (Task 6.6):** a sparkle-chip toggle at the top of the dialog swaps the structured form for a single freeform textarea ("e.g. spent 12 quid on tacos last night"). Submitting calls `POST /api/transactions/parse`, which returns a draft. The dialog snaps back to the structured form with amount/type/description/date pre-filled and the suggested category chip ringed in emerald — the user still taps a chip to log. Parse never auto-saves. Failure / low confidence / API unavailable falls back to a friendly amber prompt ("couldn't quite read that — mind trying again?") with a "Use chips" escape hatch.
 - **Simple-mode variant:** when `user_stats.simple_mode = true`, the Income/Expense segments, chip grid, and advanced toggle all hide; the dialog collapses to amount + a single "Log" button. The transaction is filed against the seeded "Other" expense category. This is the deliberate 2-tap exception to the otherwise-3-tap rule (FEATURES.md → philosophy → simple mode).
@@ -73,6 +73,7 @@
 - Inline edit dialog: amount, category, date, note.
 - Row delete with confirm.
 - CSV export of the currently-filtered set.
+- "Recurring" pill on rows where `is_recurring=true` (Task 6.12) — covers both the original opt-in transaction and every cron-created child, so users can scan the log and see which entries come from a schedule.
 
 ### Budgets
 
@@ -95,10 +96,11 @@
 
 ### Subscriptions
 
-- Auto-detected list of recurring expenses, no manual marking required. Detection rule: ≥3 same-merchant charges at ~30-day or ~365-day intervals (±5d) with amounts within 10%.
+- Auto-detected list of recurring expenses, no manual marking required for the auto path. Detection rule: ≥3 same-merchant charges at ~30-day or ~365-day intervals (±5d) with amounts within 10%.
 - Each row shows monthly cost, annualised cost, last charged, next expected, and total paid lifetime.
 - "Mark cancelled" toggle moves the row to a Cancelled section and surfaces the saved annual amount; toggling back to Active restores it. Decisions persist in `subscription_overrides` so a new month of detection doesn't overwrite them.
 - Inferred (synthetic-key) rows get an extra "Not a subscription" link that flips status to `dismissed` — separate from cancelled, no celebratory toast, excluded from the saved-money totals. Dismissed rows live in their own quiet section, restorable.
+- **Manually-marked recurrences (Task 6.12)** — when the user opts a transaction into a schedule in QuickAddDialog, the same /subscriptions page is where they manage it. Manual rows mix into the active/cancelled sections with a small **Manually marked** pill so the source is clear without inventing a second list. Cancelling sets `recurrences.cancelled_at`, which stops future cron creations but keeps historic transactions. Dismissing isn't available on manual rows (the user opted in deliberately — cancel is the correct off-ramp). To avoid double-counting, the auto-detector skips any transactions that already carry `recurrence_id`.
 - Dashboard mini-card above CategoryDonut nudges the user to audit ("You have N subscriptions, £X/month — audit them?"). Hidden when there are 0 active subs.
 - Empty state on the page itself when no subs are detected — friendly placeholder, never hides the nav link.
 - **Known limitation (Task 6.2.1):** today's detector groups by transaction description text, so quick-logged transactions (no description, the 3-tap default) are invisible to it. Task 6.2.1 closes the gap with a `(category, amount-cluster, cadence)` fallback and inline naming on the audit page.
@@ -133,7 +135,6 @@
 These were in the original vision but intentionally punted past MVP:
 
 - **Weekly digest card** — Sunday summary with streak, XP, and a low-pressure tip.
-- **Recurring transactions executor** — `is_recurring` column is on the schema but no cron/Edge Function processes them yet.
 - **Profile / achievements page** — badges screen once badges are awarded.
 
 ## Design direction

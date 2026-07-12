@@ -472,7 +472,7 @@ Out of scope: category order/reordering, archiving, per-category budgets (alread
 
 ---
 
-### ▢ Task 6.12 — Recurring transactions executor (extension of 6.2)
+### ✅ Task 6.12 — Recurring transactions executor (extension of 6.2)
 
 **Chat prompt:**
 ```

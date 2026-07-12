@@ -31,12 +31,14 @@
 │   ├── lib/supabase.js      # Service-role client (server-only)
 │   ├── lib/gamification.js  # Pure streak/XP/shield/level logic
 │   ├── lib/subscriptions.js # Pure recurring-charge detection on a tx list
+│   ├── lib/recurrences.js   # Pure schedule helpers (date math, manual-merchant-key)
 │   ├── lib/parser.js        # Anthropic-backed natural-language transaction parser (powers /api/transactions/parse)
 │   ├── lib/askContext.js    # Pure context-bundle builder + DB loader for Ask Trim
 │   ├── lib/askPrompt.js     # Ask Trim system-prompt builder (one-shot/cold-open variants, cache_control)
 │   ├── middleware/auth.js   # requireAuth — verifies Supabase JWT, sets req.user
 │   ├── routes/              # me, categories, transactions, dashboard, budgets, analytics, goals, wins, subscriptions, projections, affordability, ask
 │   ├── scripts/askEval.js   # 20-question ship-gate eval (hybrid grading)
+│   ├── scripts/runRecurrences.js  # Daily cron — fires due manual recurrences (Railway cron, 03:00 UTC)
 │   ├── migrations/001_init.sql  # Full schema + RLS + triggers
 │   └── .env                 # PORT, CLIENT_URL, SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, SUPABASE_JWT_SECRET, ANTHROPIC_API_KEY
 │
@@ -63,13 +65,14 @@
 - **Enums:** `transaction_type` (income, expense), `budget_period` (monthly, weekly), `currency_code` (GBP, USD, AUD, VND).
 - **user_stats** (one row per user; PK = user_id): current_streak, longest_streak, shields, xp_points, level, badges (jsonb[]), currency, simple_mode, monthly_limit (nullable; the single cap simple_mode tracks against), display_name, last_logged_date. Seeded by trigger on `auth.users` insert.
 - **categories:** user_id, name, icon (emoji), color (hex), type. 12 defaults seeded by the same trigger (9 expense + 3 income).
-- **transactions:** user_id, category_id, amount (numeric), type, description, date, is_recurring, created_at.
+- **transactions:** user_id, category_id, amount (numeric), type, description, date, is_recurring, recurrence_id (nullable FK to `recurrences` for instances created by the Task 6.12 cron or the original opt-in tx), created_at.
+- **recurrences:** user-marked recurring schedules (Task 6.12). user_id, category_id, type, amount, description, interval (`monthly`|`weekly`), next_run_at, last_run_at, cancelled_at (nullable — soft-cancel preserves history). The daily cron fires rows where `next_run_at <= today AND cancelled_at IS NULL`, claims via optimistic `next_run_at=oldDate` UPDATE, then inserts the next transaction with `is_recurring=true` + `recurrence_id`.
 - **budgets:** user_id, category_id, amount_limit, period. Unique `(user_id, category_id, period)`.
 - **savings_goals:** user_id, name, emoji, target_amount, current_amount, target_date, created_at.
 - **savings_contributions:** goal_id, user_id, amount, note, created_at.
 - **subscription_overrides:** PK `(user_id, merchant_key)`, status (`active`|`cancelled`|`dismissed`), display_name (≤40 chars, used to label inferred synthetic-key rows), decided_at. Stores the user's audit decision; detection always re-runs from `transactions` and merges overrides on top.
 - **ask_messages:** chat transcript for Ask Trim. Columns: id, user_id, role (`user`|`assistant`), content (≤8000 chars), created_at. Indexed on `(user_id, created_at desc)` for history pagination. Answer-only — the server never writes anything else from a chat turn.
-- **RLS:** `auth.uid() = user_id` on every table. `savings_contributions` uses the parent goal's user_id.
+- **RLS:** `auth.uid() = user_id` on every table (including `recurrences`). `savings_contributions` uses the parent goal's user_id.
 - **Data API grants:** app tables grant access to `service_role` so the Express server can query through Supabase's REST/Data API. Direct `anon`/`authenticated` table grants are intentionally omitted; the browser only uses Supabase Auth.
 - **Trigger `handle_new_user`** on `auth.users` insert: creates `user_stats` row + seeds 12 default categories.
 
@@ -84,8 +87,8 @@ All routes require a valid Supabase JWT except `/api/health`. Express router nam
 - `POST /api/categories` — create custom category (Zod-validated).
 - `PATCH /api/categories/:id` — rename / change icon / change colour (type and is_default are immutable).
 - `DELETE /api/categories/:id` — delete; supports `?reassign_to=<otherId>` to bulk-move transactions before delete. Returns 409 with `{ transactionCount }` if transactions exist and no `reassign_to` is provided. Refuses to delete the seeded "Other" / "Other Income" categories (the reassign safety net) with 403. Cascades the budget on the deleted category.
-- `GET  /api/transactions?limit=…` — list (max 200).
-- `POST /api/transactions` — create; also runs `applyLogEvent` and returns `{ transaction, delta }` so the UI can celebrate level-ups / streak milestones / shield earns.
+- `GET  /api/transactions?limit=…` — list (max 200). Each row includes `is_recurring` + `recurrence_id` so /transactions can show a "Recurring" badge on cron-created (or originally-opted-in) instances.
+- `POST /api/transactions` — create; also runs `applyLogEvent` and returns `{ transaction, delta, recurrence }` so the UI can celebrate level-ups / streak milestones / shield earns. Accepts an optional `recurring: { interval: 'monthly'|'weekly' }` (Task 6.12, expense-only): when present, the server creates a paired `recurrences` row first (so it has the id), then inserts the transaction with `is_recurring=true` + `recurrence_id`, then returns both. If the transaction insert fails after the recurrence was created, the recurrence is rolled back (best-effort) so the user never sees a phantom subscription.
 - `POST /api/transactions/parse` — natural-language parser for QuickAdd. Body `{ text }` (≤500 chars). Calls Anthropic Messages (claude-haiku-4-5, max_tokens 200) with the user's category list + currency + today's date inlined into a JSON-only system prompt. Returns `{ parsed: { amount (minor units), currency, categoryId|null, description, occurredAt, confidence } }`. **Never writes** — the client uses the result to pre-fill QuickAdd, and the user still taps a chip to log. Low-confidence parses force `categoryId: null`. 503 when `ANTHROPIC_API_KEY` is unset; 422 on API/parse failure (client falls back to the structured form). Validates the model's JSON with Zod and drops any `categoryId` not owned by the user.
 - `PATCH /api/transactions/:id` — inline edit.
 - `DELETE /api/transactions/:id`.
@@ -101,8 +104,8 @@ All routes require a valid Supabase JWT except `/api/health`. Express router nam
 - `DELETE /api/goals/:id`.
 - `POST /api/goals/:id/contributions` — add money; returns `{ goal, milestone (0.25/0.5/0.75/1.0 or null), justCompleted }`.
 - `GET  /api/wins` — derives at-most-10 recent positive events ({ type, title, body, at, icon }) from transactions vs budgets (rolling 7d), `user_stats` streak/shields, and savings contributions. No new tables.
-- `GET  /api/subscriptions` — runs `detectSubscriptions` on the user's expense transactions, merges `subscription_overrides`, returns `{ subscriptions[], summary }`. Default rule: ≥3 same-merchant charges at ~30d or ~365d intervals (±5d) with amounts within 10%.
-- `PATCH /api/subscriptions/:merchantKey` — upsert into `subscription_overrides` to mark a detected subscription `active`, `cancelled`, or `dismissed` (false positive — only meaningful on inferred/synthetic-key rows; excluded from the saved-money totals). Also accepts `displayName` to name an inferred row. Decisions survive re-detection.
+- `GET  /api/subscriptions` — runs `detectSubscriptions` on the user's expense transactions (filtering out anything with `recurrence_id` so manually-marked rows aren't double-counted), merges `subscription_overrides` onto detected rows, then appends one row per active/cancelled `recurrences` entry (Task 6.12) with `source: 'manual'`. Returns `{ subscriptions[], summary }`. Default detector rule: ≥3 same-merchant charges at ~30d or ~365d intervals (±5d) with amounts within 10%.
+- `PATCH /api/subscriptions/:merchantKey` — dispatches by key prefix. `manual:<uuid>` keys (Task 6.12) toggle `recurrences.cancelled_at` (no `dismissed` allowed, no `displayName` rename surface yet). Description / `auto:*` keys upsert into `subscription_overrides` to mark a detected subscription `active`, `cancelled`, or `dismissed` (false positive — only meaningful on inferred/synthetic-key rows; excluded from the saved-money totals). Also accepts `displayName` to name an inferred row. Decisions survive re-detection.
 - `GET  /api/projections/month` — linear-extrapolation forecast for current-month expenses. Returns `{ ready, projectedSpend, monthlyBudget, delta, spendSoFar, daysElapsed, daysInMonth, paceLabel }`. `ready: false` when day-of-month < 3 or zero transactions logged this month (cold-start guard). `monthlyBudget`/`delta` are null when the user has no monthly budgets set.
 - `POST /api/affordability` — pure read+compute, no DB writes. Body `{ amount, categoryId? }`. Returns `{ categoryRemaining, totalRemaining, goalImpactDays, goal, verdict }`. `categoryRemaining` is null when no category is given or the picked category has no monthly budget; `totalRemaining` is null when the user has no monthly budgets at all. `goal` (and `goalImpactDays`) reference the soonest-target_date open savings goal, falling back to the earliest-created open goal; both are null when there are no open goals or no contributions in the last 90 days. Verdict is one of `'Comfortably yes' | 'Tight but yes' | 'Would push you over'` — never red language.
 - `POST /api/ask` — Ask Trim chat (Task 6.10). Body `{ message }` (≤2000 chars). Persists the user message, loads the last 90 days of transactions / current budgets / goals / contributions / stats via `loadAskContext`, builds a two-part system prompt (rules block `cache_control: ephemeral` + JSON user data) via `buildAskSystem`, and streams `claude-haiku-4-5` (max_tokens 1500; override with `ASK_MODEL` env var) back to the client over **SSE** with events `user_message` (canonical row for the just-inserted user message), `delta` (text chunk), `done` (final assistant row + token usage), and `error`. Includes the latest 10 prior messages as conversation context. Persists the final assistant text. Answer-only — the route never writes to any table except `ask_messages`. 503 when `ANTHROPIC_API_KEY` is unset.
@@ -123,3 +126,4 @@ All routes require a valid Supabase JWT except `/api/health`. Express router nam
 - **Railway** sits behind a proxy — `app.set('trust proxy', 1)` is required for `express-rate-limit` to key off the real client IP.
 - **Build commands:** client `vite build` → static; server `node index.js`.
 - **Env:** CLIENT_URL must exactly match the deployed client origin (no trailing slash) for CORS + CSP `connectSrc`.
+- **Recurrences cron (Task 6.12):** Railway cron, `0 3 * * *` (03:00 UTC daily), command `npm run cron:recurrences` (runs `server/scripts/runRecurrences.js`). Shares the same Supabase service-role client + env as the Express API. Idempotent: the optimistic-claim UPDATE (`.eq('next_run_at', oldDate)`) makes a duplicate run a no-op for any row a prior run already advanced.
