@@ -113,6 +113,12 @@ app.use((err, req, res, _next) => {
     .json({ error: err.publicMessage || 'Internal server error' });
 });
 
-app.listen(PORT, () => {
-  console.log(`[trim-server] listening on :${PORT}`);
-});
+// On Vercel the app is imported by api/index.js and invoked per-request;
+// locally (and on Railway) we run a real listener.
+if (!process.env.VERCEL) {
+  app.listen(PORT, () => {
+    console.log(`[trim-server] listening on :${PORT}`);
+  });
+}
+
+export default app;
