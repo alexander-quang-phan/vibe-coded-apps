@@ -5,10 +5,10 @@ project. Follow top to bottom; every step is copy-paste-able. Nothing here
 requires touching code.
 
 ```
-Browser ──▶ client (Railway static)          Supabase (Auth + Postgres)
-   │            │                                    ▲
-   └── auth ────┼──── JWT ──▶ server (Railway) ──────┘
-                └──────────── /api/* ▲
+Browser --> client (Railway static)         Supabase (Auth + Postgres)
+   |           |                                   ^
+   +-- auth ---+---- JWT --> server (Railway) -----+
+               +------------ /api/* ^
 ```
 
 ## 0. What you need
