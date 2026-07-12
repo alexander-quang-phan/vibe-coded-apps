@@ -6,6 +6,10 @@
 // reusing the real pure libs (gamification, subscription detection) so the
 // numbers behave like production. Auth is a no-op: any Bearer token passes.
 // Nothing persists — restart to reset the demo data.
+//
+// Note: the client's LOGIN screen still talks to real Supabase Auth (that's
+// by design — this mock only replaces the data API). Log in with any real
+// account; the data you then see comes from here, not the database.
 import express from 'express';
 import { randomUUID } from 'node:crypto';
 import { applyLogEvent, titleForLevel, levelProgress } from '../lib/gamification.js';
