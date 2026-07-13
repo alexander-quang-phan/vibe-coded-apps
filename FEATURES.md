@@ -44,10 +44,8 @@
 
 ### Dashboard (the heart)
 
-- Balance stat card (this month income − expenses) with sub-line "£X in · £Y out".
-- Streak stat card with flame icon; sub shows shields banked or longest streak.
-- Shields stat card (desktop only).
-- Level card with XP progress bar and title ladder.
+- Hero balance card (this month income − expenses) with In/Out chips; net number animates up and scales to 7xl on desktop.
+- **PulseStrip** (2026-07 bolder pass — replaced the old grid of identical stat cards + separate level card): one hairline-divided instrument cluster. Focal streak segment (flame icon, big number, warm glow; sub shows shields banked or longest streak) | shields gauge ("1 per 7-day run") | logged-this-month gauge | level segment with title ladder + gold-tipped XP bar. 2×2 on mobile, one row on lg. Lives in `client/src/components/PulseStrip.jsx`.
 - Month-end projection card (above the category card) — linear extrapolation of current-month spend, delta vs. summed monthly budgets, one-line pace label vs. last month's total. Cold-start guard until day 3 with ≥1 transaction; outlier guard counts a single dominant charge (>40% of spend-so-far, i.e. rent) once instead of extrapolating it. Hidden in simple_mode (SimpleMonthCard owns that slot).
 - "Can I afford this?" check (under the hero) — compact amount input + horizontal expense-category chip row, debounced 300ms. Calls `POST /api/affordability` and renders three remaining/impact lines plus a friendly verdict ("Comfortably yes" / "Tight but yes" / "Would push you over"). Goal-impact line uses the soonest-target_date open goal; line is omitted when there are no open goals or no recent contributions. Hidden in simple_mode.
 - "This month by category" card (Task 6.A merged the old donut + budget-alerts pair): donut + top-5 list + a "Budgets to watch" column of categories ≥75% used, one card. Hidden in simple_mode (replaced by the SimpleMonthCard).
@@ -143,6 +141,8 @@ These were in the original vision but intentionally punted past MVP:
 - **Accent: deep emerald.** Dark mode `--primary: 158 64% 52%`, light mode `158 64% 32%`. Conveys money + "trim/healthy".
 - **Feel:** Linear / Notion × fitness app. Clean, minimal, modern. Big type. Generous spacing on desktop, tight on mobile.
 - **Never a pure-red error state for user behaviour.** Destructive UI (delete confirms, failed requests) can use `text-destructive` sparingly; spending overshoots use rose-400 as a soft warning, not an error.
+- **Dates render dd/mm/yyyy** (en-GB) everywhere an absolute date shows; recent activity keeps the friendlier relative labels (Today / Yesterday / N days ago) inside the last week. Helper: `formatDate` in `client/src/lib/format.js` — don't hand-roll date strings.
+- **Favicon / app icon:** white scissors on the emerald gradient square — `client/public/favicon.svg` (browser tab) + `apple-touch-icon.png` (iOS home screen). Keep them in sync with the in-app logo mark.
 
 ### Visual language (ambient depth + motion)
 
