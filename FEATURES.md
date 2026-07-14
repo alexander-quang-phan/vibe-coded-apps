@@ -126,7 +126,7 @@
 
 - RHF + zodResolver. Email + password. Signup min 8 chars, login min 6.
 - Redirect to `/dashboard` once `session` is set.
-- Signup with email confirmation enabled (prod): a successful `signUp` returns no session, so the form is replaced by a "Check your inbox" panel showing the submitted address plus a spam-folder hint. Already-registered emails get the same panel (Supabase returns no error, anti-enumeration), so account existence is never leaked.
+- Email confirmation is **off** (since 2026-07-14, see SECURITY.md): signup returns a session immediately and lands on the Dashboard. The Signup page still handles the confirmation flow as a fallback — if `signUp` ever returns no session and no error (confirmation re-enabled, or an already-registered email, which Supabase anti-enumeration answers the same way), the form is replaced by a "Check your inbox" panel instead of doing nothing.
 
 ## Product features deferred (explicitly)
 
