@@ -136,6 +136,14 @@ These were in the original vision but intentionally punted past MVP:
 - **Recurring transactions executor** — `is_recurring` column is on the schema but no cron/Edge Function processes them yet.
 - **Profile / achievements page** — badges screen once badges are awarded.
 
+## Planned — Trim Premium (designed 2026-07-15, not built)
+
+Full design: `docs/superpowers/specs/2026-07-15-bank-sync-and-billing-design.md` · build tasks: BUILD_PLAN.md Phase 8.
+
+- **Automatic bank import (open banking, UK first via Enable Banking).** Users connect their bank by authenticating *at the bank* (Trim never sees credentials); booked card purchases flow in automatically. Imported transactions land in a "New from your bank" review inbox on Transactions — one tap ✓ confirms, tapping another category chip recategorises + confirms (3-tap rule holds). The first review of the day counts as the daily "log" for streaks/XP; bulk imports never award XP. Single-currency rule enforced: accounts in another currency are politely refused (no FX). Vietnam (and other uncovered countries): friendly "not available yet" messaging, manual logging stays great.
+- **Trim Premium billing (Stripe).** Freemium: manual logging + gamification free forever; bank sync becomes the premium feature at ~£3.99/mo (or £29/yr) via Stripe-hosted Checkout + Customer Portal — card details never touch Trim. During the current testing phase sync is free for everyone (`PREMIUM_ENFORCED=false`); flipping to paid is a config change.
+- **Naming rule:** this is "billing / plan / premium" in code and copy — "Subscriptions" already means the recurring-merchant detection feature.
+
 ## Design direction
 
 - **Dark mode default**, light-mode toggle. Persisted to `localStorage['trim-theme']`. Applied inline before React mounts (no flash).

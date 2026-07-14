@@ -45,6 +45,7 @@ Task: <paste the Chat prompt from BUILD_PLAN.md here>
 | 7 – Deploy | ✅ | **Live on Vercel free tier** (2026-07-13): trim-budget.vercel.app + trim-api-jade.vercel.app — see DEPLOY.md. Railway config kept as paid alternative. Supabase restored + migrations 008/009 applied. |
 | UI distinctiveness pass | ✅ | 2026-07-13, via impeccable `bolder`: favicon + apple-touch-icon, dd/mm/yyyy dates, PulseStrip instrument cluster replacing the identical-stat-card grid, hero at 7xl. FEATURES/DESIGN updated. |
 | Signup "check your inbox" fix | ✅ | 2026-07-14: with email confirmation on in prod, `signUp` returns no session/no error and the page did nothing. Signup now swaps the form for a confirmation panel. Root-caused via Supabase auth logs (200 + `user_confirmation_requested`, then 429 email rate limits from re-clicks). |
+| **8 – Trim Premium (bank sync + billing)** | ▢ designed, not built | 2026-07-15: validation + full design done — see `docs/superpowers/specs/2026-07-15-bank-sync-and-billing-design.md`. Tasks 8.A0–8.C below. Key finding: Stripe can't read card purchases; bank sync uses Enable Banking (open banking), Stripe is billing-only. |
 
 ---
 
@@ -564,6 +565,90 @@ Acceptance criteria:
 
 ---
 
+## Phase 8 — Trim Premium: bank auto-import + Stripe billing
+
+> **Source of truth:** `docs/superpowers/specs/2026-07-15-bank-sync-and-billing-design.md` (schema DDL, adapter interface, route contracts, security addendum). Every task below = one chat. Read the spec §-references before coding. Order matters: A0 is a go/no-go gate.
+
+### ▢ Task 8.A0 — Enable Banking spike (go/no-go)
+
+**Chat prompt:**
+```
+Read docs/superpowers/specs/2026-07-15-bank-sync-and-billing-design.md (§4, §8, §9).
+Spike only — no product code, no migrations. Walk Alex through creating an Enable Banking
+account + app registration (step-by-step, he's a beginner), then write a scratch script
+(scratchpad, not committed) that completes the auth flow against his own real UK bank in
+restricted production and prints the last 30 days of transactions. Answer the five open
+items in spec §9 (whitelisting limits, production pricing, consent lifetimes, stable tx
+ids, Vercel cron limits) and record the answers in the spec. End with GO or NO-GO.
+```
+
+### ▢ Task 8.A1 — Schema + adapter + connect flow
+
+**Chat prompt:**
+```
+Read the spec (§5.1, §5.2, §5.5, §5.7) and SECURITY.md. Build: migration 010_bank_sync.sql,
+server/lib/bankProviders/ (index.js + enablebanking.js), server/routes/bank.js
+(institutions/connections/complete/list/delete — sync comes in 8.A2),
+server/middleware/plan.js (requirePremium, unenforced via PREMIUM_ENFORCED=false),
+Settings "Connected banks" card, /connect-bank picker + callback pages.
+Verify per definition of done: connect a real whitelisted bank from the running UI.
+```
+
+### ▢ Task 8.A2 — Sync engine + import pipeline
+
+**Chat prompt:**
+```
+Read the spec (§5.3, §5.4). Build server/lib/bankSync.js + POST /api/bank/sync:
+6h throttle, force flag, 90-day first backfill, 3-day overlap window, dedup index insert,
+currency guard, auto-categorize via a new shared server/lib/categorySuggest.js (extracted
+from the categories/suggest route), inserts with source='import', needs_review=true,
+NO applyLogEvent. Client fires sync on app open. Verify: real purchases appear untouched
+by hand; re-running sync imports zero duplicates.
+```
+
+### ▢ Task 8.A3 — Review inbox + gamification + unsupported-country UX
+
+**Chat prompt:**
+```
+Read the spec (§5.6, §5.7) and FEATURES.md golden rules. Build the "New from your bank (N)"
+section on Transactions (1-tap confirm, chip-tap recategorise+confirm), review-all endpoint,
+first-review-of-day fires applyLogEvent once, inbox-zero celebration, dashboard nudge badge,
+and the VND/unsupported messaging on the Settings card. Verify the whole daily loop in the UI.
+```
+
+### ▢ Task 8.B1 — Stripe billing, test mode end-to-end
+
+**Chat prompt:**
+```
+Read the spec (§6, §7) and SECURITY.md. Build: migration 011_billing.sql,
+server/routes/billing.js (GET /, checkout, portal), POST /api/stripe/webhook mounted with
+express.raw BEFORE the global express.json in server/index.js, billing_events idempotency,
+Settings "Trim Premium" card. Naming rule: billing/plan/premium — never "subscriptions".
+Test mode only (use the stripe:test-cards skill). Verify: a test card upgrades a real
+account and the webhook flips the plan; replayed webhook events are no-ops.
+```
+
+### ▢ Task 8.B2 — Billing go-live + freemium flip (when Alex is ready to charge)
+
+**Chat prompt:**
+```
+Read the spec (§6.4, §8 row B2). Walk Alex through Stripe account activation, live
+Product+Price, live webhook endpoint, env swap. Grandfather existing friends
+(plan='premium' manually). Only flip PREMIUM_ENFORCED=true when Alex confirms.
+Verify with a real £-priced checkout + immediate refund.
+```
+
+### ▢ Task 8.C — US bank adapter (later, when US users matter)
+
+**Chat prompt:**
+```
+Read the spec (§5.2, §8 row C). Add a second provider module (stripeFC.js via Stripe
+Financial Connections, or plaid.js pay-as-you-go — decide with AskUserQuestion) behind
+the existing bankProviders interface. No route or pipeline changes expected.
+```
+
+---
+
 ## Deferred further (flagged in FEATURES.md, don't start without explicit ask)
 
 **Deferred during Phase 6 plan review (2026-05-08):**
@@ -579,7 +664,7 @@ Acceptance criteria:
 - Couples / shared-budget mode
 - Anonymous benchmarking ("your dining spend is in the 30th percentile…")
 - Receipt OCR / photo-to-transaction
-- Open Banking / Plaid UK / TrueLayer auto-import
+- ~~Open Banking / Plaid UK / TrueLayer auto-import~~ → **promoted to Phase 8** (2026-07-15, designed as Enable Banking + provider adapter — see spec)
 - Variable-income / buffer-account mode (allowance-based budgeting)
 - Rollover budgets and "treat day" overrides
 - Time-of-day spending insights (separate Analytics card)
