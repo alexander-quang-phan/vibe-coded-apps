@@ -118,7 +118,7 @@ helmet({
 - [ ] `app.set('trust proxy', 1)` active (it is — don't remove).
 - [ ] RLS enabled on every user-data table (run `SELECT tablename, rowsecurity FROM pg_tables WHERE schemaname='public'` and confirm).
 - [ ] `001_init.sql` trigger `handle_new_user` is present (creates `user_stats` + 12 defaults on signup).
-- [ ] Email confirmation: set per team preference (dev: off; prod: on).
+- [x] Email confirmation: **OFF everywhere** (decided 2026-07-14 — the built-in sender's ~2 emails/hour cap plus spam-foldering made signups look broken at friends scale). Revisit if Trim is ever shared beyond friends; the Signup page already handles the confirm-email flow if it's re-enabled.
 - [ ] Service-role key rotated if it ever appeared in logs or commits.
 - [ ] Production `CLIENT_URL` (e.g. `https://trim-client-production.up.railway.app`) set on the API service — see DEPLOY.md.
 - [ ] `ANTHROPIC_API_KEY` present on the **server service only** — never in client env.
