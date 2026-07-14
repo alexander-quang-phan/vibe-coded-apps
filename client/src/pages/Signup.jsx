@@ -3,7 +3,7 @@ import { Link, Navigate, useNavigate } from 'react-router-dom';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
-import { Loader2, Scissors } from 'lucide-react';
+import { Loader2, MailCheck, Scissors } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -18,6 +18,7 @@ export default function Signup() {
   const { signUp, session, isLoading } = useAuth();
   const navigate = useNavigate();
   const [submitError, setSubmitError] = useState(null);
+  const [sentTo, setSentTo] = useState(null);
 
   const {
     register,
@@ -34,8 +35,14 @@ export default function Signup() {
 
   async function onSubmit(values) {
     setSubmitError(null);
-    const { error } = await signUp(values.email, values.password);
-    if (error) setSubmitError(error.message || 'Unable to sign up');
+    const { data, error } = await signUp(values.email, values.password);
+    if (error) {
+      setSubmitError(error.message || 'Unable to sign up');
+      return;
+    }
+    // With email confirmation enabled, signUp succeeds without a session —
+    // the account isn't usable until the emailed link is clicked.
+    if (!data?.session) setSentTo(values.email);
   }
 
   return (
@@ -64,6 +71,24 @@ export default function Signup() {
           </div>
         </div>
 
+        {sentTo ? (
+          <div className="space-y-4 rounded-2xl border border-border/60 bg-card/70 p-6 text-center shadow-xl shadow-primary/[0.06] backdrop-blur-md animate-pop-in">
+            <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-full bg-primary/15 text-primary">
+              <MailCheck className="h-6 w-6" strokeWidth={2.25} />
+            </div>
+            <div className="space-y-1.5">
+              <h2 className="text-lg font-bold tracking-tight">Check your inbox</h2>
+              <p className="text-sm text-muted-foreground">
+                We sent a confirmation link to{' '}
+                <span className="font-semibold text-foreground">{sentTo}</span>. Click it and
+                you&apos;re in.
+              </p>
+            </div>
+            <p className="text-xs text-muted-foreground">
+              Nothing yet? It can take a minute — and spam folders love hiding these.
+            </p>
+          </div>
+        ) : (
         <form
           onSubmit={handleSubmit(onSubmit)}
           className="space-y-4 rounded-2xl border border-border/60 bg-card/70 p-6 shadow-xl shadow-primary/[0.06] backdrop-blur-md"
@@ -100,6 +125,7 @@ export default function Signup() {
             Create account
           </Button>
         </form>
+        )}
 
         <p className="text-center text-sm text-muted-foreground">
           Already have an account?{' '}
