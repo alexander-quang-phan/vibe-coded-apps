@@ -55,13 +55,13 @@ Everything follows the existing contract: the browser never talks to Supabase fo
 
 ## 4. How the Enable Banking flow works (primer)
 
-Design-level understanding; exact endpoint names/fields must be verified against current Enable Banking docs during A0.
+API mechanics below were **verified against Enable Banking's live API reference on 2026-07-15** (not guessed). A working reference implementation of the whole flow exists: `server/scripts/spike-enablebanking.mjs` (committed for task 8.A0; delete once A0 concludes). Base URL: `https://api.enablebanking.com`.
 
-1. **App registration (one-time, manual):** Alex creates an Enable Banking account, registers an application, and receives an application ID + downloads a **private signing key**. All API calls are authenticated by a JWT that our server signs with this key — there is no per-user OAuth client secret dance.
-2. **Connect:** server asks Enable Banking to start an authorization for a chosen bank (ASPSP), passing our redirect URL and a `state` value. User is redirected to their **bank's own** login/consent screen (possibly via their banking app).
-3. **Callback:** bank redirects the user's browser back to our client callback page with a `code` + our `state`. Client posts these (authenticated with the user's Trim JWT) to our API, which exchanges the code for a **session** — the handle for the consented accounts. Consent has an expiry (UK typically ~90 or 180 days), after which the user must re-authorise.
-4. **Fetch:** with the session, the server lists accounts (IBAN/identifier, currency, name) and fetches transactions per account with date-range filters. We import **booked** (posted) transactions only — pending ones mutate and are skipped in MVP.
-5. **Restricted production:** the free mode. Accounts must be whitelisted in the Enable Banking control panel; API returns data only for whitelisted accounts. Fine for Alex + a handful of friends (limits to be confirmed in A0); full production needs a commercial agreement.
+1. **App registration (one-time, manual):** Alex creates an Enable Banking account, registers an application, and receives an application ID + downloads a **private RSA signing key**. Every API call carries `Authorization: Bearer <JWT>` where the JWT is signed by our server with that key: **RS256 only**, header `kid` = the application ID, claims `iss: "enablebanking.com"`, `aud: "api.enablebanking.com"`, `iat`/`exp` (max TTL 24 h). There is no per-user OAuth client secret dance. Credential smoke test: `GET /application`.
+2. **Connect:** `GET /aspsps?country=GB` lists banks (match by `name`). `POST /auth` with `{ access: { valid_until: <RFC3339> }, aspsp: { name, country }, state, redirect_url, psu_type: 'personal' }` returns `{ url }` — redirect the user there; they log in on their **bank's own** consent screen (possibly via their banking app).
+3. **Callback:** the bank redirects the user's browser back to our callback page with `?code=…&state=…`. Client posts these (authenticated with the user's Trim JWT) to our API, which calls `POST /sessions` with `{ code }` → `{ session_id, accounts: [{ uid, … }], access: { valid_until } }`. Consent has an expiry (UK typically ~90 or 180 days; exact value comes back in `valid_until`), after which the user must re-authorise.
+4. **Fetch:** `GET /accounts/{uid}/transactions?date_from=YYYY-MM-DD` returns `{ transactions: [], continuation_key }` — loop with `continuation_key` until absent. Transactions carry `status` (`'BOOK'` booked / pending otherwise) — we import **booked only** in MVP (pending ones mutate). Field mapping to our normalized shape: §5.2.
+5. **Restricted production:** the free mode. Accounts must be whitelisted in the Enable Banking control panel ("Activate by linking accounts"); the API returns data only for whitelisted accounts. Fine for Alex + a handful of friends (limits to be confirmed in A0); full production needs a commercial agreement.
 
 ## 5. Subsystem A — bank sync
 
@@ -139,6 +139,18 @@ fetchTransactions(sessionId, accountUid, { since }) // → [normalizedTx], booke
 ```
 
 A future `stripeFC.js` (US, Stripe Financial Connections) or `plaid.js` implements the same interface — routes and pipeline don't change. Enable Banking JWT signing (its private key) lives in this module only.
+
+**Enable Banking → normalizedTx field mapping** (verified 2026-07-15; the spike script uses exactly this):
+
+| normalizedTx | Enable Banking transaction field |
+| --- | --- |
+| `externalId` | `entry_reference` (when absent → sha256 fallback, §5.1) |
+| `amount` | `transaction_amount.amount` (as positive number) |
+| `type` | `credit_debit_indicator`: `'CRDT'` → `income`, `'DBIT'` → `expense` |
+| `description` | `remittance_information` array joined with spaces; fallback `creditor.name` / `debtor.name` |
+| `date` | `booking_date` (fallback `value_date`) |
+| `currency` | `transaction_amount.currency` |
+| *(filter)* | keep only `status === 'BOOK'` |
 
 ### 5.3 Sync engine — `server/lib/bankSync.js`
 
@@ -247,7 +259,7 @@ New env vars — **server only** (`server/.env`, Vercel project settings): `ENAB
 
 | # | Session | Ships / proves | Manual steps for Alex |
 | --- | --- | --- | --- |
-| **A0** | **Spike — go/no-go.** Enable Banking account; sandbox flow; restricted production with Alex's own bank; scratch script (scratchpad, not committed) pulls real transactions. Confirm: friends-whitelisting limits, production pricing, UK regulatory-umbrella terms, exact API shapes for §4. | Real UK bank data flows before any product code. Kill/pivot cheaply if blocked. | Create Enable Banking account; register app; download private key; whitelist own bank account. |
+| **A0** | **Spike — go/no-go.** Enable Banking account; restricted production with Alex's own bank; the **pre-built spike script `server/scripts/spike-enablebanking.mjs`** (written + syntax-checked 2026-07-15; run order in its header; delete after A0) pulls real transactions. Confirm: friends-whitelisting limits, production pricing, UK regulatory-umbrella terms. §4 API shapes are already verified. | Real UK bank data flows before any product code. Kill/pivot cheaply if blocked. | Create Enable Banking account; register app (redirect URL `https://trim-budget.vercel.app/connect-bank/callback`); download private key; add `ENABLEBANKING_APP_ID` + `ENABLEBANKING_PRIVATE_KEY_PATH` to `server/.env`; whitelist own bank account. |
 | **A1** | Migration 010 + adapter + connect flow: Settings card, `/connect-bank` picker, callback, complete. | Connect a real bank from the running UI. | Run 010 in Supabase SQL editor; add env vars. |
 | **A2** | Sync engine + import pipeline: throttle, 90-day backfill, dedup, currency guard, auto-categorize, `categorySuggest` extraction. | Real purchases appear in Trim untouched by hand; re-sync imports no duplicates. | — |
 | **A3** | Review inbox + gamification wiring + inbox-zero celebration + dashboard nudge + unsupported-country UX. | The daily loop feels good; VND users get graceful messaging. | — |

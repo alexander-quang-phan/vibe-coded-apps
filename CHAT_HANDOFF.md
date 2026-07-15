@@ -4,12 +4,13 @@
 Add the two features that make Trim shareable-beyond-friends and sellable: (1) purchases from users' existing debit/credit cards appear automatically (killing manual entry — the #1 budgeting-app complaint), and (2) a Stripe payment layer so users can eventually pay for Trim. This session was **validation + design only** — Alex builds later, one task per session.
 
 ## Current state
-**Designed, approved, committed — zero feature code written (by design).** Commit `75f775b` on worktree branch `claude/stripe-payment-integration-d042da` — **NOT merged to `main`; nothing deploys until it is.**
+**Designed, approved, MERGED to `main` and pushed to GitHub — zero feature code written (by design).** Live site unaffected (docs + one uncommitted-then-committed spike script only).
 
-- Full design spec: `docs/superpowers/specs/2026-07-15-bank-sync-and-billing-design.md` (+ PDF next to it for Alex).
+- Full design spec: `docs/superpowers/specs/2026-07-15-bank-sync-and-billing-design.md` (+ PDF next to it for Alex). Enable Banking API shapes **verified against their live docs 2026-07-15** and baked into spec §4 + the §5.2 field-mapping table — future build sessions must NOT re-research or guess them.
+- **Spike script ready to run:** `server/scripts/spike-enablebanking.mjs` (committed; syntax-checked; run order in its header; delete after 8.A0). It walks check → banks → connect → session → transactions against a real UK bank.
 - BUILD_PLAN.md: new **Phase 8** section, tasks 8.A0–8.C, each with a paste-ready chat prompt.
 - FEATURES.md: "Planned — Trim Premium" section.
-- App itself untouched; live site unaffected.
+- **Blocked on Alex only:** creating the Enable Banking account (Claude can't create accounts) — exact steps in spec §8 row A0 and the script header.
 
 ## Key decisions (and why)
 - **Stripe does NOT do transaction import** — validation's key correction. Stripe only processes payments *to* businesses; reading users' card purchases requires an **open banking provider**. Stripe's role in Trim = billing only.
@@ -22,16 +23,17 @@ Add the two features that make Trim shareable-beyond-friends and sellable: (1) p
 - Gotchas baked into the spec: Stripe webhook needs `express.raw` mounted BEFORE the global `express.json` in `server/index.js`; Vercel serverless = 60s cap + no reliable cron → sync-on-app-open with 6h server throttle; single-currency rule → non-matching-currency accounts refused (no FX).
 
 ## Files that matter
-- `docs/superpowers/specs/2026-07-15-bank-sync-and-billing-design.md` — THE spec (schema DDL 010/011, adapter interface, routes, security addendum, phased tasks). PDF alongside. Newest.
+- `docs/superpowers/specs/2026-07-15-bank-sync-and-billing-design.md` — THE spec (verified API mechanics §4, field mapping §5.2, schema DDL 010/011, routes, security addendum, phased tasks). PDF alongside. Newest.
+- `server/scripts/spike-enablebanking.mjs` — pre-built 8.A0 spike script (don't rewrite it; delete after A0).
 - `BUILD_PLAN.md` — Phase 8 tasks with chat prompts (the menu for the build sessions).
 - `FEATURES.md` — planned-features section added.
 - Plan file (approved): `~/.claude/plans/i-want-to-add-eager-wadler.md`.
 
 ## Next steps (in order)
-1. **Merge this branch to `main`** (docs only, safe): from the main checkout, merge `claude/stripe-payment-integration-d042da`.
-2. **Alex reads the PDF** and confirms/adjusts the £3.99/mo price and phasing.
-3. **Run task 8.A0** (paste its chat prompt from BUILD_PLAN.md Phase 8): Enable Banking account + spike against Alex's own bank. It's the go/no-go gate and answers the 5 open items in spec §9.
-4. Then 8.A1 → 8.A2 → 8.A3 (bank sync), 8.B1 → 8.B2 (Stripe), one session each.
+1. **Alex (~10 min, only he can):** create the Enable Banking account + application (redirect URL `https://trim-budget.vercel.app/connect-bank/callback`), download the private key to `~/Keys/`, add `ENABLEBANKING_APP_ID` + `ENABLEBANKING_PRIVATE_KEY_PATH` to `server/.env`, whitelist his own bank via "Activate by linking accounts".
+2. **Run task 8.A0** (paste its chat prompt from BUILD_PLAN.md Phase 8): drive the existing spike script to a GO/NO-GO and record the §9 answers in the spec.
+3. Then 8.A1 → 8.A2 → 8.A3 (bank sync), 8.B1 → 8.B2 (Stripe), one session each, prompts in BUILD_PLAN.md.
+4. Alex reads the PDF and confirms/adjusts the £3.99/mo price whenever — must be settled before 8.B1.
 
 ## Open questions for Alex
 - Final price: £3.99/mo / £29/yr suggested (Snoop is £5.99) — confirm after 8.A0 reveals Enable Banking's real production pricing.

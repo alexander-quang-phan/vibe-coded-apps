@@ -574,12 +574,15 @@ Acceptance criteria:
 **Chat prompt:**
 ```
 Read docs/superpowers/specs/2026-07-15-bank-sync-and-billing-design.md (§4, §8, §9).
-Spike only — no product code, no migrations. Walk Alex through creating an Enable Banking
-account + app registration (step-by-step, he's a beginner), then write a scratch script
-(scratchpad, not committed) that completes the auth flow against his own real UK bank in
-restricted production and prints the last 30 days of transactions. Answer the five open
-items in spec §9 (whitelisting limits, production pricing, consent lifetimes, stable tx
-ids, Vercel cron limits) and record the answers in the spec. End with GO or NO-GO.
+Spike only — no product code, no migrations. A working spike script ALREADY EXISTS at
+server/scripts/spike-enablebanking.mjs (API shapes verified 2026-07-15; run order in its
+header) — do NOT rewrite it. Walk Alex through creating an Enable Banking account + app
+registration (step-by-step, he's a beginner; redirect URL and env vars are listed in the
+script header and spec §8 row A0), then run the script's steps against his own real UK
+bank in restricted production until the last 30 days of transactions print. Answer the
+five open items in spec §9 (whitelisting limits, production pricing, consent lifetimes,
+stable tx ids, Vercel cron limits) and record the answers in the spec. End with GO or
+NO-GO; on GO, delete the spike script in the 8.A1 session once the real adapter exists.
 ```
 
 ### ▢ Task 8.A1 — Schema + adapter + connect flow
