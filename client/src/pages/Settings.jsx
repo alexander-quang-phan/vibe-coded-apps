@@ -46,12 +46,14 @@ export default function Settings() {
   const [currency, setCurrency] = useState('GBP');
   const [simpleMode, setSimpleMode] = useState(false);
   const [displayName, setDisplayName] = useState('');
+  const [specialEnabled, setSpecialEnabled] = useState(false);
 
   useEffect(() => {
     if (!data) return;
     setCurrency(data.preferences.currency ?? 'GBP');
     setSimpleMode(!!data.preferences.simpleMode);
     setDisplayName(data.preferences.displayName ?? '');
+    setSpecialEnabled(!!data.preferences.specialExpensesEnabled);
   }, [data]);
 
   const updateMutation = useMutation({
@@ -72,6 +74,11 @@ export default function Settings() {
   function saveSimpleMode(next) {
     setSimpleMode(next);
     updateMutation.mutate({ simpleMode: next });
+  }
+
+  function saveSpecialEnabled(next) {
+    setSpecialEnabled(next);
+    updateMutation.mutate({ specialExpensesEnabled: next });
   }
 
   function saveDisplayName() {
@@ -172,6 +179,34 @@ export default function Settings() {
                   <span
                     className={`inline-block h-5 w-5 transform rounded-full bg-background shadow transition-transform ${
                       simpleMode ? 'translate-x-[22px]' : 'translate-x-0.5'
+                    }`}
+                  />
+                </button>
+              </div>
+
+              <div className="flex items-start justify-between gap-4 rounded-lg border border-border bg-secondary/40 p-4">
+                <div className="space-y-0.5">
+                  <Label htmlFor="special-expenses" className="cursor-pointer">
+                    Special expenses
+                  </Label>
+                  <p className="text-xs text-muted-foreground">
+                    Track gifts, trips and one-offs outside your monthly budget. Off by
+                    default — flip it on and a star appears in Quick-Add.
+                  </p>
+                </div>
+                <button
+                  id="special-expenses"
+                  type="button"
+                  role="switch"
+                  aria-checked={specialEnabled}
+                  onClick={() => saveSpecialEnabled(!specialEnabled)}
+                  className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer items-center rounded-full transition-colors ${
+                    specialEnabled ? 'bg-primary' : 'bg-muted'
+                  }`}
+                >
+                  <span
+                    className={`inline-block h-5 w-5 transform rounded-full bg-background shadow transition-transform ${
+                      specialEnabled ? 'translate-x-[22px]' : 'translate-x-0.5'
                     }`}
                   />
                 </button>

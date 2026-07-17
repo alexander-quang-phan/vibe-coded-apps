@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
-import { ChevronDown, Sparkles, ArrowLeft, Loader2 } from 'lucide-react';
+import { ChevronDown, Sparkles, ArrowLeft, Loader2, Star } from 'lucide-react';
 import {
   Dialog,
   DialogContent,
@@ -33,7 +33,13 @@ function minorToMajorStr(minor, currency) {
   return currency === 'VND' ? String(major) : major.toFixed(2);
 }
 
-export function QuickAddDialog({ open, onOpenChange, currency = 'GBP', simpleMode = false }) {
+export function QuickAddDialog({
+  open,
+  onOpenChange,
+  currency = 'GBP',
+  simpleMode = false,
+  specialEnabled = false,
+}) {
   const api = useApi();
   const queryClient = useQueryClient();
 
@@ -46,6 +52,7 @@ export function QuickAddDialog({ open, onOpenChange, currency = 'GBP', simpleMod
   const [freeformText, setFreeformText] = useState('');
   const [parseError, setParseError] = useState(null);
   const [suggestedCategoryId, setSuggestedCategoryId] = useState(null);
+  const [isSpecial, setIsSpecial] = useState(false);
   const amountRef = useRef(null);
   const freeformRef = useRef(null);
 
@@ -60,6 +67,7 @@ export function QuickAddDialog({ open, onOpenChange, currency = 'GBP', simpleMod
       setFreeformText('');
       setParseError(null);
       setSuggestedCategoryId(null);
+      setIsSpecial(false);
       setTimeout(() => amountRef.current?.focus(), 80);
     }
   }, [open]);
@@ -125,6 +133,8 @@ export function QuickAddDialog({ open, onOpenChange, currency = 'GBP', simpleMod
       } else if (d?.streakExtended && d.currentStreak > 1 && d.currentStreak % 7 === 0) {
         celebrateStreakMilestone();
         toast.success(`${d.currentStreak}-day streak! 🔥`);
+      } else if (type === 'expense' && isSpecial) {
+        toast.success('Logged as special ⭐', { description: 'Outside your monthly budget' });
       } else {
         toast.success('Logged', { description: `+${d?.awardedXp ?? 0} XP` });
       }
@@ -184,6 +194,7 @@ export function QuickAddDialog({ open, onOpenChange, currency = 'GBP', simpleMod
       type,
       description: description.trim() || null,
       date,
+      ...(type === 'expense' ? { isSpecial } : {}),
     });
   }
 
@@ -450,6 +461,21 @@ export function QuickAddDialog({ open, onOpenChange, currency = 'GBP', simpleMod
                       onChange={(e) => setDescription(e.target.value)}
                     />
                   </div>
+                  {specialEnabled && type === 'expense' ? (
+                    <label className="flex items-center justify-between rounded-lg border border-border/60 bg-secondary/30 px-3 py-2">
+                      <span className="flex items-center gap-2 text-sm">
+                        <Star className="h-4 w-4 text-amber-400" aria-hidden />
+                        Special expense
+                        <span className="text-xs text-muted-foreground">kept out of your monthly budget</span>
+                      </span>
+                      <input
+                        type="checkbox"
+                        className="h-4 w-4 accent-primary"
+                        checked={isSpecial}
+                        onChange={(e) => setIsSpecial(e.target.checked)}
+                      />
+                    </label>
+                  ) : null}
                 </div>
               ) : null}
             </div>
