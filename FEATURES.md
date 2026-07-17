@@ -52,6 +52,7 @@
 - Recent 5 transactions + a 3-entry "Recent wins" peek side-by-side (lg). The peek links to /wins, which hosts the full feed (latest 10, playful empty state) — Task 6.A moved it off the Dashboard. No SubscriptionsCard on the Dashboard anymore; the audit nudge is the summary strip on /subscriptions itself.
 - Quick-Add FAB bottom-right (safe-area-bottom).
 - **Simple-mode Dashboard** (when `user_stats.simple_mode = true`): the donut + budget alerts pair and the MonthProjection card are replaced by a single SimpleMonthCard — one big "£X left this month" headline plus a gradient progress bar against `user_stats.monthly_limit`. If the limit hasn't been set yet, the same slot renders an inline "Set your monthly limit" form rather than bouncing the user to Settings.
+- **Special expenses chip (opt-in, Task 9.2):** when `user_stats.special_expenses_enabled` is on and there's at least one flagged expense this month, a third amber "Special" chip appears beside the In/Out chips in the hero, showing `month.specialThisMonth` — flagged gifts/trips/one-offs, honestly still counted in hero cash-flow but excluded from the by-category card and budget alerts below it. Dormant when the pref is off: no chip, exclusions stop applying.
 
 ### Quick-Add flow (critical)
 
@@ -63,6 +64,7 @@
 - On success: invalidate `['dashboard', 'transactions', 'me']`, trigger appropriate confetti, show toast.
 - **"Type it instead" path (Task 6.6):** a sparkle-chip toggle at the top of the dialog swaps the structured form for a single freeform textarea ("e.g. spent 12 quid on tacos last night"). Submitting calls `POST /api/transactions/parse`, which returns a draft. The dialog snaps back to the structured form with amount/type/description/date pre-filled and the suggested category chip ringed in emerald — the user still taps a chip to log. Parse never auto-saves. Failure / low confidence / API unavailable falls back to a friendly amber prompt ("couldn't quite read that — mind trying again?") with a "Use chips" escape hatch.
 - **Simple-mode variant:** when `user_stats.simple_mode = true`, the Income/Expense segments, chip grid, and advanced toggle all hide; the dialog collapses to amount + a single "Log" button. The transaction is filed against the seeded "Other" expense category. This is the deliberate 2-tap exception to the otherwise-3-tap rule (FEATURES.md → philosophy → simple mode).
+- **Special expense toggle (opt-in, Task 9.2):** when the Settings pref is on, a starred "Special expense" checkbox appears inside the hidden advanced area — expenses only, off by default per log. Flagging it excludes the transaction from budget math; the success toast reads "Logged as special ⭐" instead of the usual XP toast. Invisible whenever the pref is off, so the 3-tap path never grows a step.
 
 ### Transactions
 
@@ -71,6 +73,7 @@
 - Inline edit dialog: amount, category, date, note.
 - Row delete with confirm.
 - CSV export of the currently-filtered set.
+- **Special expenses (opt-in, Task 9.2):** when the pref is on, each expense row gets a one-tap star/unstar ghost button next to Edit — retroactively including or excluding a transaction from budget math without opening the edit dialog — plus a small star marker beside starred amounts and a "Special" filter chip alongside the type filter. The edit dialog carries the same checkbox. All of this is invisible when the pref is off.
 
 ### Budgets
 
@@ -120,6 +123,7 @@
 - Currency picker (GBP / USD / AUD / VND / PLN) — display only, no FX conversion.
 - Simple mode toggle. Flipping it on without a `monthly_limit` set hands the user off to the SimpleMonthCard's inline limit form on the Dashboard rather than bouncing them around.
 - Display name.
+- **Special expenses toggle (opt-in, Task 9.2):** off by default. "Track gifts, trips and one-offs outside your monthly budget. Off by default — flip it on and a star appears in Quick-Add." Turning it off makes every past and future special flag dormant — server math and client UI both go back to treating every transaction as normal.
 - Manage categories (Task 6.11): rename, recolour, change icon, add new, delete with reassign-to-Other recovery flow. Default categories are personalisable but the seeded "Other" / "Other Income" are protected from deletion (they're the reassign safety net).
 
 ### Login / Signup
@@ -148,7 +152,6 @@ Full design: `docs/superpowers/specs/2026-07-15-bank-sync-and-billing-design.md`
 
 Full design: `docs/superpowers/specs/2026-07-17-pln-privacy-history-pace-special-design.md` · plan: `docs/superpowers/plans/2026-07-17-phase9-pln-privacy-history-pace-special.md` · build tasks: BUILD_PLAN.md Phase 9.
 
-- **Special expenses (opt-in, off by default)** — a star flag for gifts/trips/one-offs: excluded from budget bars, pace, affordability, projections and wins, but still honest in hero cash flow, the transaction list and analytics, with a separate "Special this month" total. Settings toggle; flags go dormant when disabled.
 - **Budget pace** — "by day N you'd typically have used £X of your budget" beside "Can I afford this?" (and in SimpleMonthCard vs `monthly_limit`). Amber when ahead of pace, never red.
 - **Monthly history** — per-month Spent/Income/Net/Special table on Analytics (24 months), rows deep-link to Transactions filtered to that month.
 - **Encryption at rest** — amounts, descriptions, notes, category/goal names, budget limits and Ask Trim chats encrypted (AES-256-GCM, per-user derived keys) so the operator can't casually read users' finances in Supabase. Honest limits documented in SECURITY.md when built.
@@ -188,6 +191,7 @@ Trim layers a quiet, breathing visual system on top of the design tokens to feel
 - **Single currency per user** (GBP / USD / AUD / VND / PLN), stored on `user_stats.currency`.
 - **No FX** — switching currency only changes display units (locale + symbol).
 - Server validates `amount` as positive, finite, ≤ 1,000,000,000.
+- **Special expenses are opt-in and dormant when off** (`user_stats.special_expenses_enabled`, `transactions.is_special`) — when enabled, flagged expenses are excluded from budget bars, projections, affordability and wins math, but always counted in hero cash-flow, the transaction list and analytics (which get their own `special` bucket). The exclusion logic lives in one place, `server/lib/special.js`.
 
 ## How a future session should apply this
 

@@ -669,7 +669,7 @@ done applies: client build passes, switch to PLN in the running UI and see zł o
 Dashboard, docs updated, committed. Say explicitly the branch still needs merging to main.
 ```
 
-### ▢ Task 9.2 — Special expenses (opt-in)
+### ✅ Task 9.2 — Special expenses (opt-in)
 
 **Chat prompt:**
 ```
