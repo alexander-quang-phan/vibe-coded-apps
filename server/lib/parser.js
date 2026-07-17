@@ -6,7 +6,7 @@ const MAX_TOKENS = 200;
 
 const responseSchema = z.object({
   amount: z.number().finite().nonnegative().max(100_000_000_000),
-  currency: z.enum(['GBP', 'USD', 'AUD', 'VND']),
+  currency: z.enum(['GBP', 'USD', 'AUD', 'VND', 'PLN']),
   categoryId: z.string().uuid().nullable(),
   description: z.string().trim().min(1).max(200),
   occurredAt: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
@@ -23,7 +23,7 @@ function buildSystemPrompt({ categories, currency, today }) {
 Schema (all keys required):
 {
   "amount": number — amount in MINOR units. "12 quid" → 1200, "£4.50" → 450, "12000 dong" → 12000 (VND has no minor units).
-  "currency": "GBP" | "USD" | "AUD" | "VND"
+  "currency": "GBP" | "USD" | "AUD" | "VND" | "PLN"
   "categoryId": string (UUID from the list below) OR null
   "description": short string (1–5 words) capturing what was bought / received. Lowercase unless it's a proper noun.
   "occurredAt": "YYYY-MM-DD"
@@ -43,7 +43,8 @@ Currency cues:
 - "quid", "£", "pence", "p" → GBP
 - "$", "bucks", "dollars" → use the user's default (${currency}) unless USD or AUD is explicit
 - "₫", "vnd", "dong" → VND
-- Any currency outside GBP/USD/AUD/VND, or no cue at all → use the user's default (${currency}).
+- "zł", "zloty", "zlotych", "pln" → PLN ("50 zł" → 5000 — grosz minor units, ×100 like pence)
+- Any currency outside GBP/USD/AUD/VND/PLN, or no cue at all → use the user's default (${currency}).
 
 Categories (use one of these UUIDs, or null if nothing matches well):
 ${list || '(no categories — return null for categoryId)'}

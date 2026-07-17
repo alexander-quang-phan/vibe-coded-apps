@@ -117,7 +117,7 @@
 
 ### Settings
 
-- Currency picker (GBP / USD / AUD / VND) — display only, no FX conversion.
+- Currency picker (GBP / USD / AUD / VND / PLN) — display only, no FX conversion.
 - Simple mode toggle. Flipping it on without a `monthly_limit` set hands the user off to the SimpleMonthCard's inline limit form on the Dashboard rather than bouncing them around.
 - Display name.
 - Manage categories (Task 6.11): rename, recolour, change icon, add new, delete with reassign-to-Other recovery flow. Default categories are personalisable but the seeded "Other" / "Other Income" are protected from deletion (they're the reassign safety net).

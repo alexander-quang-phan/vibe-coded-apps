@@ -658,7 +658,7 @@ the existing bankProviders interface. No route or pipeline changes expected.
 
 > **Source of truth:** spec `docs/superpowers/specs/2026-07-17-pln-privacy-history-pace-special-design.md` (decisions locked with Alex) + step-by-step plan `docs/superpowers/plans/2026-07-17-phase9-pln-privacy-history-pace-special.md`. Every task below = one chat, **in order** — 9.2's flag feeds 9.3/9.4's math, and 9.5 (encryption) must go last: it touches every route and ends in an irreversible migration. Do NOT start 9.5 until 9.1–9.4 are merged to `main` and verified.
 
-### ▢ Task 9.1 — PLN currency
+### ✅ Task 9.1 — PLN currency
 
 **Chat prompt:**
 ```

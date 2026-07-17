@@ -6,7 +6,7 @@ import { titleForLevel, levelProgress } from '../lib/gamification.js';
 const router = Router();
 
 const prefsSchema = z.object({
-  currency: z.enum(['GBP', 'USD', 'AUD', 'VND']).optional(),
+  currency: z.enum(['GBP', 'USD', 'AUD', 'VND', 'PLN']).optional(),
   simpleMode: z.boolean().optional(),
   displayName: z.string().trim().max(50).optional().nullable(),
   // Simple-mode monthly cap (Task 6.5). Null clears it.

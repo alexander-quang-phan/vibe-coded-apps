@@ -3,6 +3,7 @@ const CURRENCY_LOCALE = {
   USD: 'en-US',
   AUD: 'en-AU',
   VND: 'vi-VN',
+  PLN: 'pl-PL',
 };
 
 export function formatMoney(amount, currency = 'GBP', { compact = false } = {}) {

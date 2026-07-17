@@ -23,6 +23,7 @@ const CURRENCIES = [
   { code: 'USD', label: 'USD · US Dollar' },
   { code: 'AUD', label: 'AUD · Australian Dollar' },
   { code: 'VND', label: 'VND · Vietnamese Dong' },
+  { code: 'PLN', label: 'PLN · Polish Złoty' },
 ];
 
 function SettingsSkeleton() {
