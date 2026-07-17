@@ -144,6 +144,16 @@ Full design: `docs/superpowers/specs/2026-07-15-bank-sync-and-billing-design.md`
 - **Trim Premium billing (Stripe).** Freemium: manual logging + gamification free forever; bank sync becomes the premium feature at ~£3.99/mo (or £29/yr) via Stripe-hosted Checkout + Customer Portal — card details never touch Trim. During the current testing phase sync is free for everyone (`PREMIUM_ENFORCED=false`); flipping to paid is a config change.
 - **Naming rule:** this is "billing / plan / premium" in code and copy — "Subscriptions" already means the recurring-merchant detection feature.
 
+## Planned — Phase 9 (designed 2026-07-17, not built)
+
+Full design: `docs/superpowers/specs/2026-07-17-pln-privacy-history-pace-special-design.md` · plan: `docs/superpowers/plans/2026-07-17-phase9-pln-privacy-history-pace-special.md` · build tasks: BUILD_PLAN.md Phase 9.
+
+- **PLN currency** — fifth display currency (pl-PL locale, zł, grosz minor units in the parser).
+- **Special expenses (opt-in, off by default)** — a star flag for gifts/trips/one-offs: excluded from budget bars, pace, affordability, projections and wins, but still honest in hero cash flow, the transaction list and analytics, with a separate "Special this month" total. Settings toggle; flags go dormant when disabled.
+- **Budget pace** — "by day N you'd typically have used £X of your budget" beside "Can I afford this?" (and in SimpleMonthCard vs `monthly_limit`). Amber when ahead of pace, never red.
+- **Monthly history** — per-month Spent/Income/Net/Special table on Analytics (24 months), rows deep-link to Transactions filtered to that month.
+- **Encryption at rest** — amounts, descriptions, notes, category/goal names, budget limits and Ask Trim chats encrypted (AES-256-GCM, per-user derived keys) so the operator can't casually read users' finances in Supabase. Honest limits documented in SECURITY.md when built.
+
 ## Design direction
 
 - **Dark mode default**, light-mode toggle. Persisted to `localStorage['trim-theme']`. Applied inline before React mounts (no flash).

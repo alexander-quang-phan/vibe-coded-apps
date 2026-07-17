@@ -101,7 +101,7 @@ pace: {
 
 ### 3.5 Encryption at rest (task 9.5 — build LAST; riskiest, touches every money route)
 
-**Verified 2026-07-17 (do not re-derive):** all money/text computation happens in JS on the Express server after fetching rows — zero `.rpc()` calls, zero SQL aggregates, zero `ORDER BY amount` anywhere in `server/routes/` + `server/lib/`. Exactly **one** SQL query reads a sensitive column's content: `routes/categories.js:77` (`.ilike('description', …)` for merchant suggestions) — it must move to JS matching over the user's recent decrypted transactions (fetch last ~300, match in code; behaviour identical to the user).
+**Verified 2026-07-17 (do not re-derive):** all money/text computation happens in JS on the Express server after fetching rows — zero `.rpc()` calls, zero SQL aggregates, zero `ORDER BY amount` anywhere in `server/routes/` + `server/lib/`. Exactly **two** SQL queries read a sensitive column's content, both in the merchant-suggest endpoint: `routes/categories.js:77` (`.ilike('description', …)`) and `routes/categories.js:100` (`.eq('name', keywordName)` on categories). Both move to JS matching over decrypted rows (fetch the user's recent ~300 transactions / their category list, match in code; behaviour identical to the user).
 
 **Crypto design — new `server/lib/crypto.js` (pure Node, no extensions):**
 - AES-256-GCM via `node:crypto`. Master key: new env `DATA_ENCRYPTION_KEY` (32 bytes, base64).
@@ -132,6 +132,8 @@ pace: {
    - Numeric Zod validation (positive, finite, ≤1e9) stays at the API boundary — unchanged.
 
 **Route changes:** the nine amount-touching routes (`affordability, analytics, budgets, dashboard, goals, projections, subscriptions, transactions, wins`) + `categories`, `ask`, `me` switch to encrypt-on-write / decrypt-after-fetch via the helpers. Mechanical but wide — this is why it's the last task, after the feature math above has settled.
+
+**Category-seeding trigger:** the `handle_new_user` SQL trigger seeds 12 default categories by plaintext `name`; Postgres never holds the key, so it cannot encrypt. Seeding moves to the server: on `GET /api/me` with zero categories, insert the 12 defaults through the API path with encrypted names (mirrors the existing lazy `user_stats` insert). The trigger keeps only its `user_stats` part.
 
 **Honest limits — copy into SECURITY.md verbatim:**
 - The server (and therefore Alex, who deploys it) holds `DATA_ENCRYPTION_KEY`. This protects against **casual or accidental viewing** (Supabase dashboard, SQL console, DB backups show ciphertext) and supports a truthful "your financial data is encrypted at rest" statement. It is **not** protection against a malicious operator. True E2E was considered and rejected (kills Ask Trim / parser / subscription detection / bank sync).

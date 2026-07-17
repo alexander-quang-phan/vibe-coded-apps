@@ -568,6 +568,8 @@ Acceptance criteria:
 ## Phase 8 — Trim Premium: bank auto-import + Stripe billing
 
 > **Source of truth:** `docs/superpowers/specs/2026-07-15-bank-sync-and-billing-design.md` (schema DDL, adapter interface, route contracts, security addendum). Every task below = one chat. Read the spec §-references before coding. Order matters: A0 is a go/no-go gate.
+>
+> **Migration renumbering (2026-07-17):** Phase 9 claimed migration numbers 010–013. Phase 8's spec references to `010_bank_sync.sql` / 011 become **014+** when built — use the next free number at build time.
 
 ### ▢ Task 8.A0 — Enable Banking spike (go/no-go)
 
@@ -648,6 +650,75 @@ Verify with a real £-priced checkout + immediate refund.
 Read the spec (§5.2, §8 row C). Add a second provider module (stripeFC.js via Stripe
 Financial Connections, or plaid.js pay-as-you-go — decide with AskUserQuestion) behind
 the existing bankProviders interface. No route or pipeline changes expected.
+```
+
+---
+
+## Phase 9 — PLN, special expenses, budget pace, monthly history, encryption at rest
+
+> **Source of truth:** spec `docs/superpowers/specs/2026-07-17-pln-privacy-history-pace-special-design.md` (decisions locked with Alex) + step-by-step plan `docs/superpowers/plans/2026-07-17-phase9-pln-privacy-history-pace-special.md`. Every task below = one chat, **in order** — 9.2's flag feeds 9.3/9.4's math, and 9.5 (encryption) must go last: it touches every route and ends in an irreversible migration. Do NOT start 9.5 until 9.1–9.4 are merged to `main` and verified.
+
+### ▢ Task 9.1 — PLN currency
+
+**Chat prompt:**
+```
+Read docs/superpowers/plans/2026-07-17-phase9-pln-privacy-history-pace-special.md (Task 1)
+and spec §3.1. Add PLN: migration 010 (enum value), me.js + parser.js enums and parser cues
+(zł/zloty/pln, grosz ×100), format.js pl-PL locale, Settings picker entry. Definition of
+done applies: client build passes, switch to PLN in the running UI and see zł on the
+Dashboard, docs updated, committed. Say explicitly the branch still needs merging to main.
+```
+
+### ▢ Task 9.2 — Special expenses (opt-in)
+
+**Chat prompt:**
+```
+Read docs/superpowers/plans/2026-07-17-phase9-pln-privacy-history-pace-special.md (Task 2)
+and spec §3.2. Build the opt-in special-expenses flag end-to-end: migration 011, the
+special_expenses_enabled preference (Settings toggle, off by default), lib/special.js
+helper, budget-math exclusions in budgets/dashboard/projections/affordability/wins,
+analytics special buckets, the ?month= transactions param, Quick-Add star toggle in the
+advanced area, star/unstar on Transactions rows + edit dialog + filter chip, Dashboard
+hero Special chip, askContext flag, devMock mirrors. Verify the full click-through in the
+plan's Step 11 — especially that disabling the pref makes everything count normally again.
+```
+
+### ▢ Task 9.3 — Budget pace ("should have spent by now")
+
+**Chat prompt:**
+```
+Read docs/superpowers/plans/2026-07-17-phase9-pln-privacy-history-pace-special.md (Task 3)
+and spec §3.3. Extend GET /api/projections/month with the pace block (returned even when
+ready:false; monthly budgets sum, or monthly_limit in simple mode; special excluded via
+9.2's helper). Render the pace line in AffordabilityCheck and SimpleMonthCard — amber when
+ahead of pace, never red. Verify in the running UI in both modes and with no budgets set.
+```
+
+### ▢ Task 9.4 — Monthly history on Analytics
+
+**Chat prompt:**
+```
+Read docs/superpowers/plans/2026-07-17-phase9-pln-privacy-history-pace-special.md (Task 4)
+and spec §3.4. Analytics fetches months=24 (chart keeps last 6); new MonthlyHistory
+component (Spent / Income / Net / Special per month, newest first, pre-signup months
+trimmed, current month marked "so far"); rows deep-link to /transactions?month=YYYY-MM,
+which seeds the month filter via useSearchParams AND passes month to the API so months
+older than the 200-row window load. Verify by tapping into an old month in the running UI.
+```
+
+### ▢ Task 9.5 — Encryption at rest (LAST — destructive migration at the end)
+
+**Chat prompt:**
+```
+Read docs/superpowers/plans/2026-07-17-phase9-pln-privacy-history-pace-special.md (Task 5)
+and spec §3.5 fully before touching anything. Preconditions: 9.1–9.4 merged and verified;
+Alex has generated DATA_ENCRYPTION_KEY (openssl rand -base64 32), put it in server/.env +
+Vercel, and backed it up in ~/Keys/ — walk him through this first. Then: lib/crypto.js with
+node:test tests FIRST (npm test passes), additive migration 012, encrypt-backfill.mjs with
+per-row round-trip verification, dual-write route sweep, full click-through on encrypted
+data, and ONLY THEN — with Alex's explicit confirmation in that session — migration 013
+dropping plaintext (irreversible) + the category-seeding move from the SQL trigger to
+GET /api/me. Update SECURITY.md with the spec's honest-limits block verbatim.
 ```
 
 ---
