@@ -148,7 +148,6 @@ Full design: `docs/superpowers/specs/2026-07-15-bank-sync-and-billing-design.md`
 
 Full design: `docs/superpowers/specs/2026-07-17-pln-privacy-history-pace-special-design.md` · plan: `docs/superpowers/plans/2026-07-17-phase9-pln-privacy-history-pace-special.md` · build tasks: BUILD_PLAN.md Phase 9.
 
-- **PLN currency** — fifth display currency (pl-PL locale, zł, grosz minor units in the parser).
 - **Special expenses (opt-in, off by default)** — a star flag for gifts/trips/one-offs: excluded from budget bars, pace, affordability, projections and wins, but still honest in hero cash flow, the transaction list and analytics, with a separate "Special this month" total. Settings toggle; flags go dormant when disabled.
 - **Budget pace** — "by day N you'd typically have used £X of your budget" beside "Can I afford this?" (and in SimpleMonthCard vs `monthly_limit`). Amber when ahead of pace, never red.
 - **Monthly history** — per-month Spent/Income/Net/Special table on Analytics (24 months), rows deep-link to Transactions filtered to that month.
@@ -186,7 +185,7 @@ Trim layers a quiet, breathing visual system on top of the design tokens to feel
 
 ## Money model
 
-- **Single currency per user,** stored on `user_stats.currency`.
+- **Single currency per user** (GBP / USD / AUD / VND / PLN), stored on `user_stats.currency`.
 - **No FX** — switching currency only changes display units (locale + symbol).
 - Server validates `amount` as positive, finite, ≤ 1,000,000,000.
 
