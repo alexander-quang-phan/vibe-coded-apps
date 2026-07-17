@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { supabase } from '../lib/supabase.js';
 import { titleForLevel, levelProgress } from '../lib/gamification.js';
+import { excludeSpecial, sumSpecial } from '../lib/special.js';
 
 const router = Router();
 
@@ -25,7 +26,7 @@ router.get('/', async (req, res, next) => {
         .single(),
       supabase
         .from('transactions')
-        .select('id, amount, type, category_id, date')
+        .select('id, amount, type, category_id, date, is_special')
         .eq('user_id', req.user.id)
         .gte('date', firstISO)
         .lt('date', nextFirstISO),
@@ -53,18 +54,23 @@ router.get('/', async (req, res, next) => {
     const stats = statsResult.data;
     const txs = txResult.data;
     const categoriesById = new Map(catResult.data.map((c) => [c.id, c]));
+    const specialEnabled = !!stats.special_expenses_enabled;
 
+    // Hero totals stay honest cash-flow — every transaction counts, special or not.
     let income = 0;
     let expenses = 0;
-    const categoryTotals = new Map();
-
     for (const t of txs) {
       const amt = Number(t.amount);
       if (t.type === 'income') income += amt;
-      else if (t.type === 'expense') {
-        expenses += amt;
-        categoryTotals.set(t.category_id, (categoryTotals.get(t.category_id) ?? 0) + amt);
-      }
+      else if (t.type === 'expense') expenses += amt;
+    }
+
+    // By-category breakdown (donut, top-5, budget alerts) excludes special
+    // expenses while the pref is on — the "outside the monthly budget" promise.
+    const categoryTotals = new Map();
+    for (const t of excludeSpecial(txs, specialEnabled)) {
+      if (t.type !== 'expense') continue;
+      categoryTotals.set(t.category_id, (categoryTotals.get(t.category_id) ?? 0) + Number(t.amount));
     }
 
     const categoryBreakdown = Array.from(categoryTotals.entries())
@@ -115,6 +121,7 @@ router.get('/', async (req, res, next) => {
         expenses: Number(expenses.toFixed(2)),
         balance: Number((income - expenses).toFixed(2)),
         transactionCount: txs.length,
+        specialThisMonth: Number(sumSpecial(txs, specialEnabled).toFixed(2)),
       },
       categoryBreakdown,
       budgetAlerts,
@@ -145,6 +152,7 @@ router.get('/', async (req, res, next) => {
         simpleMode: stats.simple_mode,
         displayName: stats.display_name,
         monthlyLimit: stats.monthly_limit === null ? null : Number(stats.monthly_limit),
+        specialExpensesEnabled: stats.special_expenses_enabled,
       },
     });
   } catch (err) {

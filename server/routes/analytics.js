@@ -25,10 +25,10 @@ router.get('/', async (req, res, next) => {
     const startISO = startDate.toISOString().slice(0, 10);
     const endISO = endDate.toISOString().slice(0, 10);
 
-    const [txRes, catsRes] = await Promise.all([
+    const [txRes, catsRes, statsRes] = await Promise.all([
       supabase
         .from('transactions')
-        .select('amount, type, date, category_id')
+        .select('amount, type, date, category_id, is_special')
         .eq('user_id', req.user.id)
         .gte('date', startISO)
         .lt('date', endISO),
@@ -36,15 +36,23 @@ router.get('/', async (req, res, next) => {
         .from('categories')
         .select('id, name, icon, color, type')
         .eq('user_id', req.user.id),
+      supabase
+        .from('user_stats')
+        .select('special_expenses_enabled')
+        .eq('user_id', req.user.id)
+        .single(),
     ]);
     if (txRes.error) throw txRes.error;
     if (catsRes.error) throw catsRes.error;
+    if (statsRes.error) throw statsRes.error;
+
+    const specialEnabled = !!statsRes.data.special_expenses_enabled;
 
     // Build empty months series (ascending).
     const series = [];
     for (let i = 0; i < months; i++) {
       const d = new Date(Date.UTC(startDate.getUTCFullYear(), startDate.getUTCMonth() + i, 1));
-      series.push({ ym: ymKey(d), label: monthLabel(d), income: 0, expenses: 0, net: 0 });
+      series.push({ ym: ymKey(d), label: monthLabel(d), income: 0, expenses: 0, net: 0, special: 0 });
     }
     const seriesByYm = new Map(series.map((s) => [s.ym, s]));
 
@@ -63,6 +71,7 @@ router.get('/', async (req, res, next) => {
       const amount = Number(t.amount);
       if (t.type === 'income') bucket.income += amount;
       else bucket.expenses += amount;
+      if (t.is_special && specialEnabled) bucket.special += amount;
 
       if (ym === thisYm && t.type === 'expense') {
         catTotalsThisMonth.set(t.category_id, (catTotalsThisMonth.get(t.category_id) ?? 0) + amount);
@@ -73,6 +82,7 @@ router.get('/', async (req, res, next) => {
       s.income = Number(s.income.toFixed(2));
       s.expenses = Number(s.expenses.toFixed(2));
       s.net = Number((s.income - s.expenses).toFixed(2));
+      s.special = Number(s.special.toFixed(2));
     }
 
     const topCategories = [...catTotalsThisMonth.entries()]

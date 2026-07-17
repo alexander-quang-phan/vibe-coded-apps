@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import { supabase } from '../lib/supabase.js';
+import { excludeSpecial } from '../lib/special.js';
 
 const router = Router();
 const DAY_MS = 86_400_000;
@@ -40,12 +41,12 @@ router.get('/', async (req, res, next) => {
     const [statsRes, txRes, catsRes, budgetsRes, goalsRes, contribsRes] = await Promise.all([
       supabase
         .from('user_stats')
-        .select('current_streak, longest_streak, shields, last_logged_date, currency')
+        .select('current_streak, longest_streak, shields, last_logged_date, currency, special_expenses_enabled')
         .eq('user_id', req.user.id)
         .single(),
       supabase
         .from('transactions')
-        .select('id, amount, type, category_id, date, created_at')
+        .select('id, amount, type, category_id, date, created_at, is_special')
         .eq('user_id', req.user.id)
         .gte('date', weekStartISO)
         .lte('date', todayISO)
@@ -81,8 +82,9 @@ router.get('/', async (req, res, next) => {
     const goalsById = new Map(goalsRes.data.map((g) => [g.id, g]));
     const events = [];
 
+    const specialEnabled = !!stats.special_expenses_enabled;
     const expensesByCategory = new Map();
-    for (const tx of txRes.data) {
+    for (const tx of excludeSpecial(txRes.data, specialEnabled)) {
       if (tx.type !== 'expense') continue;
       expensesByCategory.set(
         tx.category_id,

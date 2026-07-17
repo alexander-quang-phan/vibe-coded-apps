@@ -14,6 +14,8 @@ const createSchema = z.object({
   type: z.enum(['income', 'expense']),
   description: z.string().trim().max(200).optional().nullable(),
   date: isoDate.optional(),
+  // Opt-in special expenses (Task 9.2) — gifts/trips/one-offs outside the budget.
+  isSpecial: z.boolean().optional(),
 });
 
 const updateSchema = z.object({
@@ -22,6 +24,7 @@ const updateSchema = z.object({
   type: z.enum(['income', 'expense']).optional(),
   description: z.string().trim().max(200).optional().nullable(),
   date: isoDate.optional(),
+  isSpecial: z.boolean().optional(),
 });
 
 const parseSchema = z.object({
@@ -32,13 +35,27 @@ function todayISO() {
   return new Date().toISOString().slice(0, 10);
 }
 
+// ?month=YYYY-MM support (Task 9.2, consumed by Task 9.4's monthly history).
+function nextMonthFirstISO(ym) {
+  const [y, m] = ym.split('-').map(Number);
+  return new Date(Date.UTC(y, m, 1)).toISOString().slice(0, 10);
+}
+
 router.get('/', async (req, res, next) => {
   try {
     const limit = Math.min(parseInt(req.query.limit, 10) || 50, 200);
-    const { data, error } = await supabase
+    const month = /^\d{4}-\d{2}$/.test(req.query.month ?? '') ? req.query.month : null;
+
+    let query = supabase
       .from('transactions')
-      .select('id, amount, type, description, date, category_id, is_recurring, created_at')
-      .eq('user_id', req.user.id)
+      .select('id, amount, type, description, date, category_id, is_recurring, is_special, created_at')
+      .eq('user_id', req.user.id);
+
+    if (month) {
+      query = query.gte('date', `${month}-01`).lt('date', nextMonthFirstISO(month));
+    }
+
+    const { data, error } = await query
       .order('date', { ascending: false })
       .order('created_at', { ascending: false })
       .limit(limit);
@@ -70,6 +87,9 @@ router.post('/', async (req, res, next) => {
     if (category.type !== type) {
       return res.status(400).json({ error: 'Category type does not match transaction type' });
     }
+    if (parsed.data.isSpecial && type === 'income') {
+      return res.status(400).json({ error: 'Only expenses can be special' });
+    }
 
     const { data: tx, error: txErr } = await supabase
       .from('transactions')
@@ -80,6 +100,7 @@ router.post('/', async (req, res, next) => {
         type,
         description: description || null,
         date: date || todayISO(),
+        is_special: parsed.data.isSpecial ?? false,
       })
       .select('id, amount, type, description, date, category_id, created_at')
       .single();
@@ -160,6 +181,17 @@ router.patch('/:id', async (req, res, next) => {
       return res.status(400).json({ error: 'Invalid update', details: parsed.error.flatten() });
     }
 
+    // Load the existing row to authorise ownership and, for the income guard
+    // below, know the current type when the caller isn't also changing it.
+    const { data: existing, error: existingErr } = await supabase
+      .from('transactions')
+      .select('type')
+      .eq('id', id)
+      .eq('user_id', req.user.id)
+      .maybeSingle();
+    if (existingErr) throw existingErr;
+    if (!existing) return res.status(404).json({ error: 'Transaction not found' });
+
     // If changing category, confirm it belongs to the user.
     if (parsed.data.categoryId) {
       const { data: category, error: catErr } = await supabase
@@ -175,12 +207,18 @@ router.patch('/:id', async (req, res, next) => {
       }
     }
 
+    const effectiveType = parsed.data.type ?? existing.type;
+    if (parsed.data.isSpecial && effectiveType === 'income') {
+      return res.status(400).json({ error: 'Only expenses can be special' });
+    }
+
     const payload = {};
     if (parsed.data.categoryId !== undefined) payload.category_id = parsed.data.categoryId;
     if (parsed.data.amount !== undefined) payload.amount = parsed.data.amount;
     if (parsed.data.type !== undefined) payload.type = parsed.data.type;
     if (parsed.data.description !== undefined) payload.description = parsed.data.description || null;
     if (parsed.data.date !== undefined) payload.date = parsed.data.date;
+    if (parsed.data.isSpecial !== undefined) payload.is_special = parsed.data.isSpecial;
     if (Object.keys(payload).length === 0) return res.status(400).json({ error: 'Nothing to update' });
 
     const { data, error } = await supabase

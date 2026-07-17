@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import { supabase } from '../lib/supabase.js';
+import { excludeSpecial } from '../lib/special.js';
 
 const router = Router();
 
@@ -46,7 +47,7 @@ router.post('/', async (req, res, next) => {
     const { firstISO, nextFirstISO } = monthBounds();
     const ninetyDaysAgo = new Date(Date.now() - 90 * 86_400_000).toISOString();
 
-    const [budgetsRes, txRes, goalsRes, contribsRes] = await Promise.all([
+    const [budgetsRes, txRes, goalsRes, contribsRes, statsRes] = await Promise.all([
       supabase
         .from('budgets')
         .select('category_id, amount_limit')
@@ -54,7 +55,7 @@ router.post('/', async (req, res, next) => {
         .eq('period', 'monthly'),
       supabase
         .from('transactions')
-        .select('amount, category_id')
+        .select('amount, category_id, is_special')
         .eq('user_id', req.user.id)
         .eq('type', 'expense')
         .gte('date', firstISO)
@@ -68,12 +69,20 @@ router.post('/', async (req, res, next) => {
         .select('amount, created_at')
         .eq('user_id', req.user.id)
         .gte('created_at', ninetyDaysAgo),
+      supabase
+        .from('user_stats')
+        .select('special_expenses_enabled')
+        .eq('user_id', req.user.id)
+        .single(),
     ]);
-    for (const r of [budgetsRes, txRes, goalsRes, contribsRes]) if (r.error) throw r.error;
+    for (const r of [budgetsRes, txRes, goalsRes, contribsRes, statsRes]) if (r.error) throw r.error;
+
+    const specialEnabled = !!statsRes.data.special_expenses_enabled;
+    const countable = excludeSpecial(txRes.data, specialEnabled);
 
     const spendByCat = new Map();
     let totalSpent = 0;
-    for (const t of txRes.data) {
+    for (const t of countable) {
       const amt = Number(t.amount);
       spendByCat.set(t.category_id, (spendByCat.get(t.category_id) ?? 0) + amt);
       totalSpent += amt;
