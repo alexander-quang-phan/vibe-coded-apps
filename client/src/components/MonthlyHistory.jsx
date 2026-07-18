@@ -7,12 +7,9 @@ import { cn } from '@/lib/utils';
 /** Phase 9.4 — one row per month, newest first; rows link to the
  *  Transactions page filtered to that month. */
 export function MonthlyHistory({ series, currency, showSpecial }) {
-  const months = [...series]
-    .filter((s, i, arr) => {
-      const firstWithData = arr.findIndex((m) => m.income > 0 || m.expenses > 0);
-      return firstWithData !== -1 && i >= firstWithData; // trim pre-signup months
-    })
-    .reverse();
+  // Trim leading pre-signup months only — zero months inside an active history stay.
+  const firstWithData = series.findIndex((m) => m.income > 0 || m.expenses > 0);
+  const months = firstWithData === -1 ? [] : series.slice(firstWithData).reverse();
   if (months.length === 0) return null;
   const thisYm = new Date().toISOString().slice(0, 7);
 

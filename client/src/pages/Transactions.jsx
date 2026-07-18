@@ -165,7 +165,11 @@ export default function Transactions() {
   const queryClient = useQueryClient();
   const [searchParams] = useSearchParams();
   // Deep link from Analytics' Monthly history (Task 9.4): ?month=YYYY-MM seeds the filter.
-  const urlMonth = /^\d{4}-\d{2}$/.test(searchParams.get('month') ?? '') ? searchParams.get('month') : null;
+  // Bounded 01-12 to match the server route: a loose \d{2} would let "?month=2026-13"
+  // seed the filter, rendering an "Invalid Date" option and an empty list.
+  const urlMonth = /^\d{4}-(0[1-9]|1[0-2])$/.test(searchParams.get('month') ?? '')
+    ? searchParams.get('month')
+    : null;
   const [typeFilter, setTypeFilter] = useState('all');
   const [categoryFilter, setCategoryFilter] = useState('all');
   const [monthFilter, setMonthFilter] = useState(urlMonth ?? 'all');
