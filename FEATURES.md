@@ -88,6 +88,7 @@
 - This-month / last-month / delta% header.
 - 6-month income-vs-expenses line chart.
 - Top 5 spending categories this month with mini bars.
+- **Monthly history (Task 9.4):** a full history table below the chart, fetched as 24 months of data (the chart still only plots the last 6). One row per month, newest first — Spent, Income, Net, and (when `user_stats.special_expenses_enabled` is on and at least one month has flagged special spend) a Special column with a star marker. Months before the user's first transaction are trimmed from the list; the current month is labelled "so far". Tapping a row opens `/transactions?month=YYYY-MM`, which deep-links Transactions straight to that month, fetching it directly from the API rather than relying on the page's default 200-row recent window.
 
 ### Savings Goals
 
@@ -153,7 +154,6 @@ Full design: `docs/superpowers/specs/2026-07-15-bank-sync-and-billing-design.md`
 
 Full design: `docs/superpowers/specs/2026-07-17-pln-privacy-history-pace-special-design.md` · plan: `docs/superpowers/plans/2026-07-17-phase9-pln-privacy-history-pace-special.md` · build tasks: BUILD_PLAN.md Phase 9.
 
-- **Monthly history** — per-month Spent/Income/Net/Special table on Analytics (24 months), rows deep-link to Transactions filtered to that month.
 - **Encryption at rest** — amounts, descriptions, notes, category/goal names, budget limits and Ask Trim chats encrypted (AES-256-GCM, per-user derived keys) so the operator can't casually read users' finances in Supabase. Honest limits documented in SECURITY.md when built.
 
 ## Design direction

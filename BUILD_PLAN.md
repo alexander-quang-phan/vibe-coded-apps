@@ -694,7 +694,7 @@ ready:false; monthly budgets sum, or monthly_limit in simple mode; special exclu
 ahead of pace, never red. Verify in the running UI in both modes and with no budgets set.
 ```
 
-### ▢ Task 9.4 — Monthly history on Analytics
+### ✅ Task 9.4 — Monthly history on Analytics
 
 **Chat prompt:**
 ```

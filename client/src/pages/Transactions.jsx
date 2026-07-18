@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useSearchParams } from 'react-router-dom';
 import { toast } from 'sonner';
 import { Download, Pencil, Search, Star, Trash2 } from 'lucide-react';
 import {
@@ -162,16 +163,24 @@ function EditDialog({ tx, open, onOpenChange, categories, onSave, saving, specia
 export default function Transactions() {
   const api = useApi();
   const queryClient = useQueryClient();
+  const [searchParams] = useSearchParams();
+  // Deep link from Analytics' Monthly history (Task 9.4): ?month=YYYY-MM seeds the filter.
+  const urlMonth = /^\d{4}-\d{2}$/.test(searchParams.get('month') ?? '') ? searchParams.get('month') : null;
   const [typeFilter, setTypeFilter] = useState('all');
   const [categoryFilter, setCategoryFilter] = useState('all');
-  const [monthFilter, setMonthFilter] = useState('all');
+  const [monthFilter, setMonthFilter] = useState(urlMonth ?? 'all');
   const [specialFilter, setSpecialFilter] = useState(false);
   const [q, setQ] = useState('');
   const [editing, setEditing] = useState(null);
 
   const { data, isLoading, isError, error, refetch } = useQuery({
-    queryKey: ['transactions'],
-    queryFn: () => api.get('/api/transactions?limit=200'),
+    queryKey: ['transactions', monthFilter],
+    queryFn: () =>
+      api.get(
+        monthFilter === 'all'
+          ? '/api/transactions?limit=200'
+          : `/api/transactions?limit=200&month=${monthFilter}`,
+      ),
   });
   const { data: catsData } = useQuery({
     queryKey: ['categories'],
@@ -187,8 +196,9 @@ export default function Transactions() {
   const months = useMemo(() => {
     const set = new Set();
     for (const t of data?.transactions ?? []) set.add(t.date.slice(0, 7));
+    if (urlMonth) set.add(urlMonth); // keep the deep-linked month selectable even with no rows yet
     return [...set].sort().reverse();
-  }, [data]);
+  }, [data, urlMonth]);
 
   const filtered = useMemo(() => {
     const list = data?.transactions ?? [];
