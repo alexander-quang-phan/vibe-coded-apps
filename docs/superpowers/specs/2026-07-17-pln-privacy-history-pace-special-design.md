@@ -108,6 +108,7 @@ pace: {
 - Per-user key: `HKDF(masterKey, salt: 'trim-v1', info: userId)` — ciphertext is bound to its user; a value copied into another user's row will not decrypt.
 - Wire format (stored in `text` columns): `v1:<iv_b64>:<tag_b64>:<ct_b64>`. The `v1` prefix enables future key rotation.
 - API: `encryptField(userId, plaintext) -> string`, `decryptField(userId, stored) -> string`; helpers `encryptAmount`/`decryptAmount` wrap `Number` conversion. Decrypt failures throw (500) — never silently return ciphertext.
+- **Fail closed, verified by review 2026-07-17:** pass `{ authTagLength: 16 }` to `createDecipheriv` and assert the decoded tag is exactly 16 bytes — Node otherwise accepts a 4-byte tag with only a deprecation warning, cutting forgery cost from 2^128 to 2^32 for an attacker who can write to the database (the exact threat this encryption addresses). `decryptAmount` must throw unless the result `Number.isFinite` — `Number('')` is 0 and `Number('abc')` is NaN, so a silent empty amount would become a zero-value transaction and NaN would poison every total.
 - `dev:mock` (`scripts/devMock.js`) is untouched — it's in-memory plaintext by design.
 
 **Encrypted columns** (each becomes a `text` `_enc` column; plaintext column dropped in the final step):
@@ -127,7 +128,11 @@ pace: {
 
 **Migration choreography (3 steps, in one session, verified between):**
 1. `012_encryption_columns.sql` — add nullable `*_enc text` columns alongside existing ones.
-2. `server/scripts/encrypt-backfill.mjs` — for every row: encrypt plaintext -> `_enc`, then decrypt `_enc` and compare against the original; abort loudly on any mismatch. Idempotent (skips rows already filled). Requires `DATA_ENCRYPTION_KEY` + service key. Print row counts per table.
+2. `server/scripts/encrypt-backfill.mjs` — for every row: encrypt plaintext -> `_enc`, write, then **re-SELECT the row and decrypt what the database actually returned**, comparing against the original; abort loudly on any mismatch. Idempotent. Requires `DATA_ENCRYPTION_KEY` + service key. Print row counts per table.
+
+   **Two defects were found by review in the first implementation of this script (2026-07-17) — do not reintroduce them:**
+   - **Paging must not rely on the write shrinking the result set.** Filtering on `.is(first_enc, null)` and expecting the write to remove the row loops forever on any row whose plaintext is NULL (it gets written as NULL and re-matches). `user_stats.monthly_limit` and `subscription_overrides.display_name` are both nullable, so this hangs mid-run against production. Use keyset pagination (order by PK, `.gt(pk, cursor)`) and keep the `is null` filter only for idempotency.
+   - **The verification must read back from the database.** Comparing `decryptField(justEncryptedValue)` to the original is only `decrypt(encrypt(x)) === x` — a unit test, blind to truncating columns, encoding mangles, or writes that never landed. Since migration 013 irreversibly drops the plaintext on the strength of this check, it must re-read. Also verify **after** the write, and never let a failed row be skipped by the idempotency filter on re-run.
 3. `013_encryption_drop_plaintext.sql` — run **only after** the backfill verifies and the app has been click-tested reading/writing encrypted data. Drops plaintext columns and renames `*_enc` -> original names (so route code refers to one name).
    - Numeric Zod validation (positive, finite, ≤1e9) stays at the API boundary — unchanged.
 

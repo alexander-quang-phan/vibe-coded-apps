@@ -452,18 +452,32 @@ export function decryptField(userId, stored) {
   if (stored === null || stored === undefined) return null;
   const [version, ivB64, tagB64, ctB64] = String(stored).split(':');
   if (version !== VERSION) throw new Error(`Unknown ciphertext version: ${version}`);
-  const decipher = createDecipheriv('aes-256-gcm', userKey(userId), Buffer.from(ivB64, 'base64'));
-  decipher.setAuthTag(Buffer.from(tagB64, 'base64'));
+  // authTagLength + the length assert are REQUIRED: Node otherwise accepts a
+  // 4-byte tag with only a deprecation warning (2^128 -> 2^32 forgery cost).
+  const tag = Buffer.from(tagB64, 'base64');
+  if (tag.length !== 16) throw new Error('Invalid auth tag length');
+  const decipher = createDecipheriv('aes-256-gcm', userKey(userId), Buffer.from(ivB64, 'base64'), {
+    authTagLength: 16,
+  });
+  decipher.setAuthTag(tag);
   return Buffer.concat([decipher.update(Buffer.from(ctB64, 'base64')), decipher.final()]).toString('utf8');
 }
 
 export function encryptAmount(userId, amount) {
-  return amount === null || amount === undefined ? null : encryptField(userId, String(amount));
+  if (amount === null || amount === undefined) return null;
+  // Reject '' and NaN rather than encrypting them: '' decrypts back as 0 (a
+  // silent zero-value transaction) and NaN poisons every downstream total.
+  const n = Number(amount);
+  if (!Number.isFinite(n)) throw new Error('Refusing to encrypt a non-finite amount');
+  return encryptField(userId, String(n));
 }
 
 export function decryptAmount(userId, stored) {
   const s = decryptField(userId, stored);
-  return s === null ? null : Number(s);
+  if (s === null) return null;
+  const n = Number(s);
+  if (!Number.isFinite(n)) throw new Error('Decrypted amount is not a finite number');
+  return n;
 }
 ```
 
@@ -487,7 +501,13 @@ alter table public.ask_messages          add column content_enc text;
 
 Apply via MCP `apply_migration` (name `encryption_columns`).
 
-- [ ] **Step 5: Backfill script** — `server/scripts/encrypt-backfill.mjs`: loads `.env`, iterates each table above in pages of 500 (`select id/user_id + plaintext cols where <first_enc_col> is null`), writes `_enc` values with `encryptField`/`encryptAmount`, then **re-reads and decrypt-verifies every row against the original, aborting loudly on any mismatch**; idempotent (the `is null` filter skips done rows); prints per-table counts. `savings_contributions` has no `user_id`? It does (schema: goal_id, user_id, amount…) — use it. `ask_messages` uses its `user_id`. Full script structure:
+- [ ] **Step 5: Backfill script** — `server/scripts/encrypt-backfill.mjs`: loads `.env`, iterates each table above, writes `_enc` values with `encryptField`/`encryptAmount`, then **re-SELECTs each written row and decrypt-verifies what the database returned against the original, aborting loudly on any mismatch**; idempotent; prints per-table counts.
+
+> ⚠️ **The example script below was found defective by review on 2026-07-17 — read this before copying it.** Two bugs were fixed in `cf971a6`'s follow-up; the code block is kept for structure only.
+> 1. **Paging must not depend on the write shrinking the result set.** `.is(firstEnc, null)` + writing `null` for a NULL plaintext = that row never leaves the filter and is re-fetched forever. `user_stats.monthly_limit` and `subscription_overrides.display_name` are both nullable, so this hangs mid-run against production after jobs 1-5 complete. Use keyset pagination (order by PK, `.gt(pk, cursor)`); keep `is null` only as the idempotency filter.
+> 2. **The verify must read back from the database, after the write.** Comparing `decryptField(patch[enc])` to the original is `decrypt(encrypt(x)) === x` in memory — blind to a truncating column, an encoding mangle, or a write that didn't land, which is exactly what must be caught before migration 013 irreversibly drops the plaintext. Verifying before the write also means a failing row is already committed and then gets skipped on re-run by the idempotency filter.
+>
+> Also: log only the PK on failure (the draft dumps users' amounts and notes to the terminal), and support `--dry-run`. `savings_contributions` has no `user_id`? It does (schema: goal_id, user_id, amount…) — use it. `ask_messages` uses its `user_id`. Full script structure:
 
 ```js
 import 'dotenv/config';
