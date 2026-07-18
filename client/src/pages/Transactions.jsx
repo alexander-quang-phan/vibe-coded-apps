@@ -197,7 +197,7 @@ export default function Transactions() {
       if (typeFilter !== 'all' && t.type !== typeFilter) return false;
       if (categoryFilter !== 'all' && t.category_id !== categoryFilter) return false;
       if (monthFilter !== 'all' && !t.date.startsWith(monthFilter)) return false;
-      if (specialFilter && !t.is_special) return false;
+      if (specialEnabled && specialFilter && !t.is_special) return false;
       if (query) {
         const cat = catsById.get(t.category_id)?.name?.toLowerCase() ?? '';
         const desc = (t.description ?? '').toLowerCase();
@@ -205,7 +205,7 @@ export default function Transactions() {
       }
       return true;
     });
-  }, [data, typeFilter, categoryFilter, monthFilter, specialFilter, q, catsById]);
+  }, [data, typeFilter, categoryFilter, monthFilter, specialFilter, specialEnabled, q, catsById]);
 
   const totals = useMemo(() => {
     let income = 0;

@@ -269,7 +269,7 @@ app.delete('/api/categories/:id', (req, res) => {
 
 app.get('/api/transactions', (req, res) => {
   const limit = Math.min(parseInt(req.query.limit, 10) || 50, 200);
-  const month = /^\d{4}-\d{2}$/.test(req.query.month ?? '') ? req.query.month : null;
+  const month = /^\d{4}-(0[1-9]|1[0-2])$/.test(req.query.month ?? '') ? req.query.month : null;
   let list = transactions;
   if (month) {
     const { firstISO, nextFirstISO } = monthBounds(new Date(`${month}-01T00:00:00Z`));
@@ -329,7 +329,8 @@ app.patch('/api/transactions/:id', (req, res) => {
   if (!tx) return res.status(404).json({ error: 'Transaction not found' });
   const { categoryId, amount, type, description, date, isSpecial } = req.body ?? {};
   const effectiveType = type !== undefined ? type : tx.type;
-  if (isSpecial && effectiveType === 'income') {
+  const effectiveSpecial = isSpecial !== undefined ? isSpecial : tx.is_special;
+  if (effectiveSpecial && effectiveType === 'income') {
     return res.status(400).json({ error: 'Only expenses can be special' });
   }
   if (categoryId !== undefined) tx.category_id = categoryId;
@@ -526,7 +527,7 @@ app.get('/api/analytics', (req, res) => {
     const amt = Number(t.amount);
     if (t.type === 'income') bucket.income += amt;
     else bucket.expenses += amt;
-    if (t.is_special && specialEnabled) bucket.special += amt;
+    if (t.is_special && specialEnabled && t.type !== 'income') bucket.special += amt;
     if (ym === thisYm && t.type === 'expense') {
       catTotals.set(t.category_id, (catTotals.get(t.category_id) ?? 0) + amt);
     }

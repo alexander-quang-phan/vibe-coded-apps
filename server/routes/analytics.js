@@ -71,7 +71,9 @@ router.get('/', async (req, res, next) => {
       const amount = Number(t.amount);
       if (t.type === 'income') bucket.income += amount;
       else bucket.expenses += amount;
-      if (t.is_special && specialEnabled) bucket.special += amount;
+      // Expenses only — this query fetches income rows too, and sumSpecial()
+      // in lib/special.js applies the same guard.
+      if (t.is_special && specialEnabled && t.type !== 'income') bucket.special += amount;
 
       if (ym === thisYm && t.type === 'expense') {
         catTotalsThisMonth.set(t.category_id, (catTotalsThisMonth.get(t.category_id) ?? 0) + amount);

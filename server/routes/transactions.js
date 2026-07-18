@@ -44,7 +44,9 @@ function nextMonthFirstISO(ym) {
 router.get('/', async (req, res, next) => {
   try {
     const limit = Math.min(parseInt(req.query.limit, 10) || 50, 200);
-    const month = /^\d{4}-\d{2}$/.test(req.query.month ?? '') ? req.query.month : null;
+    // Bounded to 01-12 — a bare \d{2} would let "2026-13" reach Postgres as an
+    // invalid date literal and surface as a 500 instead of being ignored.
+    const month = /^\d{4}-(0[1-9]|1[0-2])$/.test(req.query.month ?? '') ? req.query.month : null;
 
     let query = supabase
       .from('transactions')
@@ -102,7 +104,7 @@ router.post('/', async (req, res, next) => {
         date: date || todayISO(),
         is_special: parsed.data.isSpecial ?? false,
       })
-      .select('id, amount, type, description, date, category_id, created_at')
+      .select('id, amount, type, description, date, category_id, is_special, created_at')
       .single();
     if (txErr) throw txErr;
 
@@ -185,7 +187,7 @@ router.patch('/:id', async (req, res, next) => {
     // below, know the current type when the caller isn't also changing it.
     const { data: existing, error: existingErr } = await supabase
       .from('transactions')
-      .select('type')
+      .select('type, is_special')
       .eq('id', id)
       .eq('user_id', req.user.id)
       .maybeSingle();
@@ -207,8 +209,11 @@ router.patch('/:id', async (req, res, next) => {
       }
     }
 
+    // Guard on the RESULTING state, not just this request's fields: flipping an
+    // already-special expense to income would otherwise leave a flagged income row.
     const effectiveType = parsed.data.type ?? existing.type;
-    if (parsed.data.isSpecial && effectiveType === 'income') {
+    const effectiveSpecial = parsed.data.isSpecial ?? existing.is_special;
+    if (effectiveSpecial && effectiveType === 'income') {
       return res.status(400).json({ error: 'Only expenses can be special' });
     }
 
@@ -226,7 +231,7 @@ router.patch('/:id', async (req, res, next) => {
       .update(payload)
       .eq('id', id)
       .eq('user_id', req.user.id)
-      .select('id, amount, type, description, date, category_id, created_at')
+      .select('id, amount, type, description, date, category_id, is_special, created_at')
       .maybeSingle();
     if (error) throw error;
     if (!data) return res.status(404).json({ error: 'Transaction not found' });
