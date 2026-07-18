@@ -77,7 +77,7 @@ router.get('/month', async (req, res, next) => {
         .eq('period', 'monthly'),
       supabase
         .from('user_stats')
-        .select('special_expenses_enabled')
+        .select('simple_mode, monthly_limit, special_expenses_enabled')
         .eq('user_id', req.user.id)
         .single(),
     ]);
@@ -99,11 +99,24 @@ router.get('/month', async (req, res, next) => {
       ? null
       : budgetsRes.data.reduce((sum, b) => sum + Number(b.amount_limit), 0);
 
+    const stats = statsRes.data;
+    const budgetSource = stats?.simple_mode && stats?.monthly_limit !== null
+      ? Number(stats.monthly_limit)
+      : monthlyBudget; // sum of monthly budgets, or null
+    const pace = budgetSource === null || budgetSource <= 0
+      ? null
+      : {
+          target: Number(((budgetSource * daysElapsed) / daysInMonth).toFixed(2)),
+          spent: Number(spendSoFar.toFixed(2)),
+          delta: Number(((budgetSource * daysElapsed) / daysInMonth - spendSoFar).toFixed(2)),
+        };
+
     if (daysElapsed < COLD_START_MIN_DAYS || thisMonthTx.length === 0) {
       return res.json({
         ready: false,
         daysElapsed,
         daysInMonth,
+        pace,
       });
     }
 
@@ -124,6 +137,7 @@ router.get('/month', async (req, res, next) => {
       daysElapsed,
       daysInMonth,
       paceLabel: paceLabelFor(projectedSpend, lastMonthSpend),
+      pace,
     });
   } catch (err) {
     next(err);

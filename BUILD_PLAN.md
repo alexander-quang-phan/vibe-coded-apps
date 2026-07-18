@@ -683,7 +683,7 @@ hero Special chip, askContext flag, devMock mirrors. Verify the full click-throu
 plan's Step 11 — especially that disabling the pref makes everything count normally again.
 ```
 
-### ▢ Task 9.3 — Budget pace ("should have spent by now")
+### ✅ Task 9.3 — Budget pace ("should have spent by now")
 
 **Chat prompt:**
 ```

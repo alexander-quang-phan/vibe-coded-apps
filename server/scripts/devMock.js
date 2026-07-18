@@ -710,10 +710,21 @@ app.get('/api/projections/month', (_req, res) => {
   const monthTx = transactions.filter(
     (t) => t.type === 'expense' && t.date >= firstISO && t.date < nextFirstISO && !(specialEnabled && t.is_special),
   );
-  if (daysElapsed < 3 || monthTx.length === 0) {
-    return res.json({ ready: false, daysElapsed, daysInMonth });
-  }
   const spendSoFar = monthTx.reduce((s, t) => s + Number(t.amount), 0);
+  const monthlyBudget = budgets.filter((b) => b.period === 'monthly').reduce((s, b) => s + Number(b.amount_limit), 0) || null;
+  const budgetSource = stats.simple_mode && stats.monthly_limit !== null
+    ? Number(stats.monthly_limit)
+    : monthlyBudget;
+  const pace = budgetSource === null || budgetSource <= 0
+    ? null
+    : {
+        target: round2((budgetSource * daysElapsed) / daysInMonth),
+        spent: round2(spendSoFar),
+        delta: round2((budgetSource * daysElapsed) / daysInMonth - spendSoFar),
+      };
+  if (daysElapsed < 3 || monthTx.length === 0) {
+    return res.json({ ready: false, daysElapsed, daysInMonth, pace });
+  }
   // Mirror the real route's outlier guard: one dominant charge (rent) counts
   // once instead of exploding the linear extrapolation.
   const largest = monthTx.length > 0 ? Math.max(...monthTx.map((t) => Number(t.amount))) : 0;
@@ -721,7 +732,6 @@ app.get('/api/projections/month', (_req, res) => {
     spendSoFar > 0 && largest / spendSoFar > 0.4
       ? spendSoFar + ((spendSoFar - largest) / daysElapsed) * (daysInMonth - daysElapsed)
       : (spendSoFar / daysElapsed) * daysInMonth;
-  const monthlyBudget = budgets.filter((b) => b.period === 'monthly').reduce((s, b) => s + Number(b.amount_limit), 0) || null;
   res.json({
     ready: true,
     projectedSpend: round2(projectedSpend),
@@ -731,6 +741,7 @@ app.get('/api/projections/month', (_req, res) => {
     daysElapsed,
     daysInMonth,
     paceLabel: 'tracking calmly',
+    pace,
   });
 });
 
