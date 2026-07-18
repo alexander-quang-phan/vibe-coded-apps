@@ -721,6 +721,16 @@ dropping plaintext (irreversible) + the category-seeding move from the SQL trigg
 GET /api/me. Update SECURITY.md with the spec's honest-limits block verbatim.
 ```
 
+**In progress (2026-07-18):** the safe, reversible half is built and tested on this branch —
+`server/lib/crypto.js` (AES-256-GCM, per-user HKDF keys), `server/test/crypto.test.js`
+(5/5 passing, TDD RED confirmed first), and `server/migrations/012_encryption_columns.sql`
+(additive `_enc` columns, written but **not applied** to Supabase). `server/scripts/encrypt-backfill.mjs`
+exists (idempotent, decrypt-verifies every row) but has **not been run**. Still gated on Alex,
+all requiring his explicit go-ahead: generating `DATA_ENCRYPTION_KEY` and backing it up,
+applying migration 012, running the backfill against real data, the full route sweep
+(dual-write reads/writes through the `_enc` columns), the click-through verification, and
+migration 013 (irreversible plaintext drop + category-seeding trigger change).
+
 ---
 
 ## Deferred further (flagged in FEATURES.md, don't start without explicit ask)
