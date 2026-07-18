@@ -714,8 +714,9 @@ Read docs/superpowers/plans/2026-07-17-phase9-pln-privacy-history-pace-special.m
 and spec §3.5 fully before touching anything. Preconditions: 9.1–9.4 merged and verified;
 Alex has generated DATA_ENCRYPTION_KEY (openssl rand -base64 32), put it in server/.env +
 Vercel, and backed it up in ~/Keys/ — walk him through this first. Then: lib/crypto.js with
-node:test tests FIRST (npm test passes), additive migration 012, encrypt-backfill.mjs with
-per-row round-trip verification, dual-write route sweep, full click-through on encrypted
+node:test tests FIRST (npm test passes), additive migration 012, encrypt-backfill.mjs whose
+verification RE-READS each written row from the database (an in-memory round-trip is not a
+verification — see the plan's warning box), dual-write route sweep, full click-through on encrypted
 data, and ONLY THEN — with Alex's explicit confirmation in that session — migration 013
 dropping plaintext (irreversible) + the category-seeding move from the SQL trigger to
 GET /api/me. Update SECURITY.md with the spec's honest-limits block verbatim.
@@ -723,9 +724,10 @@ GET /api/me. Update SECURITY.md with the spec's honest-limits block verbatim.
 
 **In progress (2026-07-18):** the safe, reversible half is built and tested on this branch —
 `server/lib/crypto.js` (AES-256-GCM, per-user HKDF keys), `server/test/crypto.test.js`
-(5/5 passing, TDD RED confirmed first), and `server/migrations/012_encryption_columns.sql`
-(additive `_enc` columns, written but **not applied** to Supabase). `server/scripts/encrypt-backfill.mjs`
-exists (idempotent, decrypt-verifies every row) but has **not been run**. Still gated on Alex,
+(**19/19 passing**, TDD RED confirmed first), and `server/migrations/012_encryption_columns.sql`
+(additive `_enc` columns, re-runnable, written but **not applied** to Supabase). `server/scripts/encrypt-backfill.mjs`
+exists (keyset-paginated, idempotent, `--dry-run` supported, re-reads every written row from the
+database to verify) but has **not been run**. Still gated on Alex,
 all requiring his explicit go-ahead: generating `DATA_ENCRYPTION_KEY` and backing it up,
 applying migration 012, running the backfill against real data, the full route sweep
 (dual-write reads/writes through the `_enc` columns), the click-through verification, and
