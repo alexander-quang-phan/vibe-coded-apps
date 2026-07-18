@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
-import { ArrowDownLeft, ArrowUpRight, Sparkles } from 'lucide-react';
+import { ArrowDownLeft, ArrowUpRight, Sparkles, Star } from 'lucide-react';
 import { useApi } from '@/hooks/useApi';
 import { AffordabilityCheck } from '@/components/AffordabilityCheck';
 import { PulseStrip } from '@/components/PulseStrip';
@@ -81,7 +81,7 @@ function greetingFor(date = new Date()) {
   return 'Up late';
 }
 
-function HeroBalance({ income, expenses, balance, currency, displayName }) {
+function HeroBalance({ income, expenses, balance, currency, displayName, specialThisMonth = 0 }) {
   const animated = useCountUp(Math.abs(balance));
   const positive = balance >= 0;
   const sign = positive ? '' : '−';
@@ -140,6 +140,19 @@ function HeroBalance({ income, expenses, balance, currency, displayName }) {
                 {formatMoney(expenses, currency)}
               </p>
             </div>
+            {specialThisMonth > 0 ? (
+              <div className="flex-1 rounded-xl border border-border/70 bg-background/40 px-4 py-3 backdrop-blur-sm sm:flex-initial">
+                <div className="flex items-center gap-2 text-xs uppercase tracking-wider text-muted-foreground">
+                  <span className="flex h-5 w-5 items-center justify-center rounded-full bg-amber-400/15 text-amber-400">
+                    <Star className="h-3 w-3" strokeWidth={3} />
+                  </span>
+                  Special
+                </div>
+                <p className="mt-1 nums text-base font-semibold text-amber-400">
+                  {formatMoney(specialThisMonth, currency)}
+                </p>
+              </div>
+            ) : null}
           </div>
         </div>
       </div>
@@ -187,6 +200,7 @@ export default function Dashboard() {
   const currency = data.preferences.currency;
   const displayName = data.preferences.displayName;
   const simpleMode = data.preferences.simpleMode;
+  const specialEnabled = data.preferences.specialExpensesEnabled;
   const { month, categoryBreakdown, recentTransactions, budgetAlerts, stats } = data;
 
   return (
@@ -197,6 +211,7 @@ export default function Dashboard() {
         balance={month.balance}
         currency={currency}
         displayName={displayName}
+        specialThisMonth={month.specialThisMonth ?? 0}
       />
 
       {simpleMode ? null : (
@@ -247,7 +262,7 @@ export default function Dashboard() {
         <WinsFeed variant="peek" />
       </section>
 
-      <QuickAddButton currency={currency} simpleMode={simpleMode} />
+      <QuickAddButton currency={currency} simpleMode={simpleMode} specialEnabled={specialEnabled} />
     </div>
   );
 }

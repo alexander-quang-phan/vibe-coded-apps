@@ -48,10 +48,12 @@
 - **PulseStrip** (2026-07 bolder pass — replaced the old grid of identical stat cards + separate level card): one hairline-divided instrument cluster. Focal streak segment (flame icon, big number, warm glow; sub shows shields banked or longest streak) | shields gauge ("1 per 7-day run") | logged-this-month gauge | level segment with title ladder + gold-tipped XP bar. 2×2 on mobile, one row on lg. Lives in `client/src/components/PulseStrip.jsx`.
 - Month-end projection card (above the category card) — linear extrapolation of current-month spend, delta vs. summed monthly budgets, one-line pace label vs. last month's total. Cold-start guard until day 3 with ≥1 transaction; outlier guard counts a single dominant charge (>40% of spend-so-far, i.e. rent) once instead of extrapolating it. Hidden in simple_mode (SimpleMonthCard owns that slot).
 - "Can I afford this?" check (under the hero) — compact amount input + horizontal expense-category chip row, debounced 300ms. Calls `POST /api/affordability` and renders three remaining/impact lines plus a friendly verdict ("Comfortably yes" / "Tight but yes" / "Would push you over"). Goal-impact line uses the soonest-target_date open goal; line is omitted when there are no open goals or no recent contributions. Hidden in simple_mode.
+- **Budget pace (Task 9.3):** a one-line "by day N, about £X of your budget would typically be used — you're at £Y" reading, shown inside "Can I afford this?" (normal mode) and inside SimpleMonthCard (simple mode, measured against `monthly_limit` instead of summed budgets). Comes from `GET /api/projections/month`'s `pace` field — plain arithmetic (`budget × day-of-month ÷ days-in-month`), valid from day 1 unlike the month-end projection's cold-start guard. Amber when spend is running ahead of pace, emerald (`text-primary`) when under — never red/rose. `pace` is `null` (line hidden) when there's no budget source: no monthly budgets and simple mode is off, or simple mode is on with no `monthly_limit` set yet.
 - "This month by category" card (Task 6.A merged the old donut + budget-alerts pair): donut + top-5 list + a "Budgets to watch" column of categories ≥75% used, one card. Hidden in simple_mode (replaced by the SimpleMonthCard).
 - Recent 5 transactions + a 3-entry "Recent wins" peek side-by-side (lg). The peek links to /wins, which hosts the full feed (latest 10, playful empty state) — Task 6.A moved it off the Dashboard. No SubscriptionsCard on the Dashboard anymore; the audit nudge is the summary strip on /subscriptions itself.
 - Quick-Add FAB bottom-right (safe-area-bottom).
 - **Simple-mode Dashboard** (when `user_stats.simple_mode = true`): the donut + budget alerts pair and the MonthProjection card are replaced by a single SimpleMonthCard — one big "£X left this month" headline plus a gradient progress bar against `user_stats.monthly_limit`. If the limit hasn't been set yet, the same slot renders an inline "Set your monthly limit" form rather than bouncing the user to Settings.
+- **Special expenses chip (opt-in, Task 9.2):** when `user_stats.special_expenses_enabled` is on and there's at least one flagged expense this month, a third amber "Special" chip appears beside the In/Out chips in the hero, showing `month.specialThisMonth` — flagged gifts/trips/one-offs, honestly still counted in hero cash-flow but excluded from the by-category card and budget alerts below it. Dormant when the pref is off: no chip, exclusions stop applying.
 
 ### Quick-Add flow (critical)
 
@@ -63,6 +65,7 @@
 - On success: invalidate `['dashboard', 'transactions', 'me']`, trigger appropriate confetti, show toast.
 - **"Type it instead" path (Task 6.6):** a sparkle-chip toggle at the top of the dialog swaps the structured form for a single freeform textarea ("e.g. spent 12 quid on tacos last night"). Submitting calls `POST /api/transactions/parse`, which returns a draft. The dialog snaps back to the structured form with amount/type/description/date pre-filled and the suggested category chip ringed in emerald — the user still taps a chip to log. Parse never auto-saves. Failure / low confidence / API unavailable falls back to a friendly amber prompt ("couldn't quite read that — mind trying again?") with a "Use chips" escape hatch.
 - **Simple-mode variant:** when `user_stats.simple_mode = true`, the Income/Expense segments, chip grid, and advanced toggle all hide; the dialog collapses to amount + a single "Log" button. The transaction is filed against the seeded "Other" expense category. This is the deliberate 2-tap exception to the otherwise-3-tap rule (FEATURES.md → philosophy → simple mode).
+- **Special expense toggle (opt-in, Task 9.2):** when the Settings pref is on, a starred "Special expense" checkbox appears inside the hidden advanced area — expenses only, off by default per log. Flagging it excludes the transaction from budget math; the success toast reads "Logged as special ⭐" instead of the usual XP toast. Invisible whenever the pref is off, so the 3-tap path never grows a step.
 
 ### Transactions
 
@@ -71,6 +74,7 @@
 - Inline edit dialog: amount, category, date, note.
 - Row delete with confirm.
 - CSV export of the currently-filtered set.
+- **Special expenses (opt-in, Task 9.2):** when the pref is on, each expense row gets a one-tap star/unstar ghost button next to Edit — retroactively including or excluding a transaction from budget math without opening the edit dialog — plus a small star marker beside starred amounts and a "Special" filter chip alongside the type filter. The edit dialog carries the same checkbox. All of this is invisible when the pref is off.
 
 ### Budgets
 
@@ -84,6 +88,7 @@
 - This-month / last-month / delta% header.
 - 6-month income-vs-expenses line chart.
 - Top 5 spending categories this month with mini bars.
+- **Monthly history (Task 9.4):** a full history table below the chart, fetched as 24 months of data (the chart still only plots the last 6). One row per month, newest first — Spent, Income, Net, and (when `user_stats.special_expenses_enabled` is on and at least one month has flagged special spend) a Special column with a star marker. Months before the user's first transaction are trimmed from the list; the current month is labelled "so far". Tapping a row opens `/transactions?month=YYYY-MM`, which deep-links Transactions straight to that month, fetching it directly from the API rather than relying on the page's default 200-row recent window.
 
 ### Savings Goals
 
@@ -117,9 +122,10 @@
 
 ### Settings
 
-- Currency picker (GBP / USD / AUD / VND) — display only, no FX conversion.
+- Currency picker (GBP / USD / AUD / VND / PLN) — display only, no FX conversion.
 - Simple mode toggle. Flipping it on without a `monthly_limit` set hands the user off to the SimpleMonthCard's inline limit form on the Dashboard rather than bouncing them around.
 - Display name.
+- **Special expenses toggle (opt-in, Task 9.2):** off by default. "Track gifts, trips and one-offs outside your monthly budget. Off by default — flip it on and a star appears in Quick-Add." Turning it off makes every past and future special flag dormant — server math and client UI both go back to treating every transaction as normal.
 - Manage categories (Task 6.11): rename, recolour, change icon, add new, delete with reassign-to-Other recovery flow. Default categories are personalisable but the seeded "Other" / "Other Income" are protected from deletion (they're the reassign safety net).
 
 ### Login / Signup
@@ -143,6 +149,12 @@ Full design: `docs/superpowers/specs/2026-07-15-bank-sync-and-billing-design.md`
 - **Automatic bank import (open banking, UK first via Enable Banking).** Users connect their bank by authenticating *at the bank* (Trim never sees credentials); booked card purchases flow in automatically. Imported transactions land in a "New from your bank" review inbox on Transactions — one tap ✓ confirms, tapping another category chip recategorises + confirms (3-tap rule holds). The first review of the day counts as the daily "log" for streaks/XP; bulk imports never award XP. Single-currency rule enforced: accounts in another currency are politely refused (no FX). Vietnam (and other uncovered countries): friendly "not available yet" messaging, manual logging stays great.
 - **Trim Premium billing (Stripe).** Freemium: manual logging + gamification free forever; bank sync becomes the premium feature at ~£3.99/mo (or £29/yr) via Stripe-hosted Checkout + Customer Portal — card details never touch Trim. During the current testing phase sync is free for everyone (`PREMIUM_ENFORCED=false`); flipping to paid is a config change.
 - **Naming rule:** this is "billing / plan / premium" in code and copy — "Subscriptions" already means the recurring-merchant detection feature.
+
+## Planned — Phase 9 (designed 2026-07-17, not built)
+
+Full design: `docs/superpowers/specs/2026-07-17-pln-privacy-history-pace-special-design.md` · plan: `docs/superpowers/plans/2026-07-17-phase9-pln-privacy-history-pace-special.md` · build tasks: BUILD_PLAN.md Phase 9.
+
+- **Encryption at rest** — amounts, descriptions, notes, category/goal names, budget limits and Ask Trim chats encrypted (AES-256-GCM, per-user derived keys) so the operator can't casually read users' finances in Supabase. Honest limits documented in SECURITY.md when built.
 
 ## Design direction
 
@@ -176,9 +188,10 @@ Trim layers a quiet, breathing visual system on top of the design tokens to feel
 
 ## Money model
 
-- **Single currency per user,** stored on `user_stats.currency`.
+- **Single currency per user** (GBP / USD / AUD / VND / PLN), stored on `user_stats.currency`.
 - **No FX** — switching currency only changes display units (locale + symbol).
 - Server validates `amount` as positive, finite, ≤ 1,000,000,000.
+- **Special expenses are opt-in and dormant when off** (`user_stats.special_expenses_enabled`, `transactions.is_special`) — when enabled, flagged expenses are excluded from budget bars, projections, affordability and wins math, but always counted in hero cash-flow, the transaction list and analytics (which get their own `special` bucket). The exclusion logic lives in one place, `server/lib/special.js`.
 
 ## How a future session should apply this
 

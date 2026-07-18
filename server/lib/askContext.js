@@ -8,6 +8,8 @@
  * `loadAskContext` reads the DB for one user and calls `buildAskContext`.
  */
 
+import { sumSpecial } from './special.js';
+
 export const ASK_CONTEXT_DAYS = 90;
 const RECENT_TRANSACTIONS_CAP = 60;
 const PRIOR_MONTHS_BREAKDOWN = 3;
@@ -117,6 +119,10 @@ export function buildAskContext({
     };
   });
 
+  // Opt-in special expenses (Task 9.2) — dormant (no total surfaced) while off.
+  const specialEnabled = !!stats?.special_expenses_enabled;
+  const thisMonthRows = inWindow.filter((t) => t.date >= thisMonth.start && t.date <= thisMonth.end);
+
   // Goals + recent contribution pace.
   const contribsByGoal = new Map();
   for (const c of contributions) {
@@ -157,6 +163,7 @@ export function buildAskContext({
       category: cat ? cat.name : 'Uncategorised',
     };
     if (t.description) out.description = t.description;
+    if (t.is_special) out.special = true;
     return out;
   });
 
@@ -177,6 +184,8 @@ export function buildAskContext({
     recentTransactions: recent,
     recentTransactionsTruncated: inWindow.length > recent.length,
     transactionCountIn90Days: inWindow.length,
+    specialExpensesEnabled: specialEnabled,
+    ...(specialEnabled ? { specialThisMonthTotal: sumSpecial(thisMonthRows, true) } : {}),
   };
 }
 
@@ -188,7 +197,7 @@ export async function loadAskContext({ supabase, userId, today }) {
     supabase.from('categories').select('id, name, type').eq('user_id', userId),
     supabase
       .from('transactions')
-      .select('amount, type, description, date, category_id, created_at')
+      .select('amount, type, description, date, category_id, created_at, is_special')
       .eq('user_id', userId)
       .gte('date', cutoff)
       .order('date', { ascending: false })

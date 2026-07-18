@@ -11,6 +11,7 @@ import {
 import { TrendingDown, TrendingUp } from 'lucide-react';
 import { Card, CardContent } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
+import { MonthlyHistory } from '@/components/MonthlyHistory';
 import { useApi } from '@/hooks/useApi';
 import { formatMoney } from '@/lib/format';
 
@@ -31,8 +32,8 @@ function compactMoney(v, currency) {
 export default function Analytics() {
   const api = useApi();
   const { data, isLoading, isError, error, refetch } = useQuery({
-    queryKey: ['analytics', 6],
-    queryFn: () => api.get('/api/analytics?months=6'),
+    queryKey: ['analytics', 24],
+    queryFn: () => api.get('/api/analytics?months=24'),
   });
   const { data: me } = useQuery({ queryKey: ['me'], queryFn: () => api.get('/api/me') });
   const currency = me?.preferences?.currency ?? 'GBP';
@@ -51,6 +52,7 @@ export default function Analytics() {
   }
 
   const { series, topCategories, mom } = data;
+  const chartSeries = series.slice(-6);
   const pct = mom.deltaPct;
   const delta = pct === null ? null : pct;
   const trendingUp = delta !== null && delta > 0;
@@ -114,7 +116,7 @@ export default function Analytics() {
           </h2>
           <div className="h-72">
             <ResponsiveContainer width="100%" height="100%">
-              <LineChart data={series} margin={{ top: 8, right: 8, left: -10, bottom: 0 }}>
+              <LineChart data={chartSeries} margin={{ top: 8, right: 8, left: -10, bottom: 0 }}>
                 <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
                 <XAxis
                   dataKey="label"
@@ -214,6 +216,12 @@ export default function Analytics() {
           )}
         </CardContent>
       </Card>
+
+      <MonthlyHistory
+        series={series}
+        currency={currency}
+        showSpecial={!!me?.preferences?.specialExpensesEnabled && series.some((s) => s.special > 0)}
+      />
     </div>
   );
 }

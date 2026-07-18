@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import { supabase } from '../lib/supabase.js';
+import { excludeSpecial } from '../lib/special.js';
 
 const router = Router();
 
@@ -54,17 +55,17 @@ router.get('/month', async (req, res, next) => {
       daysElapsed,
     } = bounds();
 
-    const [thisMonthRes, lastMonthRes, budgetsRes] = await Promise.all([
+    const [thisMonthRes, lastMonthRes, budgetsRes, statsRes] = await Promise.all([
       supabase
         .from('transactions')
-        .select('amount')
+        .select('amount, is_special')
         .eq('user_id', req.user.id)
         .eq('type', 'expense')
         .gte('date', firstISO)
         .lt('date', nextFirstISO),
       supabase
         .from('transactions')
-        .select('amount')
+        .select('amount, is_special')
         .eq('user_id', req.user.id)
         .eq('type', 'expense')
         .gte('date', lastMonthFirstISO)
@@ -74,14 +75,23 @@ router.get('/month', async (req, res, next) => {
         .select('amount_limit')
         .eq('user_id', req.user.id)
         .eq('period', 'monthly'),
+      supabase
+        .from('user_stats')
+        .select('simple_mode, monthly_limit, special_expenses_enabled')
+        .eq('user_id', req.user.id)
+        .single(),
     ]);
 
-    for (const r of [thisMonthRes, lastMonthRes, budgetsRes]) {
+    for (const r of [thisMonthRes, lastMonthRes, budgetsRes, statsRes]) {
       if (r.error) throw r.error;
     }
 
-    const spendSoFar = thisMonthRes.data.reduce((sum, t) => sum + Number(t.amount), 0);
-    const lastMonthSpend = lastMonthRes.data.reduce(
+    const specialEnabled = !!statsRes.data.special_expenses_enabled;
+    const thisMonthTx = excludeSpecial(thisMonthRes.data, specialEnabled);
+    const lastMonthTx = excludeSpecial(lastMonthRes.data, specialEnabled);
+
+    const spendSoFar = thisMonthTx.reduce((sum, t) => sum + Number(t.amount), 0);
+    const lastMonthSpend = lastMonthTx.reduce(
       (sum, t) => sum + Number(t.amount),
       0,
     );
@@ -89,16 +99,29 @@ router.get('/month', async (req, res, next) => {
       ? null
       : budgetsRes.data.reduce((sum, b) => sum + Number(b.amount_limit), 0);
 
-    if (daysElapsed < COLD_START_MIN_DAYS || thisMonthRes.data.length === 0) {
+    const stats = statsRes.data;
+    const budgetSource = stats?.simple_mode && stats?.monthly_limit !== null
+      ? Number(stats.monthly_limit)
+      : monthlyBudget; // sum of monthly budgets, or null
+    const pace = budgetSource === null || budgetSource <= 0
+      ? null
+      : {
+          target: Number(((budgetSource * daysElapsed) / daysInMonth).toFixed(2)),
+          spent: Number(spendSoFar.toFixed(2)),
+          delta: Number(((budgetSource * daysElapsed) / daysInMonth - spendSoFar).toFixed(2)),
+        };
+
+    if (daysElapsed < COLD_START_MIN_DAYS || thisMonthTx.length === 0) {
       return res.json({
         ready: false,
         daysElapsed,
         daysInMonth,
+        pace,
       });
     }
 
     const projectedSpend = projectSpend({
-      amounts: thisMonthRes.data.map((t) => Number(t.amount)),
+      amounts: thisMonthTx.map((t) => Number(t.amount)),
       spendSoFar,
       daysElapsed,
       daysInMonth,
@@ -114,6 +137,7 @@ router.get('/month', async (req, res, next) => {
       daysElapsed,
       daysInMonth,
       paceLabel: paceLabelFor(projectedSpend, lastMonthSpend),
+      pace,
     });
   } catch (err) {
     next(err);

@@ -60,7 +60,7 @@ function daysAgoISO(n) {
 }
 
 let transactions = [];
-function seedTx(categoryName, amount, description, dAgo, type = 'expense') {
+function seedTx(categoryName, amount, description, dAgo, type = 'expense', isSpecial = false) {
   transactions.push({
     id: randomUUID(),
     amount,
@@ -69,6 +69,7 @@ function seedTx(categoryName, amount, description, dAgo, type = 'expense') {
     date: daysAgoISO(dAgo),
     category_id: cat(categoryName).id,
     is_recurring: false,
+    is_special: isSpecial,
     created_at: new Date(Date.now() - dAgo * 86_400_000).toISOString(),
   });
 }
@@ -98,6 +99,10 @@ for (const [n, amount, description] of [
   [4, 34.5, 'Uniqlo'], [18, 59.99, 'Nike trainers'], [40, 22, 'Waterstones'],
   [55, 89, 'Zara haul'], [77, 45.5, 'Argos'],
 ]) seedTx('Shopping', amount, description, n);
+// Special expenses (Task 9.2) — a couple of flagged one-offs so the pref has
+// something to show once the user turns it on.
+seedTx('Shopping', 180, "Mum's birthday gift", 10, 'expense', true);
+seedTx('Entertainment', 240, 'Weekend trip', 25, 'expense', true);
 
 let budgets = [
   ['Groceries', 260], ['Food', 120], ['Transport', 80],
@@ -144,6 +149,7 @@ let stats = {
   monthly_limit: null,
   display_name: 'Alex',
   last_logged_date: todayUTC(),
+  special_expenses_enabled: false,
 };
 
 let subscriptionOverrides = new Map(); // merchant_key -> { status, display_name, decided_at }
@@ -183,6 +189,7 @@ function prefsShape() {
     simpleMode: stats.simple_mode,
     displayName: stats.display_name,
     monthlyLimit: stats.monthly_limit,
+    specialExpensesEnabled: stats.special_expenses_enabled,
   };
 }
 
@@ -201,11 +208,12 @@ app.get('/api/me', (_req, res) => {
 });
 
 app.patch('/api/me', (req, res) => {
-  const { currency, simpleMode, displayName, monthlyLimit } = req.body ?? {};
+  const { currency, simpleMode, displayName, monthlyLimit, specialExpensesEnabled } = req.body ?? {};
   if (currency !== undefined) stats.currency = currency;
   if (simpleMode !== undefined) stats.simple_mode = !!simpleMode;
   if (displayName !== undefined) stats.display_name = displayName || null;
   if (monthlyLimit !== undefined) stats.monthly_limit = monthlyLimit;
+  if (specialExpensesEnabled !== undefined) stats.special_expenses_enabled = !!specialExpensesEnabled;
   res.json({ preferences: prefsShape() });
 });
 
@@ -261,17 +269,26 @@ app.delete('/api/categories/:id', (req, res) => {
 
 app.get('/api/transactions', (req, res) => {
   const limit = Math.min(parseInt(req.query.limit, 10) || 50, 200);
-  const sorted = [...transactions].sort(
+  const month = /^\d{4}-(0[1-9]|1[0-2])$/.test(req.query.month ?? '') ? req.query.month : null;
+  let list = transactions;
+  if (month) {
+    const { firstISO, nextFirstISO } = monthBounds(new Date(`${month}-01T00:00:00Z`));
+    list = list.filter((t) => t.date >= firstISO && t.date < nextFirstISO);
+  }
+  const sorted = [...list].sort(
     (a, b) => b.date.localeCompare(a.date) || b.created_at.localeCompare(a.created_at),
   );
   res.json({ transactions: sorted.slice(0, limit) });
 });
 
 app.post('/api/transactions', (req, res) => {
-  const { categoryId, amount, type, description, date } = req.body ?? {};
+  const { categoryId, amount, type, description, date, isSpecial } = req.body ?? {};
   const c = catById(categoryId);
   if (!c) return res.status(404).json({ error: 'Category not found' });
   if (c.type !== type) return res.status(400).json({ error: 'Category type does not match transaction type' });
+  if (isSpecial && type === 'income') {
+    return res.status(400).json({ error: 'Only expenses can be special' });
+  }
   const tx = {
     id: randomUUID(),
     amount,
@@ -280,6 +297,7 @@ app.post('/api/transactions', (req, res) => {
     date: date || todayUTC(),
     category_id: categoryId,
     is_recurring: false,
+    is_special: !!isSpecial,
     created_at: new Date().toISOString(),
   };
   transactions.push(tx);
@@ -309,12 +327,18 @@ app.post('/api/transactions/parse', (req, res) => {
 app.patch('/api/transactions/:id', (req, res) => {
   const tx = transactions.find((t) => t.id === req.params.id);
   if (!tx) return res.status(404).json({ error: 'Transaction not found' });
-  const { categoryId, amount, type, description, date } = req.body ?? {};
+  const { categoryId, amount, type, description, date, isSpecial } = req.body ?? {};
+  const effectiveType = type !== undefined ? type : tx.type;
+  const effectiveSpecial = isSpecial !== undefined ? isSpecial : tx.is_special;
+  if (effectiveSpecial && effectiveType === 'income') {
+    return res.status(400).json({ error: 'Only expenses can be special' });
+  }
   if (categoryId !== undefined) tx.category_id = categoryId;
   if (amount !== undefined) tx.amount = amount;
   if (type !== undefined) tx.type = type;
   if (description !== undefined) tx.description = description || null;
   if (date !== undefined) tx.date = date;
+  if (isSpecial !== undefined) tx.is_special = !!isSpecial;
   res.json({ transaction: tx });
 });
 
@@ -326,18 +350,28 @@ app.delete('/api/transactions/:id', (req, res) => {
 app.get('/api/dashboard', (_req, res) => {
   const { firstISO, nextFirstISO } = monthBounds();
   const monthTx = transactions.filter((t) => t.date >= firstISO && t.date < nextFirstISO);
+  const specialEnabled = !!stats.special_expenses_enabled;
 
+  // Hero totals stay honest cash-flow — every transaction counts.
   let income = 0;
   let expenses = 0;
-  const categoryTotals = new Map();
   for (const t of monthTx) {
     const amt = Number(t.amount);
     if (t.type === 'income') income += amt;
-    else {
-      expenses += amt;
-      categoryTotals.set(t.category_id, (categoryTotals.get(t.category_id) ?? 0) + amt);
-    }
+    else expenses += amt;
   }
+
+  // By-category breakdown excludes special expenses while the pref is on.
+  const categoryTotals = new Map();
+  for (const t of monthTx) {
+    if (t.type !== 'expense') continue;
+    if (specialEnabled && t.is_special) continue;
+    categoryTotals.set(t.category_id, (categoryTotals.get(t.category_id) ?? 0) + Number(t.amount));
+  }
+
+  const specialThisMonth = specialEnabled
+    ? monthTx.reduce((sum, t) => (t.is_special && t.type !== 'income' ? sum + Number(t.amount) : sum), 0)
+    : 0;
 
   const categoryBreakdown = [...categoryTotals.entries()]
     .map(([categoryId, total]) => {
@@ -396,6 +430,7 @@ app.get('/api/dashboard', (_req, res) => {
       expenses: round2(expenses),
       balance: round2(income - expenses),
       transactionCount: monthTx.length,
+      specialThisMonth: round2(specialThisMonth),
     },
     categoryBreakdown,
     budgetAlerts,
@@ -407,9 +442,11 @@ app.get('/api/dashboard', (_req, res) => {
 
 app.get('/api/budgets', (_req, res) => {
   const { firstISO, nextFirstISO } = monthBounds();
+  const specialEnabled = !!stats.special_expenses_enabled;
   const spendByCat = new Map();
   for (const t of transactions) {
     if (t.type !== 'expense' || t.date < firstISO || t.date >= nextFirstISO) continue;
+    if (specialEnabled && t.is_special) continue;
     spendByCat.set(t.category_id, (spendByCat.get(t.category_id) ?? 0) + Number(t.amount));
   }
   res.json({
@@ -461,6 +498,7 @@ app.delete('/api/budgets/:id', (req, res) => {
 
 app.get('/api/analytics', (req, res) => {
   const months = Math.min(Math.max(parseInt(req.query.months, 10) || 6, 1), 24);
+  const specialEnabled = !!stats.special_expenses_enabled;
   const now = new Date();
   const start = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - (months - 1), 1));
   const ymKey = (d) => `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}`;
@@ -474,6 +512,7 @@ app.get('/api/analytics', (req, res) => {
       income: 0,
       expenses: 0,
       net: 0,
+      special: 0,
     });
   }
   const byYm = new Map(series.map((s) => [s.ym, s]));
@@ -488,6 +527,7 @@ app.get('/api/analytics', (req, res) => {
     const amt = Number(t.amount);
     if (t.type === 'income') bucket.income += amt;
     else bucket.expenses += amt;
+    if (t.is_special && specialEnabled && t.type !== 'income') bucket.special += amt;
     if (ym === thisYm && t.type === 'expense') {
       catTotals.set(t.category_id, (catTotals.get(t.category_id) ?? 0) + amt);
     }
@@ -496,6 +536,7 @@ app.get('/api/analytics', (req, res) => {
     s.income = round2(s.income);
     s.expenses = round2(s.expenses);
     s.net = round2(s.income - s.expenses);
+    s.special = round2(s.special);
   }
   const topCategories = [...catTotals.entries()]
     .map(([categoryId, total]) => {
@@ -662,14 +703,28 @@ app.patch('/api/subscriptions/:merchantKey', (req, res) => {
 
 app.get('/api/projections/month', (_req, res) => {
   const { firstISO, nextFirstISO } = monthBounds();
+  const specialEnabled = !!stats.special_expenses_enabled;
   const now = new Date();
   const daysElapsed = now.getUTCDate();
   const daysInMonth = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 0)).getUTCDate();
-  const monthTx = transactions.filter((t) => t.type === 'expense' && t.date >= firstISO && t.date < nextFirstISO);
-  if (daysElapsed < 3 || monthTx.length === 0) {
-    return res.json({ ready: false, daysElapsed, daysInMonth });
-  }
+  const monthTx = transactions.filter(
+    (t) => t.type === 'expense' && t.date >= firstISO && t.date < nextFirstISO && !(specialEnabled && t.is_special),
+  );
   const spendSoFar = monthTx.reduce((s, t) => s + Number(t.amount), 0);
+  const monthlyBudget = budgets.filter((b) => b.period === 'monthly').reduce((s, b) => s + Number(b.amount_limit), 0) || null;
+  const budgetSource = stats.simple_mode && stats.monthly_limit !== null
+    ? Number(stats.monthly_limit)
+    : monthlyBudget;
+  const pace = budgetSource === null || budgetSource <= 0
+    ? null
+    : {
+        target: round2((budgetSource * daysElapsed) / daysInMonth),
+        spent: round2(spendSoFar),
+        delta: round2((budgetSource * daysElapsed) / daysInMonth - spendSoFar),
+      };
+  if (daysElapsed < 3 || monthTx.length === 0) {
+    return res.json({ ready: false, daysElapsed, daysInMonth, pace });
+  }
   // Mirror the real route's outlier guard: one dominant charge (rent) counts
   // once instead of exploding the linear extrapolation.
   const largest = monthTx.length > 0 ? Math.max(...monthTx.map((t) => Number(t.amount))) : 0;
@@ -677,7 +732,6 @@ app.get('/api/projections/month', (_req, res) => {
     spendSoFar > 0 && largest / spendSoFar > 0.4
       ? spendSoFar + ((spendSoFar - largest) / daysElapsed) * (daysInMonth - daysElapsed)
       : (spendSoFar / daysElapsed) * daysInMonth;
-  const monthlyBudget = budgets.filter((b) => b.period === 'monthly').reduce((s, b) => s + Number(b.amount_limit), 0) || null;
   res.json({
     ready: true,
     projectedSpend: round2(projectedSpend),
@@ -687,16 +741,19 @@ app.get('/api/projections/month', (_req, res) => {
     daysElapsed,
     daysInMonth,
     paceLabel: 'tracking calmly',
+    pace,
   });
 });
 
 app.post('/api/affordability', (req, res) => {
   const { amount, categoryId } = req.body ?? {};
   const { firstISO, nextFirstISO } = monthBounds();
+  const specialEnabled = !!stats.special_expenses_enabled;
   const spendByCat = new Map();
   let totalSpent = 0;
   for (const t of transactions) {
     if (t.type !== 'expense' || t.date < firstISO || t.date >= nextFirstISO) continue;
+    if (specialEnabled && t.is_special) continue;
     const amt = Number(t.amount);
     spendByCat.set(t.category_id, (spendByCat.get(t.category_id) ?? 0) + amt);
     totalSpent += amt;

@@ -8,7 +8,8 @@
   "scripts": {
     "dev": "node --watch index.js",
     "dev:mock": "node --watch scripts/devMock.js",
-    "start": "node index.js"
+    "start": "node index.js",
+    "test": "node --test"
   },
   "engines": {
     "node": ">=20"

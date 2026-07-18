@@ -36,6 +36,13 @@ export function AffordabilityCheck({ currency }) {
     [categoriesData],
   );
 
+  // Same queryKey as MonthProjection — cache is shared, no extra request.
+  const { data: proj } = useQuery({
+    queryKey: ['projections', 'month'],
+    queryFn: () => api.get('/api/projections/month'),
+  });
+  const pace = proj?.pace ?? null;
+
   useEffect(() => {
     clearTimeout(timerRef.current);
     if (!amountValid) {
@@ -71,6 +78,22 @@ export function AffordabilityCheck({ currency }) {
             Just checking — nothing gets logged.
           </span>
         </div>
+
+        {pace ? (
+          <p className="mt-2 text-xs text-muted-foreground">
+            {pace.delta >= 0 ? (
+              <span className="text-primary">✓</span>
+            ) : (
+              <span className="text-amber-400">◷</span>
+            )}{' '}
+            By day {proj.daysElapsed}, about {formatMoney(pace.target, currency)} of your budget
+            would typically be used — you're at{' '}
+            <span className={cn('nums font-medium', pace.delta >= 0 ? 'text-primary' : 'text-amber-400')}>
+              {formatMoney(pace.spent, currency)}
+            </span>
+            {pace.delta < 0 ? ' — a touch ahead of pace, plenty of month left.' : '.'}
+          </p>
+        ) : null}
 
         <div className="mt-3 flex flex-col gap-3 sm:flex-row sm:items-center">
           <div className="relative sm:w-40">

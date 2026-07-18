@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useSearchParams } from 'react-router-dom';
 import { toast } from 'sonner';
-import { Download, Pencil, Search, Trash2 } from 'lucide-react';
+import { Download, Pencil, Search, Star, Trash2 } from 'lucide-react';
 import {
   Dialog,
   DialogContent,
@@ -46,11 +47,12 @@ function downloadCsv(rows, filename) {
   URL.revokeObjectURL(url);
 }
 
-function EditDialog({ tx, open, onOpenChange, categories, onSave, saving }) {
+function EditDialog({ tx, open, onOpenChange, categories, onSave, saving, specialEnabled = false }) {
   const [amount, setAmount] = useState('');
   const [description, setDescription] = useState('');
   const [date, setDate] = useState('');
   const [categoryId, setCategoryId] = useState('');
+  const [isSpecial, setIsSpecial] = useState(false);
 
   useEffect(() => {
     if (!tx || !open) return;
@@ -58,6 +60,7 @@ function EditDialog({ tx, open, onOpenChange, categories, onSave, saving }) {
     setDescription(tx.description ?? '');
     setDate(tx.date);
     setCategoryId(tx.category_id);
+    setIsSpecial(!!tx.is_special);
   }, [tx, open]);
 
   if (!tx) return null;
@@ -116,6 +119,21 @@ function EditDialog({ tx, open, onOpenChange, categories, onSave, saving }) {
               onChange={(e) => setDescription(e.target.value)}
             />
           </div>
+          {specialEnabled && tx.type === 'expense' ? (
+            <label className="flex items-center justify-between rounded-lg border border-border/60 bg-secondary/30 px-3 py-2">
+              <span className="flex items-center gap-2 text-sm">
+                <Star className="h-4 w-4 text-amber-400" aria-hidden />
+                Special expense
+                <span className="text-xs text-muted-foreground">kept out of your monthly budget</span>
+              </span>
+              <input
+                type="checkbox"
+                className="h-4 w-4 accent-primary"
+                checked={isSpecial}
+                onChange={(e) => setIsSpecial(e.target.checked)}
+              />
+            </label>
+          ) : null}
         </div>
 
         <DialogFooter>
@@ -129,6 +147,7 @@ function EditDialog({ tx, open, onOpenChange, categories, onSave, saving }) {
                 categoryId,
                 date,
                 description: description.trim() || null,
+                ...(tx.type === 'expense' ? { isSpecial } : {}),
               })
             }
             disabled={saving || !(amountNum > 0) || !categoryId || !date}
@@ -144,15 +163,28 @@ function EditDialog({ tx, open, onOpenChange, categories, onSave, saving }) {
 export default function Transactions() {
   const api = useApi();
   const queryClient = useQueryClient();
+  const [searchParams] = useSearchParams();
+  // Deep link from Analytics' Monthly history (Task 9.4): ?month=YYYY-MM seeds the filter.
+  // Bounded 01-12 to match the server route: a loose \d{2} would let "?month=2026-13"
+  // seed the filter, rendering an "Invalid Date" option and an empty list.
+  const urlMonth = /^\d{4}-(0[1-9]|1[0-2])$/.test(searchParams.get('month') ?? '')
+    ? searchParams.get('month')
+    : null;
   const [typeFilter, setTypeFilter] = useState('all');
   const [categoryFilter, setCategoryFilter] = useState('all');
-  const [monthFilter, setMonthFilter] = useState('all');
+  const [monthFilter, setMonthFilter] = useState(urlMonth ?? 'all');
+  const [specialFilter, setSpecialFilter] = useState(false);
   const [q, setQ] = useState('');
   const [editing, setEditing] = useState(null);
 
   const { data, isLoading, isError, error, refetch } = useQuery({
-    queryKey: ['transactions'],
-    queryFn: () => api.get('/api/transactions?limit=200'),
+    queryKey: ['transactions', monthFilter],
+    queryFn: () =>
+      api.get(
+        monthFilter === 'all'
+          ? '/api/transactions?limit=200'
+          : `/api/transactions?limit=200&month=${monthFilter}`,
+      ),
   });
   const { data: catsData } = useQuery({
     queryKey: ['categories'],
@@ -160,6 +192,7 @@ export default function Transactions() {
   });
   const { data: me } = useQuery({ queryKey: ['me'], queryFn: () => api.get('/api/me') });
   const currency = me?.preferences?.currency ?? 'GBP';
+  const specialEnabled = !!me?.preferences?.specialExpensesEnabled;
 
   const categories = catsData?.categories ?? [];
   const catsById = useMemo(() => new Map(categories.map((c) => [c.id, c])), [categories]);
@@ -167,8 +200,9 @@ export default function Transactions() {
   const months = useMemo(() => {
     const set = new Set();
     for (const t of data?.transactions ?? []) set.add(t.date.slice(0, 7));
+    if (urlMonth) set.add(urlMonth); // keep the deep-linked month selectable even with no rows yet
     return [...set].sort().reverse();
-  }, [data]);
+  }, [data, urlMonth]);
 
   const filtered = useMemo(() => {
     const list = data?.transactions ?? [];
@@ -177,6 +211,7 @@ export default function Transactions() {
       if (typeFilter !== 'all' && t.type !== typeFilter) return false;
       if (categoryFilter !== 'all' && t.category_id !== categoryFilter) return false;
       if (monthFilter !== 'all' && !t.date.startsWith(monthFilter)) return false;
+      if (specialEnabled && specialFilter && !t.is_special) return false;
       if (query) {
         const cat = catsById.get(t.category_id)?.name?.toLowerCase() ?? '';
         const desc = (t.description ?? '').toLowerCase();
@@ -184,7 +219,7 @@ export default function Transactions() {
       }
       return true;
     });
-  }, [data, typeFilter, categoryFilter, monthFilter, q, catsById]);
+  }, [data, typeFilter, categoryFilter, monthFilter, specialFilter, specialEnabled, q, catsById]);
 
   const totals = useMemo(() => {
     let income = 0;
@@ -296,23 +331,41 @@ export default function Transactions() {
                 ))}
               </SelectContent>
             </Select>
-            <SegmentGroup>
-              <SegmentButton active={typeFilter === 'all'} onClick={() => setTypeFilter('all')}>
-                All
-              </SegmentButton>
-              <SegmentButton
-                active={typeFilter === 'expense'}
-                onClick={() => setTypeFilter('expense')}
-              >
-                Out
-              </SegmentButton>
-              <SegmentButton
-                active={typeFilter === 'income'}
-                onClick={() => setTypeFilter('income')}
-              >
-                In
-              </SegmentButton>
-            </SegmentGroup>
+            <div className="flex flex-wrap items-center gap-2">
+              <SegmentGroup>
+                <SegmentButton active={typeFilter === 'all'} onClick={() => setTypeFilter('all')}>
+                  All
+                </SegmentButton>
+                <SegmentButton
+                  active={typeFilter === 'expense'}
+                  onClick={() => setTypeFilter('expense')}
+                >
+                  Out
+                </SegmentButton>
+                <SegmentButton
+                  active={typeFilter === 'income'}
+                  onClick={() => setTypeFilter('income')}
+                >
+                  In
+                </SegmentButton>
+              </SegmentGroup>
+              {specialEnabled ? (
+                <button
+                  type="button"
+                  onClick={() => setSpecialFilter((v) => !v)}
+                  aria-pressed={specialFilter}
+                  className={cn(
+                    'inline-flex items-center gap-1 rounded-full border px-3 py-1.5 text-xs font-medium transition-colors',
+                    specialFilter
+                      ? 'border-amber-400/60 bg-amber-400/10 text-amber-400'
+                      : 'border-border/60 bg-secondary/40 text-muted-foreground hover:text-foreground',
+                  )}
+                >
+                  <Star className={cn('h-3.5 w-3.5', specialFilter && 'fill-amber-400')} aria-hidden />
+                  Special
+                </button>
+              ) : null}
+            </div>
           </div>
 
           <div className="flex flex-wrap items-center gap-2 text-sm">
@@ -383,14 +436,33 @@ export default function Transactions() {
                   </div>
                   <div
                     className={cn(
-                      'nums text-sm font-semibold',
+                      'flex items-center gap-1.5 nums text-sm font-semibold',
                       isIncome ? 'text-primary' : 'text-foreground',
                     )}
                   >
+                    {me?.preferences?.specialExpensesEnabled && t.is_special ? (
+                      <Star className="h-3.5 w-3.5 text-amber-400" aria-label="Special expense" />
+                    ) : null}
                     {isIncome ? '+' : '−'}
                     {formatMoney(Number(t.amount), currency)}
                   </div>
                   <div className="flex gap-0.5">
+                    {me?.preferences?.specialExpensesEnabled && t.type === 'expense' ? (
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-8 w-8"
+                        aria-label={t.is_special ? 'Unmark special' : 'Mark as special'}
+                        onClick={() => updateMutation.mutate({ id: t.id, payload: { isSpecial: !t.is_special } })}
+                      >
+                        <Star
+                          className={cn(
+                            'h-3.5 w-3.5',
+                            t.is_special ? 'fill-amber-400 text-amber-400' : 'text-muted-foreground',
+                          )}
+                        />
+                      </Button>
+                    ) : null}
                     <Button
                       variant="ghost"
                       size="icon"
@@ -425,6 +497,7 @@ export default function Transactions() {
         onOpenChange={(v) => !v && setEditing(null)}
         categories={categories}
         saving={updateMutation.isPending}
+        specialEnabled={specialEnabled}
         onSave={(payload) => updateMutation.mutate({ id: editing.id, payload })}
       />
     </div>

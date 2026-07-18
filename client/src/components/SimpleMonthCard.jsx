@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { useMutation, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import { Check } from 'lucide-react';
 import { Card, CardContent } from '@/components/ui/card';
@@ -8,6 +8,7 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { useApi } from '@/hooks/useApi';
 import { formatMoney } from '@/lib/format';
+import { cn } from '@/lib/utils';
 
 /**
  * Simple-mode "This month" card (Task 6.5). One big number — what's left of
@@ -29,6 +30,13 @@ export function SimpleMonthCard({ spent, currency, monthlyLimit }) {
     },
     onError: (err) => toast.error(err?.message || 'Could not save'),
   });
+
+  // Same queryKey as MonthProjection/AffordabilityCheck — cache is shared, no extra request.
+  const { data: proj } = useQuery({
+    queryKey: ['projections', 'month'],
+    queryFn: () => api.get('/api/projections/month'),
+  });
+  const pace = proj?.pace ?? null;
 
   const symbol = formatMoney(0, currency).replace(/\d|[.,]/g, '').trim() || '$';
 
@@ -135,6 +143,22 @@ export function SimpleMonthCard({ spent, currency, monthlyLimit }) {
               ? 'Close to the line — glide it home.'
               : 'Comfortably on track.'}
         </p>
+
+        {pace ? (
+          <p className="mt-2 text-xs text-muted-foreground">
+            {pace.delta >= 0 ? (
+              <span className="text-primary">✓</span>
+            ) : (
+              <span className="text-amber-400">◷</span>
+            )}{' '}
+            By day {proj.daysElapsed}, about {formatMoney(pace.target, currency)} of your budget
+            would typically be used — you're at{' '}
+            <span className={cn('nums font-medium', pace.delta >= 0 ? 'text-primary' : 'text-amber-400')}>
+              {formatMoney(pace.spent, currency)}
+            </span>
+            {pace.delta < 0 ? ' — a touch ahead of pace, plenty of month left.' : '.'}
+          </p>
+        ) : null}
       </CardContent>
     </Card>
   );
