@@ -3,10 +3,17 @@ import { z } from 'zod';
 import { supabase } from '../lib/supabase.js';
 import { applyLogEvent } from '../lib/gamification.js';
 import { parseTransactionText } from '../lib/parser.js';
+import { nextRunDate, manualMerchantKey } from '../lib/recurrences.js';
 
 const router = Router();
 
 const isoDate = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Expected YYYY-MM-DD');
+
+// Task 6.12a — opt-in recurring schedule, expense-only (mirrors /subscriptions,
+// which is expense-only by design). Weekly/monthly only; see lib/recurrences.js.
+const recurringSchema = z.object({
+  interval: z.enum(['monthly', 'weekly']),
+});
 
 const createSchema = z.object({
   categoryId: z.string().uuid(),
@@ -16,6 +23,7 @@ const createSchema = z.object({
   date: isoDate.optional(),
   // Opt-in special expenses (Task 9.2) — gifts/trips/one-offs outside the budget.
   isSpecial: z.boolean().optional(),
+  recurring: recurringSchema.optional(),
 });
 
 const updateSchema = z.object({
@@ -50,7 +58,9 @@ router.get('/', async (req, res, next) => {
 
     let query = supabase
       .from('transactions')
-      .select('id, amount, type, description, date, category_id, is_recurring, is_special, created_at')
+      .select(
+        'id, amount, type, description, date, category_id, is_recurring, is_special, recurrence_id, created_at',
+      )
       .eq('user_id', req.user.id);
 
     if (month) {
@@ -92,6 +102,44 @@ router.post('/', async (req, res, next) => {
     if (parsed.data.isSpecial && type === 'income') {
       return res.status(400).json({ error: 'Only expenses can be special' });
     }
+    // Task 6.12a — recurring is expense-only, same reasoning as isSpecial:
+    // /subscriptions (the management surface for these) is expense-only.
+    if (parsed.data.recurring && type === 'income') {
+      return res.status(400).json({ error: 'Only expenses can be recurring' });
+    }
+
+    const txDate = date || todayISO();
+
+    // Create the recurrences row FIRST so we have its id to attach to the
+    // transaction below. Anchor day-of-month is derived from `txDate` here
+    // (this is the ONE moment we know the user's intended day directly);
+    // every later advance (lib/runRecurrences.js) re-derives it from this
+    // row's `created_at` instead, since the schema has no separate anchor
+    // column. Those two match for the normal flow (txDate defaults to
+    // "today", same as `created_at`'s date) — a caller that explicitly
+    // back/post-dates the opt-in transaction to a different day-of-month
+    // than today is a known, documented edge case: the monthly anchor will
+    // follow the row's creation day, not the custom txDate.
+    let recurrence = null;
+    if (parsed.data.recurring) {
+      const anchorDay = Number(txDate.slice(8, 10));
+      const initialNextRunAt = nextRunDate(txDate, parsed.data.recurring.interval, anchorDay);
+      const { data: rec, error: recErr } = await supabase
+        .from('recurrences')
+        .insert({
+          user_id: req.user.id,
+          category_id: categoryId,
+          type,
+          amount,
+          description: description || null,
+          interval: parsed.data.recurring.interval,
+          next_run_at: initialNextRunAt,
+        })
+        .select('id, category_id, type, amount, description, interval, next_run_at')
+        .single();
+      if (recErr) throw recErr;
+      recurrence = rec;
+    }
 
     const { data: tx, error: txErr } = await supabase
       .from('transactions')
@@ -101,14 +149,28 @@ router.post('/', async (req, res, next) => {
         amount,
         type,
         description: description || null,
-        date: date || todayISO(),
+        date: txDate,
         is_special: parsed.data.isSpecial ?? false,
+        is_recurring: !!recurrence,
+        recurrence_id: recurrence?.id ?? null,
       })
-      .select('id, amount, type, description, date, category_id, is_special, created_at')
+      .select(
+        'id, amount, type, description, date, category_id, is_special, is_recurring, recurrence_id, created_at',
+      )
       .single();
-    if (txErr) throw txErr;
+    if (txErr) {
+      // The transaction is what the user actually asked to log — if it fails
+      // after the recurrence was created, best-effort delete the recurrence
+      // so no phantom subscription appears on /subscriptions.
+      if (recurrence) {
+        await supabase.from('recurrences').delete().eq('id', recurrence.id).eq('user_id', req.user.id);
+      }
+      throw txErr;
+    }
 
-    // Update streak / XP / shields.
+    // Update streak / XP / shields. This is the user's own opt-in log — it
+    // still counts, recurring or not. Only CRON-created child transactions
+    // (lib/runRecurrences.js) skip this, by Alex's explicit decision.
     const { data: stats, error: statsErr } = await supabase
       .from('user_stats')
       .select('*')
@@ -126,7 +188,20 @@ router.post('/', async (req, res, next) => {
 
     console.log('[tx:create]', { userId: req.user.id, txId: tx.id });
 
-    res.status(201).json({ transaction: tx, delta });
+    res.status(201).json({
+      transaction: tx,
+      delta,
+      recurrence: recurrence
+        ? {
+            id: recurrence.id,
+            interval: recurrence.interval,
+            nextRunAt: recurrence.next_run_at,
+            amount: Number(recurrence.amount),
+            categoryId: recurrence.category_id,
+            merchantKey: manualMerchantKey(recurrence.id),
+          }
+        : null,
+    });
   } catch (err) {
     next(err);
   }

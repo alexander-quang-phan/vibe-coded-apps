@@ -3,18 +3,23 @@
 //   npm run dev:mock   (from server/)
 //
 // Serves every /api/* endpoint the client calls from an in-memory dataset,
-// reusing the real pure libs (gamification, subscription detection) so the
-// numbers behave like production. Auth is a no-op: any Bearer token passes.
+// reusing the real pure libs (gamification, subscription detection,
+// recurrence date math) so the numbers behave like production. Auth is a
+// no-op: any Bearer token passes. The one exception is POST/GET
+// /api/cron/recurrences (Task 6.12a), which mirrors production's real
+// CRON_SECRET gate so its 503/401/200 contract can be verified without a
+// real Supabase project — see that route below.
 // Nothing persists — restart to reset the demo data.
 //
 // Note: the client's LOGIN screen still talks to real Supabase Auth (that's
 // by design — this mock only replaces the data API). Log in with any real
 // account; the data you then see comes from here, not the database.
 import express from 'express';
-import { randomUUID } from 'node:crypto';
+import { randomUUID, timingSafeEqual } from 'node:crypto';
 import { applyLogEvent, titleForLevel, levelProgress } from '../lib/gamification.js';
 import { detectSubscriptions } from '../lib/subscriptions.js';
 import { suggestCategoryName } from '../lib/categoryKeywords.js';
+import { nextRunDate, dueRecurrences, manualMerchantKey } from '../lib/recurrences.js';
 
 const PORT = process.env.PORT || 3001;
 const app = express();
@@ -70,6 +75,7 @@ function seedTx(categoryName, amount, description, dAgo, type = 'expense', isSpe
     category_id: cat(categoryName).id,
     is_recurring: false,
     is_special: isSpecial,
+    recurrence_id: null,
     created_at: new Date(Date.now() - dAgo * 86_400_000).toISOString(),
   });
 }
@@ -103,6 +109,51 @@ for (const [n, amount, description] of [
 // something to show once the user turns it on.
 seedTx('Shopping', 180, "Mum's birthday gift", 10, 'expense', true);
 seedTx('Entertainment', 240, 'Weekend trip', 25, 'expense', true);
+
+// Task 6.12a — manually-marked recurrences, seeded with the linked "opt-in"
+// transaction the user logged by hand when they created the schedule, so
+// /api/subscriptions has a `source: 'manual'` row to show out of the box.
+let recurrences = [];
+function seedRecurrence({ categoryName, amount, description, interval, dAgo, cancelled = false }) {
+  const id = randomUUID();
+  const txDate = daysAgoISO(dAgo);
+  const createdAt = new Date(Date.now() - dAgo * 86_400_000).toISOString();
+  const anchorDay = Number(txDate.slice(8, 10));
+  recurrences.push({
+    id,
+    user_id: USER.id,
+    category_id: cat(categoryName).id,
+    type: 'expense',
+    amount,
+    description: description || null,
+    interval,
+    next_run_at: nextRunDate(txDate, interval, anchorDay),
+    last_run_at: null,
+    cancelled_at: cancelled ? new Date().toISOString() : null,
+    created_at: createdAt,
+  });
+  transactions.push({
+    id: randomUUID(),
+    amount,
+    type: 'expense',
+    description: description || null,
+    date: txDate,
+    category_id: cat(categoryName).id,
+    is_recurring: true,
+    is_special: false,
+    recurrence_id: id,
+    created_at: createdAt,
+  });
+}
+seedRecurrence({ categoryName: 'Bills', amount: 145, description: 'Council Tax', interval: 'monthly', dAgo: 20 });
+seedRecurrence({
+  categoryName: 'Shopping',
+  amount: 60,
+  description: 'Storage unit',
+  interval: 'monthly',
+  dAgo: 200,
+  cancelled: true,
+});
 
 let budgets = [
   ['Groceries', 260], ['Food', 120], ['Transport', 80],
@@ -282,28 +333,67 @@ app.get('/api/transactions', (req, res) => {
 });
 
 app.post('/api/transactions', (req, res) => {
-  const { categoryId, amount, type, description, date, isSpecial } = req.body ?? {};
+  const { categoryId, amount, type, description, date, isSpecial, recurring } = req.body ?? {};
   const c = catById(categoryId);
   if (!c) return res.status(404).json({ error: 'Category not found' });
   if (c.type !== type) return res.status(400).json({ error: 'Category type does not match transaction type' });
   if (isSpecial && type === 'income') {
     return res.status(400).json({ error: 'Only expenses can be special' });
   }
+  if (recurring && type === 'income') {
+    return res.status(400).json({ error: 'Only expenses can be recurring' });
+  }
+
+  const txDate = date || todayUTC();
+  let recurrence = null;
+  if (recurring) {
+    const anchorDay = Number(txDate.slice(8, 10));
+    const id = randomUUID();
+    recurrence = {
+      id,
+      user_id: USER.id,
+      category_id: categoryId,
+      type,
+      amount,
+      description: description || null,
+      interval: recurring.interval,
+      next_run_at: nextRunDate(txDate, recurring.interval, anchorDay),
+      last_run_at: null,
+      cancelled_at: null,
+      created_at: new Date().toISOString(),
+    };
+    recurrences.push(recurrence);
+  }
+
   const tx = {
     id: randomUUID(),
     amount,
     type,
     description: description || null,
-    date: date || todayUTC(),
+    date: txDate,
     category_id: categoryId,
-    is_recurring: false,
+    is_recurring: !!recurrence,
     is_special: !!isSpecial,
+    recurrence_id: recurrence?.id ?? null,
     created_at: new Date().toISOString(),
   };
   transactions.push(tx);
   const { next, delta } = applyLogEvent(stats, todayUTC());
   stats = { ...stats, ...next };
-  res.status(201).json({ transaction: tx, delta });
+  res.status(201).json({
+    transaction: tx,
+    delta,
+    recurrence: recurrence
+      ? {
+          id: recurrence.id,
+          interval: recurrence.interval,
+          nextRunAt: recurrence.next_run_at,
+          amount: Number(recurrence.amount),
+          categoryId: recurrence.category_id,
+          merchantKey: manualMerchantKey(recurrence.id),
+        }
+      : null,
+  });
 });
 
 app.post('/api/transactions/parse', (req, res) => {
@@ -649,9 +739,23 @@ app.get('/api/wins', (_req, res) => {
   });
 });
 
+const CADENCE_DAYS = { monthly: 30, weekly: 7 };
+
 app.get('/api/subscriptions', (_req, res) => {
-  const detected = detectSubscriptions(transactions.filter((t) => t.type === 'expense'));
-  const subscriptions = detected.map((d) => {
+  const expenseTx = transactions.filter((t) => t.type === 'expense');
+  // Manually-marked transactions carry a recurrence_id — exclude them from
+  // the auto-detector input so they aren't ALSO counted as a detected sub.
+  const autoInput = expenseTx.filter((t) => !t.recurrence_id);
+  const byRecurrenceId = new Map();
+  for (const t of expenseTx) {
+    if (!t.recurrence_id) continue;
+    const arr = byRecurrenceId.get(t.recurrence_id) ?? [];
+    arr.push(t);
+    byRecurrenceId.set(t.recurrence_id, arr);
+  }
+
+  const detected = detectSubscriptions(autoInput);
+  const autoSubscriptions = detected.map((d) => {
     const o = subscriptionOverrides.get(d.merchantKey);
     return {
       ...d,
@@ -659,8 +763,38 @@ app.get('/api/subscriptions', (_req, res) => {
       status: o?.status ?? 'active',
       displayName: o?.display_name ?? null,
       decidedAt: o?.decided_at ?? null,
+      source: 'auto',
     };
   });
+
+  const manualSubscriptions = recurrences.map((r) => {
+    const linked = byRecurrenceId.get(r.id) ?? [];
+    const amount = Number(r.amount);
+    const monthlyCost = round2(r.interval === 'monthly' ? amount : amount * (52 / 12));
+    const annualCost = round2(r.interval === 'monthly' ? amount * 12 : amount * 52);
+    return {
+      merchantKey: manualMerchantKey(r.id),
+      name: r.description || null,
+      inferred: false,
+      cadence: r.interval,
+      cadenceDays: CADENCE_DAYS[r.interval],
+      amount: round2(amount),
+      monthlyCost,
+      annualCost,
+      lastCharged: linked.length ? linked.map((t) => t.date).sort().at(-1) : null,
+      nextExpected: r.next_run_at,
+      totalPaid: round2(linked.reduce((sum, t) => sum + Number(t.amount), 0)),
+      occurrences: linked.length,
+      categoryId: r.category_id,
+      category: catShape(catById(r.category_id)),
+      status: r.cancelled_at ? 'cancelled' : 'active',
+      displayName: null,
+      decidedAt: r.cancelled_at ?? null,
+      source: 'manual',
+    };
+  });
+
+  const subscriptions = [...autoSubscriptions, ...manualSubscriptions];
   const active = subscriptions.filter((s) => s.status === 'active');
   const cancelled = subscriptions.filter((s) => s.status === 'cancelled');
   const dismissed = subscriptions.filter((s) => s.status === 'dismissed');
@@ -681,6 +815,29 @@ app.get('/api/subscriptions', (_req, res) => {
 
 app.patch('/api/subscriptions/:merchantKey', (req, res) => {
   const merchantKey = decodeURIComponent(req.params.merchantKey);
+
+  if (merchantKey.startsWith('manual:')) {
+    const recurrenceId = merchantKey.slice('manual:'.length);
+    const r = recurrences.find((x) => x.id === recurrenceId);
+    if (!r) return res.status(404).json({ error: 'Recurrence not found' });
+    if (req.body?.status === 'dismissed') {
+      return res
+        .status(400)
+        .json({ error: 'Manually-marked recurrences cannot be dismissed — cancel it instead.' });
+    }
+    if (req.body?.status === 'cancelled') r.cancelled_at = new Date().toISOString();
+    else if (req.body?.status === 'active') r.cancelled_at = null;
+    if (req.body?.amount !== undefined) r.amount = req.body.amount;
+    return res.json({
+      recurrence: {
+        merchantKey: manualMerchantKey(r.id),
+        status: r.cancelled_at ? 'cancelled' : 'active',
+        amount: Number(r.amount),
+        cancelledAt: r.cancelled_at,
+      },
+    });
+  }
+
   const existing = subscriptionOverrides.get(merchantKey);
   const merged = {
     status: req.body?.status ?? existing?.status ?? 'active',
@@ -699,6 +856,53 @@ app.patch('/api/subscriptions/:merchantKey', (req, res) => {
       decidedAt: merged.decided_at,
     },
   });
+});
+
+// Task 6.12a — cron endpoint. Unlike every other mock route (any Bearer
+// token passes, no real auth), this one deliberately mirrors production's
+// CRON_SECRET-shaped gating: unset -> 503 fail-closed, missing/wrong -> 401,
+// correct -> runs. That's the only way to prove the security contract (and
+// the idempotency of a double-run) without real Supabase or the live app.
+app.all('/api/cron/recurrences', (req, res) => {
+  const secret = process.env.CRON_SECRET;
+  if (!secret) return res.status(503).json({ error: 'Cron endpoint not configured' });
+
+  const header = req.get('authorization') || '';
+  const [scheme, token] = header.split(' ');
+  const bufA = Buffer.from(token || '');
+  const bufB = Buffer.from(secret);
+  const valid =
+    scheme === 'Bearer' && token && bufA.length === bufB.length && timingSafeEqual(bufA, bufB);
+  if (!valid) return res.status(401).json({ error: 'Unauthorized' });
+
+  const today = todayUTC();
+  const due = dueRecurrences(recurrences, today);
+  let created = 0;
+  const skipped = 0;
+  const errors = 0;
+  for (const r of due) {
+    const anchorDay = Number(String(r.created_at).slice(8, 10));
+    let next = nextRunDate(r.next_run_at, r.interval, anchorDay);
+    while (next <= today) next = nextRunDate(next, r.interval, anchorDay);
+    r.next_run_at = next;
+    r.last_run_at = today;
+    // Cron-created transactions award NO XP and do NOT extend the streak —
+    // stats is intentionally untouched here (Alex's decision, 2026-07-18).
+    transactions.push({
+      id: randomUUID(),
+      amount: r.amount,
+      type: r.type,
+      description: r.description,
+      date: today,
+      category_id: r.category_id,
+      is_recurring: true,
+      is_special: false,
+      recurrence_id: r.id,
+      created_at: new Date().toISOString(),
+    });
+    created += 1;
+  }
+  res.json({ created, skipped, errors });
 });
 
 app.get('/api/projections/month', (_req, res) => {
