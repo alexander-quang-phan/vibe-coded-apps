@@ -1,10 +1,14 @@
-# Chat Handoff — updated 2026-07-17
+# Chat Handoff — updated 2026-07-18
 
 ## Goal
 Phase 9 of Trim: **PLN currency, opt-in special expenses, budget pace, monthly history, and encryption at rest** (so Alex can't casually read users' finances in the Supabase dashboard). Designed, planned, and built in one session using subagent-driven development — implementer + independent reviewer per task.
 
 ## Current state
-**9.1–9.4 are built, reviewed and committed. 9.5 (encryption) is deliberately HALF done and gated on Alex.** Everything is on branch `claude/budgeting-pln-privacy-features-43da8e` in the worktree — **nothing is merged to `main`, so nothing is deployed.**
+**9.1–9.4 are MERGED to `main` (`e4f7a79`) and DEPLOYED to production. 9.5 (encryption) is deliberately HALF done and gated on Alex.**
+
+Deploy verified rather than assumed: the live client bundle contains every Phase 9 marker string (`Polish`, `Special expense`, `Monthly history`, `would typically be used`, `specialThisMonth`, `kept out of your monthly budget`), the built CSS hash matches `main` byte-for-byte, and `trim-api` shows a fresh Production deployment (the previous one was 6 days old). Migrations 010 + 011 are applied, so the features are live end-to-end.
+
+**Still unverified: the UI click-through** (item A below). Every check was API- or bundle-level, because the app sits behind Supabase login and agents must not enter passwords.
 
 | Task | State |
 |---|---|
@@ -12,13 +16,15 @@ Phase 9 of Trim: **PLN currency, opt-in special expenses, budget pace, monthly h
 | 9.2 Special expenses (opt-in) | ✅ built, reviewed, migration 011 **applied to live DB** |
 | 9.3 Budget pace | ✅ built, reviewed |
 | 9.4 Monthly history | ✅ built, reviewed |
-| 9.5 Encryption at rest | ⚠️ **half built** — crypto lib + tests + migration 012 *file* + backfill *script*. Nothing applied, nothing encrypted, no routes changed. |
+| 9.5 Encryption at rest | ⚠️ **half built, INERT on main** — crypto lib + 19 tests + migration 012 *file* + backfill *script*. No route imports it, no migration applied, nothing encrypted. The backfill needs `DATA_ENCRYPTION_KEY` (unset), so it cannot run by accident. |
+
+**Monthly history depth (asked 2026-07-18):** it goes back **24 months**, not 5. The server caps `?months=` at 24 (`analytics.js:20`) and Analytics requests all 24; `MonthlyHistory` then trims *leading* months with no data. Alex currently sees ~5 rows simply because the Supabase project dates from 2026-04-24 — the table grows on its own each month.
 
 Verified on one running mock API together: currency PLN, `specialThisMonth` 180, `pace {target 900, spent 1173.07, delta −273.07}`, 24 analytics buckets all carrying `special`. Client build passes; every server file syntax-clean.
 
 ## What Alex still has to do
 
-**A. Click-through test (5 min, only you can).** Every agent verification was API-level — the UI is behind Supabase login and agents must not enter passwords. Please start the app and confirm: Settings → currency PLN shows `zł`; Settings → **Special expenses** toggle on → Quick-Add's "Add a note or change the date" area shows a ⭐ toggle → log one → Dashboard hero shows a Special chip and the budget bars *don't* move → Transactions row star/unstar → Analytics → Monthly history → tap an old month.
+**A. Click-through test on the LIVE site (5 min, only you can).** Agents can't get past Supabase login. On https://trim-budget.vercel.app confirm: Settings → currency PLN shows `zł`; Settings → **Special expenses** toggle on → Quick-Add's "Add a note or change the date" area shows a ⭐ toggle → log one → Dashboard hero shows a Special chip and the budget bars *don't* move → Transactions row star/unstar → Dashboard pace line inside "Can I afford this?" → Analytics → Monthly history → tap an old month. If anything is missing, `vercel rollback` is one command.
 
 **B. The encryption decision (9.5).** The remaining half is genuinely risky and needs you:
 1. Generate the key yourself: `openssl rand -base64 32` → put in `server/.env` as `DATA_ENCRYPTION_KEY`, add to Vercel, **and back it up in `~/Keys/`**. Losing this key = every user's financial data is unrecoverable. (Agents deliberately did not generate or handle it.)
@@ -49,10 +55,21 @@ The spec and plan were corrected in `fc420b0` so a future session rebuilding fro
 - `.superpowers/sdd/progress.md` — per-task ledger incl. deferred minor findings.
 
 ## Next steps (in order)
-1. Alex: click-through A above; tell the next session anything that looks wrong.
-2. Alex: decide on 9.5 — either finish encryption (generate key first) or merge 9.1–9.4 now and do encryption later. **9.1–9.4 are independently mergeable**; encryption does not block them.
-3. Merge `claude/budgeting-pln-privacy-features-43da8e` → `main`, then `/deploy`.
-4. Whenever 9.5 resumes: follow plan Task 5, steps 1 → 8, in one session, stopping for explicit confirmation before migration 013.
+1. Alex: click-through A above on the live site.
+2. **Task 6.12 (recurring transactions executor) — started 2026-07-18, see below.**
+3. Whenever 9.5 resumes: follow plan Task 5, steps 1 → 8, in one session, stopping for explicit confirmation before migration 013.
+
+## Task 6.12 — recurring transactions executor (in progress 2026-07-18)
+
+A full design was already parked on branch `docs/task-6.12-spec-unbuilt` (commit `99d3bfa`, written 2026-07-12). Those doc edits describe the feature **as if shipped — no code exists**. Design decisions already made there and worth keeping:
+- Separate **`recurrences`** table (user_id, category_id, type, amount, description, interval monthly|weekly, next_run_at, last_run_at, cancelled_at) + `transactions.recurrence_id` FK.
+- Opt-in lives in QuickAddDialog's existing hidden "note/date" area, **expense-only**, so the 3-tap path stays clean.
+- "Recurring" pill on /transactions rows; manual recurrences surface on **/subscriptions** with a "Manually marked" pill — no second management surface.
+- Auto-detector skips transactions carrying `recurrence_id` so manual + detected don't double-count.
+- Cancel = soft (`cancelled_at`), stops future creations, keeps history.
+- Idempotency via optimistic claim: `UPDATE ... WHERE next_run_at = <oldDate>`, so a double run is a no-op.
+
+**The one stale decision:** that spec specifies **Railway cron**, but Trim moved to Vercel on 2026-07-13 and no cron is configured (`server/vercel.json` has rewrites + `maxDuration: 60` only). Verified 2026-07-18: **Vercel Cron on Hobby allows 2 jobs at once-per-day each** — enough for the single nightly 03:00 UTC job this needs. (The "no reliable cron on Vercel" note from 2026-07-15 was about *bank sync*, which needs frequent polling — a different shape of problem.) Alex to confirm venue before coding.
 
 ## Open questions for Alex
 - Finish encryption now, or merge the four shipped features first? (Recommendation: merge 9.1–9.4 and deploy — they're verified and independent — then do 9.5 as its own session with the key in hand.)
