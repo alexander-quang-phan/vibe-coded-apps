@@ -4,7 +4,7 @@ Side projects I'm building just for fun — vibe coding ideas into things I actu
 
 ## The vibe
 
-I build apps to make my life easier and to solve people's frustrations and probems. The goal is to ship something I'd open every day. Move fast, iterate, get it in front of users — even when "users" is just me.
+I build apps to make my life easier and to solve people's frustrations and problems. The goal is to ship something I'd open every day. Move fast, iterate, get it in front of users — even when "users" is just me.
 
 ## What's in here
 
