@@ -12,17 +12,19 @@ I build apps to make my life easier and to solve people's frustrations and probl
 
 > Trim your spending. Grow your savings.
 
-Full-stack budget tracker, currently in active build. Working towards a v1 launch.
+Full-stack budget tracker, currently in active development.
 
 **Stack:**
 - **Frontend:** React 18 + Vite + React Router + Tailwind + shadcn/ui + TanStack Query
 - **Backend:** Node + Express + Zod + Helmet + rate limiting
 - **Data & Auth:** Supabase (Postgres + Row Level Security + Supabase Auth)
-- **Hosting:** Railway
+- **Hosting:** Vercel (client and API)
 
-See **[TRIM.md](./TRIM.md)** for the full architecture, setup, and deployment notes.
+**Live app:** [trim-budget.vercel.app](https://trim-budget.vercel.app)
 
-**Status:** Phase 6 — visual polish, Wins feed, Subscriptions, month-end projections, subscription overrides. Approaching v1.
+See **[TRIM.md](./TRIM.md)** for architecture and setup, and **[DEPLOY.md](./DEPLOY.md)** for current deployment notes.
+
+**Status:** Live on Vercel. Phase 9 product features—including PLN support, opt-in special expenses, budget pace, and monthly history—are deployed.
 
 ---
 
