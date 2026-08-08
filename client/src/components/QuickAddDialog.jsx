@@ -12,6 +12,7 @@ import {
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { MoneyInput, isValidMoney } from '@/components/ui/money-input';
+import { SpecialGroupPicker } from '@/components/SpecialGroupPicker';
 import { Textarea } from '@/components/ui/textarea';
 import { Label } from '@/components/ui/label';
 import { SegmentGroup, SegmentButton } from '@/components/ui/toggle-group';
@@ -61,6 +62,7 @@ export function QuickAddDialog({
   // (the server 400s "Only expenses can be recurring"), and it lives in the
   // advanced area so the two-tap path never grows a step.
   const [recurringInterval, setRecurringInterval] = useState(null); // null | 'monthly' | 'weekly'
+  const [specialGroupId, setSpecialGroupId] = useState(null); // Phase 10 B1, optional
   const amountRef = useRef(null);
   const freeformRef = useRef(null);
 
@@ -78,6 +80,7 @@ export function QuickAddDialog({
       setArmedCategoryId(null);
       setIsSpecial(false);
       setRecurringInterval(null);
+      setSpecialGroupId(null);
       setTimeout(() => amountRef.current?.focus(), 80);
     }
   }, [open]);
@@ -224,6 +227,7 @@ export function QuickAddDialog({
       description: description.trim() || null,
       date,
       ...(type === 'expense' ? { isSpecial } : {}),
+      ...(type === 'expense' && isSpecial && specialGroupId ? { specialGroupId } : {}),
       ...(type === 'expense' && recurringInterval
         ? { recurring: { interval: recurringInterval } }
         : {}),
@@ -533,9 +537,21 @@ export function QuickAddDialog({
                         type="checkbox"
                         className="h-4 w-4 accent-primary"
                         checked={isSpecial}
-                        onChange={(e) => setIsSpecial(e.target.checked)}
+                        onChange={(e) => {
+                          setIsSpecial(e.target.checked);
+                          if (!e.target.checked) setSpecialGroupId(null);
+                        }}
                       />
                     </label>
+                  ) : null}
+
+                  {/* Phase 10 B1 — only meaningful once it IS special. */}
+                  {specialEnabled && type === 'expense' && isSpecial ? (
+                    <SpecialGroupPicker
+                      value={specialGroupId}
+                      onChange={setSpecialGroupId}
+                      className="rounded-lg border border-border/60 bg-secondary/30 px-3 py-2"
+                    />
                   ) : null}
 
                   {/* Task 6.12b — recurring opt-in, expense-only. */}

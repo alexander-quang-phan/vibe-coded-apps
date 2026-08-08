@@ -15,6 +15,7 @@ import winsRouter from './routes/wins.js';
 import subscriptionsRouter from './routes/subscriptions.js';
 import projectionsRouter from './routes/projections.js';
 import affordabilityRouter from './routes/affordability.js';
+import specialGroupsRouter from './routes/specialGroups.js';
 import askRouter from './routes/ask.js';
 import cronRouter from './routes/cron.js';
 
@@ -101,6 +102,7 @@ app.use('/api/wins', requireAuth, winsRouter);
 app.use('/api/subscriptions', requireAuth, subscriptionsRouter);
 app.use('/api/projections', requireAuth, projectionsRouter);
 app.use('/api/affordability', requireAuth, affordabilityRouter);
+app.use('/api/special-groups', requireAuth, specialGroupsRouter);
 app.use('/api/ask', requireAuth, askLimiter, askRouter);
 
 // Task 6.12a — machine-invoked, no requireAuth (no user JWT exists here).

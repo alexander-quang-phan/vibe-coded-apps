@@ -22,6 +22,7 @@ import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { MoneyInput, isValidMoney, sanitizeMoneyInput } from '@/components/ui/money-input';
+import { SpecialGroupPicker } from '@/components/SpecialGroupPicker';
 import { Label } from '@/components/ui/label';
 import { Skeleton } from '@/components/ui/skeleton';
 import { SegmentGroup, SegmentButton } from '@/components/ui/toggle-group';
@@ -63,6 +64,7 @@ function EditDialog({
   const [date, setDate] = useState('');
   const [categoryId, setCategoryId] = useState('');
   const [isSpecial, setIsSpecial] = useState(false);
+  const [specialGroupId, setSpecialGroupId] = useState(null);
 
   useEffect(() => {
     if (!tx || !open) return;
@@ -71,6 +73,7 @@ function EditDialog({
     setDate(tx.date);
     setCategoryId(tx.category_id);
     setIsSpecial(!!tx.is_special);
+    setSpecialGroupId(tx.special_group_id ?? null);
   }, [tx, open]);
 
   if (!tx) return null;
@@ -138,9 +141,21 @@ function EditDialog({
                 type="checkbox"
                 className="h-4 w-4 accent-primary"
                 checked={isSpecial}
-                onChange={(e) => setIsSpecial(e.target.checked)}
+                onChange={(e) => {
+                  setIsSpecial(e.target.checked);
+                  if (!e.target.checked) setSpecialGroupId(null);
+                }}
               />
             </label>
+          ) : null}
+
+          {/* Phase 10 B1 — same optional grouping as Quick-Add. */}
+          {specialEnabled && tx.type === 'expense' && isSpecial ? (
+            <SpecialGroupPicker
+              value={specialGroupId}
+              onChange={setSpecialGroupId}
+              className="rounded-lg border border-border/60 bg-secondary/30 px-3 py-2"
+            />
           ) : null}
         </div>
 
@@ -156,6 +171,7 @@ function EditDialog({
                 date,
                 description: description.trim() || null,
                 ...(tx.type === 'expense' ? { isSpecial } : {}),
+                ...(tx.type === 'expense' && isSpecial ? { specialGroupId } : {}),
               })
             }
             disabled={saving || !isValidMoney(amount) || !categoryId || !date}
@@ -183,6 +199,10 @@ export default function Transactions() {
   const [monthFilter, setMonthFilter] = useState(urlMonth ?? 'all');
   const [specialFilter, setSpecialFilter] = useState(false);
   const [recurringFilter, setRecurringFilter] = useState(false);
+  // Phase 10 B1 — deep link from the Dashboard's Special expenses panel.
+  const [specialGroupFilter, setSpecialGroupFilter] = useState(
+    () => searchParams.get('specialGroup') ?? null,
+  );
   const [q, setQ] = useState('');
   const [editing, setEditing] = useState(null);
 
@@ -195,6 +215,14 @@ export default function Transactions() {
           : `/api/transactions?limit=200&month=${monthFilter}`,
       ),
   });
+  const { data: groupsData } = useQuery({
+    queryKey: ['special-groups'],
+    queryFn: () => api.get('/api/special-groups'),
+    enabled: !!specialGroupFilter,
+  });
+  const groupName =
+    (groupsData?.groups ?? []).find((g) => g.id === specialGroupFilter)?.name ?? null;
+
   const { data: catsData } = useQuery({
     queryKey: ['categories'],
     queryFn: () => api.get('/api/categories'),
@@ -222,6 +250,7 @@ export default function Transactions() {
       if (monthFilter !== 'all' && !t.date.startsWith(monthFilter)) return false;
       if (specialEnabled && specialFilter && !t.is_special) return false;
       if (recurringFilter && !t.is_recurring) return false;
+      if (specialGroupFilter && t.special_group_id !== specialGroupFilter) return false;
       if (query) {
         const cat = catsById.get(t.category_id)?.name?.toLowerCase() ?? '';
         const desc = (t.description ?? '').toLowerCase();
@@ -229,7 +258,7 @@ export default function Transactions() {
       }
       return true;
     });
-  }, [data, typeFilter, categoryFilter, monthFilter, specialFilter, specialEnabled, recurringFilter, q, catsById]);
+  }, [data, typeFilter, categoryFilter, monthFilter, specialFilter, specialEnabled, recurringFilter, specialGroupFilter, q, catsById]);
 
   const totals = useMemo(() => {
     let income = 0;
@@ -375,6 +404,16 @@ export default function Transactions() {
                 >
                   <Star className={cn('h-3.5 w-3.5', specialFilter && 'fill-amber-400')} aria-hidden />
                   Special
+                </button>
+              ) : null}
+              {specialGroupFilter ? (
+                <button
+                  type="button"
+                  onClick={() => setSpecialGroupFilter(null)}
+                  className="inline-flex items-center gap-1 rounded-full border border-amber-400/60 bg-amber-400/10 px-3 py-1.5 text-xs font-medium text-amber-400"
+                >
+                  <Star className="h-3.5 w-3.5 fill-amber-400" aria-hidden />
+                  {groupName ?? 'Group'} · clear
                 </button>
               ) : null}
               {/* Task 6.12b — recurring filter, same shape as the Special chip. */}

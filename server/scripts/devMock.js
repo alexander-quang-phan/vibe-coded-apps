@@ -343,7 +343,7 @@ app.get('/api/transactions', (req, res) => {
 });
 
 app.post('/api/transactions', (req, res) => {
-  const { categoryId, amount, type, description, date, isSpecial, recurring } = req.body ?? {};
+  const { categoryId, amount, type, description, date, isSpecial, specialGroupId, recurring } = req.body ?? {};
   const c = catById(categoryId);
   if (!c) return res.status(404).json({ error: 'Category not found' });
   if (c.type !== type) return res.status(400).json({ error: 'Category type does not match transaction type' });
@@ -352,6 +352,9 @@ app.post('/api/transactions', (req, res) => {
   }
   if (recurring && type === 'income') {
     return res.status(400).json({ error: 'Only expenses can be recurring' });
+  }
+  if (specialGroupId && !isSpecial) {
+    return res.status(400).json({ error: 'Only special expenses can belong to a group' });
   }
 
   const txDate = date || todayUTC();
@@ -384,6 +387,7 @@ app.post('/api/transactions', (req, res) => {
     category_id: categoryId,
     is_recurring: !!recurrence,
     is_special: !!isSpecial,
+    special_group_id: specialGroupId ?? null,
     recurrence_id: recurrence?.id ?? null,
     created_at: new Date().toISOString(),
   };
@@ -427,11 +431,22 @@ app.post('/api/transactions/parse', (req, res) => {
 app.patch('/api/transactions/:id', (req, res) => {
   const tx = transactions.find((t) => t.id === req.params.id);
   if (!tx) return res.status(404).json({ error: 'Transaction not found' });
-  const { categoryId, amount, type, description, date, isSpecial } = req.body ?? {};
+  const { categoryId, amount, type, description, date, isSpecial, specialGroupId } = req.body ?? {};
   const effectiveType = type !== undefined ? type : tx.type;
   const effectiveSpecial = isSpecial !== undefined ? isSpecial : tx.is_special;
   if (effectiveSpecial && effectiveType === 'income') {
     return res.status(400).json({ error: 'Only expenses can be special' });
+  }
+  // Un-starring CLEARS the group rather than being rejected — see the real
+  // route for why (rejecting it made grouped transactions un-starrable).
+  const effectiveGroup =
+    isSpecial === false
+      ? null
+      : specialGroupId !== undefined
+        ? specialGroupId
+        : tx.special_group_id;
+  if (effectiveGroup && !effectiveSpecial) {
+    return res.status(400).json({ error: 'Only special expenses can belong to a group' });
   }
   if (categoryId !== undefined) tx.category_id = categoryId;
   if (amount !== undefined) tx.amount = amount;
@@ -439,11 +454,72 @@ app.patch('/api/transactions/:id', (req, res) => {
   if (description !== undefined) tx.description = description || null;
   if (date !== undefined) tx.date = date;
   if (isSpecial !== undefined) tx.is_special = !!isSpecial;
+  if (specialGroupId !== undefined) tx.special_group_id = specialGroupId;
+  if (isSpecial === false) tx.special_group_id = null;
   res.json({ transaction: tx });
 });
 
 app.delete('/api/transactions/:id', (req, res) => {
   transactions = transactions.filter((t) => t.id !== req.params.id);
+  res.status(204).end();
+});
+
+// Phase 10 B1 — special-expense groups.
+let specialGroups = [];
+
+app.get('/api/special-groups', (_req, res) => {
+  const byGroup = new Map();
+  for (const t of transactions) {
+    if (t.type !== 'expense' || !t.is_special || !t.special_group_id) continue;
+    const g = byGroup.get(t.special_group_id) ?? { total: 0, count: 0, dates: [] };
+    g.total += Number(t.amount);
+    g.count += 1;
+    g.dates.push(t.date);
+    byGroup.set(t.special_group_id, g);
+  }
+  res.json({
+    groups: specialGroups.map((g) => {
+      const agg = byGroup.get(g.id);
+      const dates = agg ? [...agg.dates].sort() : [];
+      return {
+        id: g.id,
+        name: g.name,
+        archivedAt: g.archived_at,
+        total: round2(agg?.total ?? 0),
+        count: agg?.count ?? 0,
+        firstDate: dates[0] ?? null,
+        lastDate: dates.at(-1) ?? null,
+      };
+    }),
+  });
+});
+
+app.post('/api/special-groups', (req, res) => {
+  const name = String(req.body?.name ?? '').trim();
+  if (!name || name.length > 60) {
+    return res.status(400).json({ error: 'Invalid group', details: { fieldErrors: { name: ['1-60 characters.'] } } });
+  }
+  const g = { id: randomUUID(), name, archived_at: null, created_at: new Date().toISOString() };
+  specialGroups.unshift(g);
+  res.status(201).json({
+    group: { id: g.id, name: g.name, archivedAt: null, total: 0, count: 0, firstDate: null, lastDate: null },
+  });
+});
+
+app.patch('/api/special-groups/:id', (req, res) => {
+  const g = specialGroups.find((x) => x.id === req.params.id);
+  if (!g) return res.status(404).json({ error: 'Group not found' });
+  if (req.body?.name !== undefined) g.name = String(req.body.name).trim();
+  if (req.body?.archived !== undefined) g.archived_at = req.body.archived ? new Date().toISOString() : null;
+  res.json({ group: { id: g.id, name: g.name, archivedAt: g.archived_at } });
+});
+
+app.delete('/api/special-groups/:id', (req, res) => {
+  const before = specialGroups.length;
+  specialGroups = specialGroups.filter((x) => x.id !== req.params.id);
+  if (specialGroups.length === before) return res.status(404).json({ error: 'Group not found' });
+  // `on delete set null` — the spending survives, just ungrouped.
+  for (const t of transactions) if (t.special_group_id === req.params.id) t.special_group_id = null;
   res.status(204).end();
 });
 

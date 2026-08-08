@@ -4,6 +4,7 @@ import { toast } from 'sonner';
 import { ArrowDownLeft, ArrowUpRight, Sparkles, Star } from 'lucide-react';
 import { useApi } from '@/hooks/useApi';
 import { AffordabilityCheck } from '@/components/AffordabilityCheck';
+import { SpecialGroupsPanel } from '@/components/SpecialGroupsPanel';
 import { PulseStrip } from '@/components/PulseStrip';
 import { CategoryDonut } from '@/components/CategoryDonut';
 import { SimpleMonthCard } from '@/components/SimpleMonthCard';
@@ -262,6 +263,16 @@ export default function Dashboard() {
           <AffordabilityCheck currency={currency} />
         </div>
       )}
+
+      {/* Phase 10 B1 — only when the special-expenses pref is on. */}
+      {specialEnabled ? (
+        <div className="animate-fade-up" style={{ animationDelay: '50ms' }}>
+          <SpecialGroupsPanel
+            currency={currency}
+            specialThisMonth={month.specialThisMonth ?? 0}
+          />
+        </div>
+      ) : null}
 
       <div className="animate-fade-up" style={{ animationDelay: '60ms' }}>
         <PulseStrip stats={stats} transactionCount={month.transactionCount} />

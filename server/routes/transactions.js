@@ -23,6 +23,9 @@ const createSchema = z.object({
   date: isoDate.optional(),
   // Opt-in special expenses (Task 9.2) — gifts/trips/one-offs outside the budget.
   isSpecial: z.boolean().optional(),
+  // Phase 10 B1 — optional grouping for special expenses ("Paris holiday").
+  // Null clears it. Only ever valid on a special EXPENSE (guarded below).
+  specialGroupId: z.string().uuid().optional().nullable(),
   recurring: recurringSchema.optional(),
 });
 
@@ -33,6 +36,7 @@ const updateSchema = z.object({
   description: z.string().trim().max(200).optional().nullable(),
   date: isoDate.optional(),
   isSpecial: z.boolean().optional(),
+  specialGroupId: z.string().uuid().optional().nullable(),
 });
 
 const parseSchema = z.object({
@@ -59,7 +63,7 @@ router.get('/', async (req, res, next) => {
     let query = supabase
       .from('transactions')
       .select(
-        'id, amount, type, description, date, category_id, is_recurring, is_special, recurrence_id, created_at',
+        'id, amount, type, description, date, category_id, is_recurring, is_special, special_group_id, recurrence_id, created_at',
       )
       .eq('user_id', req.user.id);
 
@@ -106,6 +110,12 @@ router.post('/', async (req, res, next) => {
     // /subscriptions (the management surface for these) is expense-only.
     if (parsed.data.recurring && type === 'income') {
       return res.status(400).json({ error: 'Only expenses can be recurring' });
+    }
+    // Phase 10 B1 — a group is a label on special spending. Attaching one to a
+    // non-special row would silently drop out of the group's total, which
+    // filters on is_special.
+    if (parsed.data.specialGroupId && !parsed.data.isSpecial) {
+      return res.status(400).json({ error: 'Only special expenses can belong to a group' });
     }
 
     const txDate = date || todayISO();
@@ -262,7 +272,7 @@ router.patch('/:id', async (req, res, next) => {
     // below, know the current type when the caller isn't also changing it.
     const { data: existing, error: existingErr } = await supabase
       .from('transactions')
-      .select('type, is_special')
+      .select('type, is_special, special_group_id')
       .eq('id', id)
       .eq('user_id', req.user.id)
       .maybeSingle();
@@ -291,6 +301,20 @@ router.patch('/:id', async (req, res, next) => {
     if (effectiveSpecial && effectiveType === 'income') {
       return res.status(400).json({ error: 'Only expenses can be special' });
     }
+    // Same resulting-state reasoning for groups — but un-starring is a
+    // legitimate action that CLEARS the group, not a contradiction to reject.
+    // Only an explicit attempt to attach a group to a non-special row is an
+    // error. (Rejecting the un-star was a real bug caught in testing: it made
+    // grouped transactions impossible to un-star.)
+    const clearingSpecial = parsed.data.isSpecial === false;
+    const effectiveGroup = clearingSpecial
+      ? null
+      : parsed.data.specialGroupId !== undefined
+        ? parsed.data.specialGroupId
+        : existing.special_group_id;
+    if (effectiveGroup && !effectiveSpecial) {
+      return res.status(400).json({ error: 'Only special expenses can belong to a group' });
+    }
 
     const payload = {};
     if (parsed.data.categoryId !== undefined) payload.category_id = parsed.data.categoryId;
@@ -299,6 +323,10 @@ router.patch('/:id', async (req, res, next) => {
     if (parsed.data.description !== undefined) payload.description = parsed.data.description || null;
     if (parsed.data.date !== undefined) payload.date = parsed.data.date;
     if (parsed.data.isSpecial !== undefined) payload.is_special = parsed.data.isSpecial;
+    if (parsed.data.specialGroupId !== undefined) payload.special_group_id = parsed.data.specialGroupId;
+    // Un-starring clears the group automatically — the guard above already
+    // refuses the contradictory combination, this handles the honest one.
+    if (parsed.data.isSpecial === false) payload.special_group_id = null;
     if (Object.keys(payload).length === 0) return res.status(400).json({ error: 'Nothing to update' });
 
     const { data, error } = await supabase
@@ -306,7 +334,7 @@ router.patch('/:id', async (req, res, next) => {
       .update(payload)
       .eq('id', id)
       .eq('user_id', req.user.id)
-      .select('id, amount, type, description, date, category_id, is_special, created_at')
+      .select('id, amount, type, description, date, category_id, is_special, special_group_id, is_recurring, recurrence_id, created_at')
       .maybeSingle();
     if (error) throw error;
     if (!data) return res.status(404).json({ error: 'Transaction not found' });
