@@ -41,7 +41,7 @@ Task: <paste the Chat prompt from BUILD_PLAN.md here>
 | Service-role grants repair | ✅ | Migration 002 fixes `permission denied for table ...`. |
 | Savings contribution note repair | ✅ | Migration 003 aligns contribution notes with the API/UI. |
 | Visual polish pass | ✅ | Mesh background, glass chrome, hero balance, animated streak/XP/FAB, hover-lift cards, gradient progress. |
-| **6 – Deferred features** | **✅ (except 6.12, 6.13)** | 6.A, 6.4, 6.5, 6.9 shipped 2026-07. **Audit note:** 6.4 and 6.5 were ticked ✅ in May but the code was never actually written (no affordability route/component; no monthly_limit anywhere) — caught and built during the 2026-07 validation pass. |
+| **6 – Deferred features** | **✅ (except 6.13)** | 6.A, 6.4, 6.5, 6.9 shipped 2026-07. **Audit note:** 6.4 and 6.5 were ticked ✅ in May but the code was never actually written (no affordability route/component; no monthly_limit anywhere) — caught and built during the 2026-07 validation pass. |
 | 7 – Deploy | ✅ | **Live on Vercel free tier** (2026-07-13): trim-budget.vercel.app + trim-api-jade.vercel.app — see DEPLOY.md. Railway config kept as paid alternative. Supabase restored + migrations 008/009 applied. |
 | UI distinctiveness pass | ✅ | 2026-07-13, via impeccable `bolder`: favicon + apple-touch-icon, dd/mm/yyyy dates, PulseStrip instrument cluster replacing the identical-stat-card grid, hero at 7xl. FEATURES/DESIGN updated. |
 | Signup "check your inbox" fix | ✅ | 2026-07-14: with email confirmation on in prod, `signUp` returns no session/no error and the page did nothing. Signup now swaps the form for a confirmation panel. Root-caused via Supabase auth logs (200 + `user_confirmation_requested`, then 429 email rate limits from re-clicks). |
@@ -475,7 +475,7 @@ Out of scope: category order/reordering, archiving, per-category budgets (alread
 
 ---
 
-### ▢ Task 6.12 — Recurring transactions executor (extension of 6.2)
+### ✅ Task 6.12 — Recurring transactions executor (extension of 6.2) — shipped 2026-08-08 (6.12a server + 6.12b client)
 
 **Chat prompt:**
 ```
