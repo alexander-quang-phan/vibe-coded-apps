@@ -5,7 +5,7 @@
 - Model A is:     not yet set — Alex chooses at the next kickoff
 - Up next:        n/a — 9.5 encryption remains the prime full-loop candidate
 - Last actor did: **Phase 10 complete (all 7 items), merged to `main` and DEPLOYED**; migrations 014 + 015 applied to the live DB
-- Next must:      Alex sets `CRON_SECRET` (the one outstanding item), then the "All Expenses" cleanup
+- Next must:      Alex does the "All Expenses" cleanup (below) — that's the only thing left
 - Last verdict:   —
 - Handoff log:
   - 2026-07-23 Claude Code: baton added — Trim retrofitted into the dual-agent workflow
@@ -27,8 +27,8 @@ Seven things Alex hit using Trim daily. All seven are now **built, verified and 
 | B2 | Task 6.12b recurring client half — **Task 6.12 now complete** | ✅ live (migration 014 applied) |
 
 Production verified after deploy: API healthy; `/api/special-groups`, `/api/subscriptions` and
-`/api/budgets` all 401 without a token; the cron route 503s (fails closed, `CRON_SECRET` unset);
-and the live client bundle contains every Phase 10 marker string. Live DB now has `recurrences`
+`/api/budgets` all 401 without a token; the cron route is authenticated (see below); and the live
+client bundle contains every Phase 10 marker string. Live DB now has `recurrences`
 and `special_groups`, both with RLS on; existing data untouched (124 transactions, 85 categories).
 
 ## ✅ CRON_SECRET is set (2026-08-08)
@@ -90,16 +90,15 @@ so in words rather than pretending an "Ungrouped" row would reconcile them. If m
 totals are wanted later, that's a real feature, not a tweak.
 
 ## Next steps (in order)
-1. **Alex: set `CRON_SECRET`** (above) — otherwise recurring expenses never auto-log.
-2. **Alex: the "All Expenses" cleanup** (above).
-3. **Alex: live click-through** — type `12,50` on his phone; tap a category twice; Settings →
+1. **Alex: the "All Expenses" cleanup** (above) — the only outstanding item.
+2. **Alex: live click-through** — type `12,50` on his phone; tap a category twice; Settings →
    Categories → search an emoji; Budgets → Overall card; Dashboard → incl./excl. special;
    log one with "Repeat this" → check /subscriptions.
-4. Open: 9.5 encryption at rest (needs him to generate + back up `DATA_ENCRYPTION_KEY`); Phase 8
+3. Open: 9.5 encryption at rest (needs him to generate + back up `DATA_ENCRYPTION_KEY`); Phase 8
    bank sync (blocked on Enable Banking); custom domain; Supabase leaked-password toggle.
 
 ## How to resume
-Start a session in this folder and say: "Read @CHAT_HANDOFF.md and continue with next step 4."
+Start a session in this folder and say: "Read @CHAT_HANDOFF.md and continue with next step 3."
 
 ## Previous sessions
 - **2026-07-18 (Phase 9 + 6.12a):** 9.1–9.4 merged and deployed; migrations 010 + 011 applied.
