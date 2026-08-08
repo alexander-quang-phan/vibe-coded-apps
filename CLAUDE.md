@@ -1,6 +1,6 @@
 # Trim — Budget Tracking App
 
-Full-stack personal budgeting app ("Trim your spending. Grow your savings."). Alex uses it daily and plans to share it with friends. React + Vite client, Express server, Supabase (Auth + Postgres), hosted on Railway.
+Full-stack personal budgeting app ("Trim your spending. Grow your savings."). Alex uses it daily and plans to share it with friends. React + Vite client, Express server, Supabase (Auth + Postgres), hosted on Vercel.
 
 ## Source of truth — read before coding
 - **TRIM.md** — stack, architecture diagram, project structure, deployment setup
@@ -23,4 +23,13 @@ Full-stack personal budgeting app ("Trim your spending. Grow your savings."). Al
 When finishing, tell Alex exactly where to find the new feature in the UI (which page, which button).
 
 ## Deploying
-Railway hosts two services (client static site + server). Deploys happen from `main`. Use the `/deploy` skill rather than improvising steps.
+Vercel hosts two projects (client static site + the `trim-api` server). Deploys happen from `main`. Use the `/deploy` skill rather than improvising steps.
+
+## Dual-agent workflow (Codex + Claude Code)
+This project is set up for the dual-agent workflow: Codex and Claude Code take turns, and the OTHER
+model always validates. Read the `## DUAL-AGENT BATON` block at the top of `CHAT_HANDOFF.md` first
+and do only the stage that is yours. **If YOU produced the last stage, do not validate it — stop;
+the other model must.** Update the baton the moment you finish and tell Alex which model to run next.
+**Before acting, load the `dual-agent` skill** for the full protocol and invariants. Codex's entry
+point is `AGENTS.md`. Reserve the full loop for big/risky changes (e.g. 9.5 encryption); ordinary
+feature work can stay single-model.
