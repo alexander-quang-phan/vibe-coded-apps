@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useSearchParams } from 'react-router-dom';
 import { toast } from 'sonner';
-import { Download, Pencil, Search, Star, Trash2 } from 'lucide-react';
+import { Download, Pencil, Repeat, Search, Star, Trash2 } from 'lucide-react';
 import {
   Dialog,
   DialogContent,
@@ -182,6 +182,7 @@ export default function Transactions() {
   const [categoryFilter, setCategoryFilter] = useState('all');
   const [monthFilter, setMonthFilter] = useState(urlMonth ?? 'all');
   const [specialFilter, setSpecialFilter] = useState(false);
+  const [recurringFilter, setRecurringFilter] = useState(false);
   const [q, setQ] = useState('');
   const [editing, setEditing] = useState(null);
 
@@ -220,6 +221,7 @@ export default function Transactions() {
       if (categoryFilter !== 'all' && t.category_id !== categoryFilter) return false;
       if (monthFilter !== 'all' && !t.date.startsWith(monthFilter)) return false;
       if (specialEnabled && specialFilter && !t.is_special) return false;
+      if (recurringFilter && !t.is_recurring) return false;
       if (query) {
         const cat = catsById.get(t.category_id)?.name?.toLowerCase() ?? '';
         const desc = (t.description ?? '').toLowerCase();
@@ -227,7 +229,7 @@ export default function Transactions() {
       }
       return true;
     });
-  }, [data, typeFilter, categoryFilter, monthFilter, specialFilter, specialEnabled, q, catsById]);
+  }, [data, typeFilter, categoryFilter, monthFilter, specialFilter, specialEnabled, recurringFilter, q, catsById]);
 
   const totals = useMemo(() => {
     let income = 0;
@@ -246,6 +248,7 @@ export default function Transactions() {
       queryClient.invalidateQueries({ queryKey: ['dashboard'] });
       queryClient.invalidateQueries({ queryKey: ['wins'] });
       queryClient.invalidateQueries({ queryKey: ['projections'] });
+      queryClient.invalidateQueries({ queryKey: ['subscriptions'] });
       toast.success('Transaction removed');
     },
     onError: (err) => toast.error(err?.message || 'Could not delete'),
@@ -258,6 +261,7 @@ export default function Transactions() {
       queryClient.invalidateQueries({ queryKey: ['dashboard'] });
       queryClient.invalidateQueries({ queryKey: ['wins'] });
       queryClient.invalidateQueries({ queryKey: ['projections'] });
+      queryClient.invalidateQueries({ queryKey: ['subscriptions'] });
       toast.success('Updated');
       setEditing(null);
     },
@@ -373,6 +377,21 @@ export default function Transactions() {
                   Special
                 </button>
               ) : null}
+              {/* Task 6.12b — recurring filter, same shape as the Special chip. */}
+              <button
+                type="button"
+                onClick={() => setRecurringFilter((v) => !v)}
+                aria-pressed={recurringFilter}
+                className={cn(
+                  'inline-flex items-center gap-1 rounded-full border px-3 py-1.5 text-xs font-medium transition-colors',
+                  recurringFilter
+                    ? 'border-primary/60 bg-primary/10 text-primary'
+                    : 'border-border/60 bg-secondary/40 text-muted-foreground hover:text-foreground',
+                )}
+              >
+                <Repeat className="h-3.5 w-3.5" aria-hidden />
+                Recurring
+              </button>
             </div>
           </div>
 
@@ -438,8 +457,16 @@ export default function Transactions() {
                     <p className="truncate font-medium">
                       {t.description || cat?.name || 'Transaction'}
                     </p>
-                    <p className="text-xs text-muted-foreground">
-                      {cat?.name ?? '—'} · {formatDate(t.date, { format: 'relative' })}
+                    <p className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                      <span className="truncate">
+                        {cat?.name ?? '—'} · {formatDate(t.date, { format: 'relative' })}
+                      </span>
+                      {t.is_recurring ? (
+                        <span className="inline-flex shrink-0 items-center gap-0.5 rounded-full border border-primary/30 bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium text-primary">
+                          <Repeat className="h-2.5 w-2.5" aria-hidden />
+                          Recurring
+                        </span>
+                      ) : null}
                     </p>
                   </div>
                   <div

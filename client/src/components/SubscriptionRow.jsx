@@ -3,24 +3,34 @@ import { Pencil } from 'lucide-react';
 import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { MoneyInput, isValidMoney, sanitizeMoneyInput } from '@/components/ui/money-input';
 import { formatMoney, formatDate } from '@/lib/format';
-import { subscriptionLabel } from '@/lib/subscriptions';
+import { subscriptionLabel, cadenceLabel as cadenceLabelFor } from '@/lib/subscriptions';
 import { cn } from '@/lib/utils';
 
-export function SubscriptionRow({ subscription, currency, onToggle, onRename, pending }) {
+export function SubscriptionRow({ subscription, currency, onToggle, onRename, onEditAmount, pending }) {
   const sub = subscription;
   const cancelled = sub.status === 'cancelled';
   const dismissed = sub.status === 'dismissed';
   const inactive = cancelled || dismissed;
   const cat = sub.category;
-  const cadenceLabel = sub.cadence === 'annual' ? 'Annual' : 'Monthly';
+  const cadenceLabel = cadenceLabelFor(sub.cadence);
   const label = subscriptionLabel(sub, currency);
+
+  // Task 6.12b — rows the user marked recurring themselves, rather than ones
+  // the detector inferred. The server REJECTS two of the actions below for
+  // these keys, so they must not be offered:
+  //   • displayName  — manualPatchSchema has no such field (400)
+  //   • 'dismissed'  — 400 "cannot be dismissed — cancel it instead"
+  // In exchange they gain an amount edit, which detected rows can't have.
+  const manual = sub.source === 'manual';
 
   // Unnamed inferred rows open the rename form by default — naming them is
   // the whole point (Task 6.2.1). Everything else gets a quiet Rename button.
   const needsName = sub.inferred && !sub.displayName;
   const [renaming, setRenaming] = useState(false);
-  const showRenameForm = !dismissed && (needsName || renaming);
+  const [editingAmount, setEditingAmount] = useState(false);
+  const showRenameForm = !manual && !dismissed && (needsName || renaming);
 
   let primaryAction;
   if (cancelled) {
@@ -49,12 +59,28 @@ export function SubscriptionRow({ subscription, currency, onToggle, onRename, pe
                 <span className="rounded-full border border-border/60 bg-secondary/40 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
                   {cadenceLabel}
                 </span>
+                {manual ? (
+                  <span className="rounded-full border border-amber-400/30 bg-amber-400/10 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-amber-400">
+                    Manually marked
+                  </span>
+                ) : null}
                 {needsName ? (
                   <span className="rounded-full border border-primary/30 bg-primary/10 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-primary">
                     Inferred
                   </span>
                 ) : null}
-                {!showRenameForm && !dismissed ? (
+                {manual && !editingAmount && !cancelled ? (
+                  <button
+                    type="button"
+                    onClick={() => setEditingAmount(true)}
+                    className="inline-flex items-center gap-1 text-[11px] text-muted-foreground transition-colors hover:text-foreground"
+                    aria-label={`Edit amount for ${label}`}
+                  >
+                    <Pencil className="h-3 w-3" aria-hidden />
+                    Edit amount
+                  </button>
+                ) : null}
+                {!manual && !showRenameForm && !dismissed ? (
                   <button
                     type="button"
                     onClick={() => setRenaming(true)}
@@ -67,7 +93,8 @@ export function SubscriptionRow({ subscription, currency, onToggle, onRename, pe
                 ) : null}
               </div>
               <p className="truncate text-xs text-muted-foreground">
-                {cat?.name ?? 'Uncategorised'} · {sub.occurrences} charges so far
+                {cat?.name ?? 'Uncategorised'} ·{' '}
+                {sub.occurrences === 1 ? '1 charge so far' : `${sub.occurrences} charges so far`}
               </p>
             </div>
           </div>
@@ -98,7 +125,10 @@ export function SubscriptionRow({ subscription, currency, onToggle, onRename, pe
               >
                 {pending ? 'Saving…' : primaryAction.label}
               </Button>
-              {!inactive ? (
+              {/* Manual rows have no "dismissed" state — the user opted in
+                  deliberately, so cancel is the correct off-ramp and the
+                  server 400s a dismiss. */}
+              {!inactive && !manual ? (
                 <button
                   type="button"
                   disabled={pending}
@@ -118,6 +148,16 @@ export function SubscriptionRow({ subscription, currency, onToggle, onRename, pe
             onRename={onRename}
             pending={pending}
             onDone={() => setRenaming(false)}
+          />
+        ) : null}
+
+        {editingAmount ? (
+          <AmountForm
+            sub={sub}
+            currency={currency}
+            onEditAmount={onEditAmount}
+            pending={pending}
+            onDone={() => setEditingAmount(false)}
           />
         ) : null}
       </CardContent>
@@ -169,6 +209,55 @@ function RenameForm({ sub, onRename, pending, onDone }) {
           Cancel
         </Button>
       ) : null}
+    </form>
+  );
+}
+
+/**
+ * Task 6.12b — edit a manually-marked recurrence's amount. Future instances
+ * only: transactions already created keep the amount they were logged with and
+ * are never rewritten, so the history stays honest.
+ */
+function AmountForm({ sub, currency, onEditAmount, pending, onDone }) {
+  const [value, setValue] = useState(() => sanitizeMoneyInput(String(sub.amount), currency));
+
+  useEffect(() => {
+    setValue(sanitizeMoneyInput(String(sub.amount), currency));
+  }, [sub.amount, sub.merchantKey, currency]);
+
+  const dirty = isValidMoney(value) && Number(value) !== Number(sub.amount);
+
+  function handleSubmit(e) {
+    e.preventDefault();
+    if (!dirty || pending) return;
+    onEditAmount(sub, Number(value));
+    onDone();
+  }
+
+  return (
+    <form onSubmit={handleSubmit} className="border-t border-border/60 pt-3">
+      <div className="flex items-center gap-2">
+        <MoneyInput
+          value={value}
+          onValueChange={setValue}
+          currency={currency}
+          showSymbol
+          containerClassName="w-36"
+          className="no-spin h-9 text-sm"
+          disabled={pending}
+          aria-label={`Amount for ${subscriptionLabel(sub, currency)}`}
+          autoFocus
+        />
+        <Button type="submit" size="sm" variant="secondary" disabled={pending || !dirty}>
+          {pending ? 'Saving…' : 'Update'}
+        </Button>
+        <Button type="button" size="sm" variant="ghost" onClick={onDone} disabled={pending}>
+          Cancel
+        </Button>
+      </div>
+      <p className="mt-1.5 text-[11px] text-muted-foreground">
+        Applies to future charges only — what you've already logged stays as it was.
+      </p>
     </form>
   );
 }

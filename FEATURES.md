@@ -67,7 +67,8 @@
 - Expense/Income segmented control.
 - Category chip grid — **tapping a chip twice submits** (Phase 10 A2). The first tap *arms* the chip: it fills solid and its label swaps to "Tap again", with the helper line reading "Tap Food again to log it — or pick a different one." The second tap on that **same** chip logs. Tapping a different chip just moves the arm, so a misdirected thumb never files an expense to the wrong category. Disarms on: amount edit, Expense/Income switch, dialog close, successful log. Editing the note does **not** disarm — people often type the note after choosing. `aria-pressed` marks the armed chip.
 - **Note field is always visible** (Phase 10 A2) — it sits between Amount and the category grid, no longer hidden behind a disclosure. It has to come before the grid because it drives the merchant-memory suggestion that rings a chip in that grid.
-- Remaining disclosure is now just "Change the date" (or "Change the date or mark it special" when the special-expenses pref is on).
+- Remaining disclosure holds Date, the special-expense toggle, and the recurring opt-in.
+- **Recurring opt-in (Task 6.12b):** a "Repeat this — logs itself from now on" checkbox in the advanced area, **expense-only** (the server 400s `Only expenses can be recurring`). Ticking it reveals Monthly / Weekly pills. Sends `recurring: { interval }` on POST; the response carries the new `recurrence`, and the toast reads "Repeating monthly 🔁 · Manage it on Subscriptions." Invisible in simple mode, like every other advanced field.
 - **Merchant memory (Task 6.9):** typing in the note field (debounced 250ms) asks `GET /api/categories/suggest` and rings the suggested chip in emerald — history first, keyword map for first-time merchants. Highlight-only, never auto-selects; suggestion failures are silent.
 - On success: invalidate `['dashboard', 'transactions', 'me']`, trigger appropriate confetti, show toast.
 - **"Type it instead" path (Task 6.6):** a sparkle-chip toggle at the top of the dialog swaps the structured form for a single freeform textarea ("e.g. spent 12 quid on tacos last night"). Submitting calls `POST /api/transactions/parse`, which returns a draft. The dialog snaps back to the structured form with amount/type/description/date pre-filled and the suggested category chip ringed in emerald — the user still taps a chip to log. Parse never auto-saves. Failure / low confidence / API unavailable falls back to a friendly amber prompt ("couldn't quite read that — mind trying again?") with a "Use chips" escape hatch.
@@ -81,6 +82,7 @@
 - Inline edit dialog: amount, category, date, note.
 - Row delete with confirm.
 - CSV export of the currently-filtered set.
+- **Recurring (Task 6.12b):** rows carrying `is_recurring` show a "Recurring" pill on the meta line, and a "Recurring" filter chip sits beside the Special one. Both read fields already on `GET /api/transactions` — no server change.
 - **Special expenses (opt-in, Task 9.2):** when the pref is on, each expense row gets a one-tap star/unstar ghost button next to Edit — retroactively including or excluding a transaction from budget math without opening the edit dialog — plus a small star marker beside starred amounts and a "Special" filter chip alongside the type filter. The edit dialog carries the same checkbox. All of this is invisible when the pref is off.
 
 ### Budgets
@@ -105,6 +107,9 @@
 - Progress bar + "£X to go" copy.
 
 ### Subscriptions
+
+- **Manually-marked recurrences (Task 6.12b)** appear alongside detected ones, carrying `source: 'manual'` and a "Manually marked" pill. They deliberately expose a *different* action set, because the server rejects two of the detected-row actions for them: **no Rename** (`manualPatchSchema` has no `displayName`) and **no "Not a subscription"** (dismiss returns 400 — the user opted in deliberately, so cancel is the off-ramp). In exchange they get an **amount edit**, which applies to future charges only; transactions already logged keep the amount they were logged with and are never rewritten.
+- Cadence labels are a three-way map (`lib/subscriptions.js`): Annual / Monthly / **Weekly**. Before 6.12b everything non-annual was labelled "Monthly", which mislabelled every weekly manual recurrence.
 
 - Auto-detected list of recurring expenses, no manual marking required. Detection rule: ≥3 same-merchant charges at ~30-day or ~365-day intervals (±5d) with amounts within 10%.
 - Each row shows monthly cost, annualised cost, last charged, next expected, and total paid lifetime.

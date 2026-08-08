@@ -54,9 +54,10 @@ function EmptyState() {
       <CardContent className="flex flex-col items-center gap-3 p-10 text-center">
         <span className="text-4xl" aria-hidden>🔁</span>
         <div className="space-y-1">
-          <p className="font-medium">No subscriptions detected yet</p>
+          <p className="font-medium">No recurring charges yet</p>
           <p className="text-sm text-muted-foreground">
-            Once you've got 3+ regular charges from the same merchant, they'll show up here so you can audit them.
+            Once you've got 3+ regular charges from the same merchant they'll show up here
+            automatically — or tick "Repeat this" when you log one, and it'll appear straight away.
           </p>
         </div>
       </CardContent>
@@ -135,6 +136,22 @@ export default function Subscriptions() {
     onSettled: () => setPendingKey(null),
   });
 
+  // Task 6.12b — amount edit, manual rows only. The server applies it to
+  // future instances; already-logged transactions are never rewritten.
+  const amountMutation = useMutation({
+    mutationFn: ({ merchantKey, amount }) =>
+      api.patch(`/api/subscriptions/${encodeURIComponent(merchantKey)}`, { amount }),
+    onMutate: ({ merchantKey }) => setPendingKey(merchantKey),
+    onSuccess: (_data, { amount }) => {
+      queryClient.invalidateQueries({ queryKey: ['subscriptions'] });
+      toast.success(`Updated to ${formatMoney(amount, currency)}`, {
+        description: 'Future charges only.',
+      });
+    },
+    onError: (err) => toast.error(err?.message || 'Could not update the amount'),
+    onSettled: () => setPendingKey(null),
+  });
+
   function handleToggle(sub, nextStatus) {
     toggleMutation.mutate({ merchantKey: sub.merchantKey, status: nextStatus, sub });
   }
@@ -143,11 +160,15 @@ export default function Subscriptions() {
     renameMutation.mutate({ merchantKey: sub.merchantKey, displayName });
   }
 
+  function handleEditAmount(sub, amount) {
+    amountMutation.mutate({ merchantKey: sub.merchantKey, amount });
+  }
+
   return (
     <div className="space-y-5 pb-12">
       <header className="space-y-1">
         <p className="text-sm text-muted-foreground">
-          Recurring charges Trim has spotted in your transactions.
+          Recurring charges — the ones Trim spotted, plus any you marked yourself.
         </p>
         <h1 className="text-3xl font-bold tracking-tight">Subscriptions</h1>
       </header>
@@ -193,6 +214,7 @@ export default function Subscriptions() {
                     currency={currency}
                     onToggle={handleToggle}
                     onRename={handleRename}
+                    onEditAmount={handleEditAmount}
                     pending={pendingKey === sub.merchantKey}
                   />
                 ))}
@@ -213,6 +235,7 @@ export default function Subscriptions() {
                     currency={currency}
                     onToggle={handleToggle}
                     onRename={handleRename}
+                    onEditAmount={handleEditAmount}
                     pending={pendingKey === sub.merchantKey}
                   />
                 ))}
@@ -233,6 +256,7 @@ export default function Subscriptions() {
                     currency={currency}
                     onToggle={handleToggle}
                     onRename={handleRename}
+                    onEditAmount={handleEditAmount}
                     pending={pendingKey === sub.merchantKey}
                   />
                 ))}

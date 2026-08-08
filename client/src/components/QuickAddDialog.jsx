@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
-import { ChevronDown, Sparkles, ArrowLeft, Loader2, Star } from 'lucide-react';
+import { ChevronDown, Sparkles, ArrowLeft, Loader2, Star, Repeat } from 'lucide-react';
 import {
   Dialog,
   DialogContent,
@@ -57,6 +57,10 @@ export function QuickAddDialog({
   // category, which was the whole complaint.
   const [armedCategoryId, setArmedCategoryId] = useState(null);
   const [isSpecial, setIsSpecial] = useState(false);
+  // Task 6.12b — opt this expense into a recurring schedule. Expense-only
+  // (the server 400s "Only expenses can be recurring"), and it lives in the
+  // advanced area so the two-tap path never grows a step.
+  const [recurringInterval, setRecurringInterval] = useState(null); // null | 'monthly' | 'weekly'
   const amountRef = useRef(null);
   const freeformRef = useRef(null);
 
@@ -73,6 +77,7 @@ export function QuickAddDialog({
       setSuggestedCategoryId(null);
       setArmedCategoryId(null);
       setIsSpecial(false);
+      setRecurringInterval(null);
       setTimeout(() => amountRef.current?.focus(), 80);
     }
   }, [open]);
@@ -128,6 +133,8 @@ export function QuickAddDialog({
       queryClient.invalidateQueries({ queryKey: ['me'] });
       queryClient.invalidateQueries({ queryKey: ['wins'] });
       queryClient.invalidateQueries({ queryKey: ['projections'] });
+      // A recurring opt-in creates a row that surfaces on /subscriptions.
+      queryClient.invalidateQueries({ queryKey: ['subscriptions'] });
 
       const d = res?.delta;
       if (d?.levelUp) {
@@ -143,6 +150,10 @@ export function QuickAddDialog({
       } else if (d?.streakExtended && d.currentStreak > 1 && d.currentStreak % 7 === 0) {
         celebrateStreakMilestone();
         toast.success(`${d.currentStreak}-day streak! 🔥`);
+      } else if (type === 'expense' && res?.recurrence) {
+        toast.success(`Repeating ${res.recurrence.interval} 🔁`, {
+          description: 'Manage it on Subscriptions.',
+        });
       } else if (type === 'expense' && isSpecial) {
         toast.success('Logged as special ⭐', { description: 'Outside your monthly budget' });
       } else {
@@ -213,6 +224,9 @@ export function QuickAddDialog({
       description: description.trim() || null,
       date,
       ...(type === 'expense' ? { isSpecial } : {}),
+      ...(type === 'expense' && recurringInterval
+        ? { recurring: { interval: recurringInterval } }
+        : {}),
     });
   }
 
@@ -490,9 +504,11 @@ export function QuickAddDialog({
                 <ChevronDown className={cn('h-3.5 w-3.5 transition-transform', showMore && 'rotate-180')} />
                 {showMore
                   ? 'Hide details'
-                  : specialEnabled && type === 'expense'
-                    ? 'Change the date or mark it special'
-                    : 'Change the date'}
+                  : type !== 'expense'
+                    ? 'Change the date'
+                    : specialEnabled
+                      ? 'Change the date, repeat it, or mark it special'
+                      : 'Change the date or repeat it'}
               </button>
 
               {showMore ? (
@@ -520,6 +536,47 @@ export function QuickAddDialog({
                         onChange={(e) => setIsSpecial(e.target.checked)}
                       />
                     </label>
+                  ) : null}
+
+                  {/* Task 6.12b — recurring opt-in, expense-only. */}
+                  {type === 'expense' ? (
+                    <div className="rounded-lg border border-border/60 bg-secondary/30 px-3 py-2">
+                      <label className="flex items-center justify-between">
+                        <span className="flex items-center gap-2 text-sm">
+                          <Repeat className="h-4 w-4 text-primary" aria-hidden />
+                          Repeat this
+                          <span className="text-xs text-muted-foreground">
+                            logs itself from now on
+                          </span>
+                        </span>
+                        <input
+                          type="checkbox"
+                          className="h-4 w-4 accent-primary"
+                          checked={recurringInterval !== null}
+                          onChange={(e) => setRecurringInterval(e.target.checked ? 'monthly' : null)}
+                        />
+                      </label>
+                      {recurringInterval !== null ? (
+                        <div className="mt-2 flex gap-1.5">
+                          {['monthly', 'weekly'].map((iv) => (
+                            <button
+                              key={iv}
+                              type="button"
+                              onClick={() => setRecurringInterval(iv)}
+                              aria-pressed={recurringInterval === iv}
+                              className={cn(
+                                'rounded-full border px-3 py-1 text-xs font-medium capitalize transition-colors',
+                                recurringInterval === iv
+                                  ? 'border-primary bg-primary/15 text-primary'
+                                  : 'border-border/70 bg-secondary/40 text-muted-foreground hover:text-foreground',
+                              )}
+                            >
+                              {iv}
+                            </button>
+                          ))}
+                        </div>
+                      ) : null}
+                    </div>
                   ) : null}
                 </div>
               ) : null}

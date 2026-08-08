@@ -801,9 +801,13 @@ and would double-count if it keeps a budget:
 | Task | What | Needs from Alex |
 |---|---|---|
 | ⬜ B1 | Special-expense **groups** ("September 2026 Paris holiday"): migration `015_special_groups.sql`, `/api/special-groups` CRUD, optional group pick in Quick-Add + edit dialog, Dashboard panel with per-group totals and an "Ungrouped" row. Grouping is optional throughout. | run migration 015 |
-| ⬜ B2 | **Task 6.12b** — the client half of recurring transactions: Quick-Add recurring opt-in, "Recurring" pill + filter on /transactions, manual-row management on /subscriptions (gate off Rename and "Not a subscription" — the server 400s both for manual keys — add the amount edit, fix the weekly cadence label). | run migration 014; generate `CRON_SECRET` himself and set it on trim-api + local `server/.env` |
+| ✅ B2 | **Task 6.12b** — the client half of recurring transactions: Quick-Add recurring opt-in, "Recurring" pill + filter on /transactions, manual-row management on /subscriptions (gate off Rename and "Not a subscription" — the server 400s both for manual keys — add the amount edit, fix the weekly cadence label). | run migration 014; generate `CRON_SECRET` himself and set it on trim-api + local `server/.env` |
 
-> ⚠️ **6.12a's server half is NOT on `main`.** It lives only on branch `claude/task-6.12-recurring`
+> ✅ **Resolved 2026-08-08:** migration 014 was applied to the live database and
+> `claude/task-6.12-recurring` merged into `main`, so the hazard below no longer applies.
+> Kept for the record.
+>
+> ⚠️ ~~**6.12a's server half is NOT on `main`.**~~ It lives only on branch `claude/task-6.12-recurring`
 > (`ff2509b`, `d81693f`). That code's `GET /api/subscriptions` reads the `recurrences` table and
 > selects `transactions.recurrence_id`, so **merging that branch without first applying migration
 > 014 will 500 the Subscriptions page in production.** Apply 014 before (or in the same window as)
