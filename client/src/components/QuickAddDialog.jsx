@@ -271,7 +271,9 @@ export function QuickAddDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-h-[94vh] overflow-y-auto">
+      {/* Height cap + inner scrolling now live in DialogContent itself, so every
+          dialog gets them — this used to be the only one that had them. */}
+      <DialogContent>
         <DialogHeader>
           <DialogTitle>Log a transaction</DialogTitle>
           <DialogDescription>

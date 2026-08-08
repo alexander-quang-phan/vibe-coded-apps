@@ -173,6 +173,21 @@ Full design: `docs/superpowers/specs/2026-07-17-pln-privacy-history-pace-special
 
 - **Encryption at rest** — amounts, descriptions, notes, category/goal names, budget limits and Ask Trim chats encrypted (AES-256-GCM, per-user derived keys) so the operator can't casually read users' finances in Supabase. Honest limits documented in SECURITY.md when built.
 
+## Dialog behaviour (shared, `client/src/components/ui/dialog.jsx`)
+
+Every dialog is capped at `max-h-[92dvh]` with its **content** scrolling inside and the close (X)
+button pinned to the dialog rather than the scroll area — so a tall dialog can always be both
+completed and dismissed.
+
+This was a real bug found on 2026-08-08: `DialogContent` is `position: fixed` with no height cap,
+so any dialog taller than the viewport grew off the top *and* bottom with nothing scrollable and no
+reachable buttons. Only QuickAddDialog had worked around it locally (`max-h-[94vh] overflow-y-auto`);
+the category, reassign, budget, both savings and transaction-edit dialogs were all affected — the
+emoji picker simply made two of them tall enough to expose it. Fixed once in the shared component.
+
+`dvh` rather than `vh` deliberately: mobile Safari's `vh` counts the area behind the browser chrome,
+which would put the footer buttons under the URL bar.
+
 ## Design direction
 
 - **Dark mode default**, light-mode toggle. Persisted to `localStorage['trim-theme']`. Applied inline before React mounts (no flash).
