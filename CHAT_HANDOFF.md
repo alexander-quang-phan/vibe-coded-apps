@@ -1,84 +1,150 @@
-# Chat Handoff — updated 2026-07-18
+# Chat Handoff — updated 2026-08-08
+
+## DUAL-AGENT BATON  (both models: update this the MOMENT you finish work)
+- Current stage:  no loop active — Phase 10 Batch A was ordinary feature work, single-model by design
+- Model A is:     not yet set — Alex chooses at the next kickoff (Codex or Claude Code)
+- Up next:        n/a — engage the loop only for a big/risky change; 9.5 encryption is still the prime candidate
+- Last actor did: Phase 10 **Batch A built, verified and committed** on branch `claude/phase-10-batch-a` (needs merging to `main`)
+- Next must:      Alex merges + deploys Batch A, then does the 3-step "All Expenses" cleanup below
+- Last verdict:   —
+- Handoff log:
+  - 2026-07-23 Claude Code: baton added — Trim retrofitted into the dual-agent workflow
+  - 2026-08-08 Claude Code: Phase 10 Batch A (7 daily-use items, batch 1 of 2)
 
 ## Goal
-Phase 9 of Trim: **PLN currency, opt-in special expenses, budget pace, monthly history, and encryption at rest** (so Alex can't casually read users' finances in the Supabase dashboard). Designed, planned, and built in one session using subagent-driven development — implementer + independent reviewer per task.
+Seven things Alex hit while using Trim daily: notes hidden behind a dropdown in Quick-Add, accidental
+category taps, no arbitrary emoji, "All Expenses" not covering all expenses, no way to see the monthly
+total with/without special expenses, **no way to type decimals on his phone**, and finishing Task 6.12.
+Split into two batches at Alex's request: **Batch A needs nothing from him**, Batch B needs SQL + a secret.
 
 ## Current state
-**9.1–9.4 are MERGED to `main` (`e4f7a79`) and DEPLOYED to production. 9.5 (encryption) is deliberately HALF done and gated on Alex.**
 
-Deploy verified rather than assumed: the live client bundle contains every Phase 9 marker string (`Polish`, `Special expense`, `Monthly history`, `would typically be used`, `specialThisMonth`, `kept out of your monthly budget`), the built CSS hash matches `main` byte-for-byte, and `trim-api` shows a fresh Production deployment (the previous one was 6 days old). Migrations 010 + 011 are applied, so the features are live end-to-end.
+**Batch A is DONE, verified in a running browser, and committed to `claude/phase-10-batch-a` (`8ab3c6b`).
+It still needs merging to `main` — nothing deploys until it's there.** Batch B is not started.
 
-**Still unverified: the UI click-through** (item A below). Every check was API- or bundle-level, because the app sits behind Supabase login and agents must not enter passwords.
-
-| Task | State |
+| Item | State |
 |---|---|
-| 9.1 PLN currency | ✅ built, reviewed, migration 010 **applied to live DB** |
-| 9.2 Special expenses (opt-in) | ✅ built, reviewed, migration 011 **applied to live DB** |
-| 9.3 Budget pace | ✅ built, reviewed |
-| 9.4 Monthly history | ✅ built, reviewed |
-| 9.5 Encryption at rest | ⚠️ **half built, INERT on main** — crypto lib + 19 tests + migration 012 *file* + backfill *script*. No route imports it, no migration applied, nothing encrypted. The backfill needs `DATA_ENCRYPTION_KEY` (unset), so it cannot run by accident. |
+| A1 decimals on phone | ✅ `MoneyInput` replaces all 7 money fields |
+| A2 note always visible + two-tap category | ✅ |
+| A3 any-emoji picker (categories + goals) | ✅ ~1,135 emoji, search, paste field |
+| A4+A5 overall budget + pace gap/per-day | ✅ no migration needed |
+| A6 incl./excl. special toggle | ✅ client-only |
+| B1 special-expense groups | ⬜ not started (needs migration 015) |
+| B2 Task 6.12b client half | ⬜ not started (needs migration 014 + `CRON_SECRET`) |
 
-**Monthly history depth (asked 2026-07-18):** it goes back **24 months**, not 5. The server caps `?months=` at 24 (`analytics.js:20`) and Analytics requests all 24; `MonthlyHistory` then trims *leading* months with no data. Alex currently sees ~5 rows simply because the Supabase project dates from 2026-04-24 — the table grows on its own each month.
+Verified, not assumed: client build passes, 29/29 server tests pass, every server file parses, and each
+item was **click-tested in a real browser** against `npm run dev:mock` — the decimal fix by typing
+`12,50` and getting `12.50`, the two-tap guard by confirming exactly one `POST /api/transactions` fired
+across four chip taps, the emoji rules by curl (`hack` → 400, 👨‍👩‍👧‍👦 → 201), and the budget maths by
+setting an overall budget and watching the "total" stop being 1200+1550.
 
-Verified on one running mock API together: currency PLN, `specialThisMonth` 180, `pace {target 900, spent 1173.07, delta −273.07}`, 24 analytics buckets all carrying `special`. Client build passes; every server file syntax-clean.
+Agents still can't log into the live site (Supabase password) — the live click-through is Alex's.
 
-## What Alex still has to do
+## Two things that were not what they looked like
 
-**A. Click-through test on the LIVE site (5 min, only you can).** Agents can't get past Supabase login. On https://trim-budget.vercel.app confirm: Settings → currency PLN shows `zł`; Settings → **Special expenses** toggle on → Quick-Add's "Add a note or change the date" area shows a ⭐ toggle → log one → Dashboard hero shows a Special chip and the budget bars *don't* move → Transactions row star/unstar → Dashboard pace line inside "Can I afford this?" → Analytics → Monthly history → tap an old month. If anything is missing, `vercel rollback` is one command.
+**1. "All Expenses" does not exist in Trim.** Zero references repo-wide. Alex had created a *category*
+by that name to fake an overall cap. Because every "total" in the app was `SUM(amount_limit)` over the
+category budgets, his £1200 umbrella was **added on top of** the categories it was meant to contain
+(£1200 + Food £300 + … = a phantom total). There is now a real overall monthly budget.
 
-**B. The encryption decision (9.5).** The remaining half is genuinely risky and needs you:
-1. Generate the key yourself: `openssl rand -base64 32` → put in `server/.env` as `DATA_ENCRYPTION_KEY`, add to Vercel, **and back it up in `~/Keys/`**. Losing this key = every user's financial data is unrecoverable. (Agents deliberately did not generate or handle it.)
-2. Then a session can: apply migration 012 (additive, safe) → run `encrypt-backfill.mjs --dry-run` → run it for real → sweep the ~12 routes to encrypt-on-write/decrypt-after-fetch → click-test → **only then** migration 013, which irreversibly drops the plaintext columns.
+**2. "Can't add decimals on phone" was a real bug**, not a preference. Every money field was
+`<input type="number">` bound to controlled React state. A number input returns `''` from `.value` for
+anything that isn't yet a complete number — so typing `"12."` set the state back to `""` and the
+separator vanished, and a comma was rejected outright. Alex's currency is PLN, and **the iOS decimal
+key in a `pl-PL` locale IS a comma** — so decimals were literally impossible for him. Proved in the
+browser before fixing: `type="number"` reports `""` for both `"12."` and `"12,50"`.
+
+## Three defects found underneath the requested work (all fixed)
+1. `projections.js` paired a budgeted-only *target* with an all-categories *actual*, so budgeting a
+   subset of categories read as permanently "ahead of pace" — and **disagreed with
+   `affordability.js`** (which filtered correctly) on the same Dashboard screen. Both now share
+   `server/lib/overallBudget.js`, with 11 unit tests over the four combinations.
+2. Emoji validation was `z.string().max(8)`, counting UTF-16 code units: it rejected real emoji
+   (👨‍👩‍👧‍👦 is 11 units) while accepting `"hack"` and `"🍔🍔🍔🍔"`. Now exactly one pictographic
+   grapheme, with flags and keycaps explicitly allowed (neither is `Extended_Pictographic`).
+3. *(Batch B, not yet fixed)* `lib/subscriptions.js:10` and `SubscriptionRow.jsx:16` collapse every
+   non-`annual` cadence to "Monthly", but 6.12a's server emits `weekly`.
+
+## ⚠️ Deployment hazard worth knowing
+`claude/task-6.12-recurring` (`ff2509b`, `d81693f`) holds the 6.12a **server** half. Its
+`GET /api/subscriptions` reads the `recurrences` table and selects `transactions.recurrence_id`, so
+**merging that branch without first applying migration 014 will 500 the Subscriptions page in
+production.** Batch A was deliberately branched from `main`, not from that branch, so it carries no
+such dependency and can ship on its own today.
 
 ## Key decisions (and why)
-- **Server-side encryption, not end-to-end.** E2E would kill Ask Trim, the NL parser, subscription detection and the planned bank sync, and a forgotten password would destroy the data. Honest limit, recorded in the spec: Alex holds the key, so this stops *casual* viewing (dashboard, SQL console, backups all show ciphertext) — it is not protection from a determined operator.
-- **Special expenses are opt-in and off by default** (Alex's call): "for others maybe girlfriend's expenses would still go in the same monthly budget". When the pref is off, flags go dormant and every transaction counts normally.
-- **Special expenses are excluded from budget math only** — still counted in hero cash flow, transaction list and analytics, so the numbers stay honest.
-- **Pace is plain arithmetic** (budget × day ÷ days-in-month), so unlike the month-end projection it needs no cold-start guard and shows from day 1. Amber when ahead of pace, never red.
-- **Phase 9 took migrations 010–013**; Phase 8's (unbuilt) bank-sync spec DDL shifts to 014+. Noted in BUILD_PLAN Phase 8.
-
-## The thing worth reading twice
-The crypto review (run on the most capable model, deliberately) found **three Critical defects, two of which came from the plan's own example code** — proof that a plan being approved doesn't make its code correct:
-1. The backfill would have **infinite-looped against production**: it paged on `.is(first_enc, null)` and expected its own write to remove the row, but a NULL plaintext gets written as NULL and re-matches forever. `user_stats.monthly_limit` and `subscription_overrides.display_name` are both nullable — it would have hung mid-run, leaving the database half-encrypted.
-2. The "verification" gating the irreversible drop **never read the database** — it compared a value against the thing it had just encrypted in memory, blind to exactly the storage-layer failures migration 013 bets on.
-3. `decryptField` **accepted 4-byte auth tags**, cutting forgery cost from 2^128 to 2^32 for an attacker who can write to the DB — the precise threat at-rest encryption exists for.
-
-The spec and plan were corrected in `fc420b0` so a future session rebuilding from them can't reintroduce these.
+- **Two batches** (Alex's call): Batch A = zero setup from him; Batch B = the two items needing SQL.
+- **Overall budget reuses `user_stats.monthly_limit`** (migration 008) rather than a new column — it
+  was already the right field, just gated behind `simple_mode`. **No migration.** When set it *is* the
+  total and all expense spend counts against it; with none set, the old sum-of-categories behaviour
+  returns exactly.
+- **Two-tap arms, doesn't confirm-dialog** (Alex chose this over a separate Log button): first tap
+  fills the chip and says "Tap again", second tap on the *same* chip logs. Tapping a different chip
+  only moves the arm. Deliberately does **not** disarm on note edits — people type the note after.
+- **Over budget shows the overage and no per-day number** (Alex chose this when he spotted that
+  `(budget − spent) ÷ days left` goes negative): "You're £155 over your £900 budget — nothing left for
+  the last 24 days."
+- **Own emoji picker, no npm dependency** — emoji-mart is 150–300KB with its own styling to fight.
+  The catalogue is dynamic-imported into a separate 26KB chunk, and the paste field covers everything
+  not in it (on a phone that's the emoji keyboard, so skin tones and every flag are reachable).
+- **A6 needed no server change** — `/api/dashboard` already returns `expenses` *including* special
+  plus `specialThisMonth`, so excluding is exact subtraction.
+- **Alex's "All Expenses" category is NOT auto-migrated** — it's his data; he does the 3 steps below.
 
 ## Files that matter
-- `docs/superpowers/specs/2026-07-17-pln-privacy-history-pace-special-design.md` — the spec (+ PDF). Corrected post-review.
-- `docs/superpowers/plans/2026-07-17-phase9-pln-privacy-history-pace-special.md` — step-by-step plan (+ PDF). Task 5 is the encryption runbook.
-- `BUILD_PLAN.md` Phase 9 — paste-ready prompts for 9.1–9.5.
-- `server/lib/special.js` — the pure `excludeSpecial`/`sumSpecial` helpers all budget math routes share.
-- `server/lib/crypto.js` + `server/test/crypto.test.js` — AES-256-GCM, per-user HKDF keys. `cd server && npm test`.
-- `server/scripts/encrypt-backfill.mjs` — **not yet run**.
-- `.superpowers/sdd/progress.md` — per-task ledger incl. deferred minor findings.
+- `~/.claude/plans/i-would-like-to-snappy-willow.md` — the approved plan for both batches. **Batch B's
+  full design, including the exact migration 015 SQL, is in there.**
+- `server/lib/overallBudget.js` — the ONE definition of "your total budget". Read this before touching
+  pace, affordability or budgets.
+- `server/test/overallBudget.test.js` — 11 tests, the four combinations + the over-budget floor.
+- `server/lib/emoji.js` + `client/src/lib/emoji.js` — the grapheme rule, kept in sync by hand.
+- `client/src/components/ui/money-input.jsx` — every money field goes through this now.
+- `client/src/components/PaceLine.jsx` — was duplicated byte-for-byte in two components before.
+- `client/src/lib/emojiData.js` — the catalogue; dynamic-imported only.
+- `BUILD_PLAN.md` → **Phase 10** — Batch A ticked, Batch B specified.
 
 ## Next steps (in order)
-1. Alex: click-through A above on the live site.
-2. **Task 6.12 (recurring transactions executor) — started 2026-07-18, see below.**
-3. Whenever 9.5 resumes: follow plan Task 5, steps 1 → 8, in one session, stopping for explicit confirmation before migration 013.
-
-## Task 6.12 — recurring transactions executor (in progress 2026-07-18)
-
-A full design was already parked on branch `docs/task-6.12-spec-unbuilt` (commit `99d3bfa`, written 2026-07-12). Those doc edits describe the feature **as if shipped — no code exists**. Design decisions already made there and worth keeping:
-- Separate **`recurrences`** table (user_id, category_id, type, amount, description, interval monthly|weekly, next_run_at, last_run_at, cancelled_at) + `transactions.recurrence_id` FK.
-- Opt-in lives in QuickAddDialog's existing hidden "note/date" area, **expense-only**, so the 3-tap path stays clean.
-- "Recurring" pill on /transactions rows; manual recurrences surface on **/subscriptions** with a "Manually marked" pill — no second management surface.
-- Auto-detector skips transactions carrying `recurrence_id` so manual + detected don't double-count.
-- Cancel = soft (`cancelled_at`), stops future creations, keeps history.
-- Idempotency via optimistic claim: `UPDATE ... WHERE next_run_at = <oldDate>`, so a double run is a no-op.
-
-**The one stale decision:** that spec specifies **Railway cron**, but Trim moved to Vercel on 2026-07-13 and no cron is configured (`server/vercel.json` has rewrites + `maxDuration: 60` only). Verified 2026-07-18: **Vercel Cron on Hobby allows 2 jobs at once-per-day each** — enough for the single nightly 03:00 UTC job this needs. (The "no reliable cron on Vercel" note from 2026-07-15 was about *bank sync*, which needs frequent polling — a different shape of problem.) Alex to confirm venue before coding.
+1. **Alex: merge `claude/phase-10-batch-a` into `main` and deploy** (`/deploy` skill). It's one commit,
+   branched cleanly off `main`, no SQL, no env vars.
+2. **Alex: the "All Expenses" cleanup** (2 min, only he can — it's his data):
+   1. **Budgets** → delete the budget attached to "All Expenses".
+   2. **Budgets** → set the new **Overall monthly budget** card to his real monthly total (e.g. £1200).
+   3. **Settings → Categories** → delete "All Expenses". If it holds transactions, the existing
+      reassign dialog asks where to move them.
+3. **Alex: live click-through** — Quick-Add note visible without expanding; tap a category once
+   (nothing logs) then again (logs); type `12,50` on his phone and get 12.50; Settings → Categories →
+   search an emoji; Dashboard "incl./excl. special" chip.
+4. **Batch B** when he's ready — he must first run migration 014 *and* 015 and generate `CRON_SECRET`
+   himself (`openssl rand -base64 32`, set on trim-api + local `server/.env`).
+5. Still open from Phase 9: the 9.5 encryption decision (see Previous sessions).
 
 ## Open questions for Alex
-- Finish encryption now, or merge the four shipped features first? (Recommendation: merge 9.1–9.4 and deploy — they're verified and independent — then do 9.5 as its own session with the key in hand.)
-- Carried over from 2026-07-15: Phase 8 (bank sync) still blocked on the Enable Banking account; custom domain and the Supabase leaked-password toggle still pending.
+- Batch B ordering: B2 (6.12b recurring) before B1 (special groups), or the reverse? B2 unblocks
+  already-written server code; B1 is the one he described with more feeling ("September 2026 Paris
+  holiday"). No dependency either way.
+- Carried over: Phase 8 (bank sync) blocked on the Enable Banking account; 9.5 encryption still needs
+  him to generate and back up `DATA_ENCRYPTION_KEY`; custom domain and the Supabase leaked-password
+  toggle still pending.
 
 ## How to resume
-Start a session in this folder and say: "Read @CHAT_HANDOFF.md and continue with next step 2."
+Start a session in this folder and say: "Read @CHAT_HANDOFF.md and continue with next step 4."
 
 ## Previous sessions
-- **2026-07-15 (bank sync + billing design):** Validation + design only, merged to main. Stripe can't read card purchases — bank sync needs Enable Banking (open banking); Stripe is billing-only. Spec: `docs/superpowers/specs/2026-07-15-bank-sync-and-billing-design.md`, tasks in BUILD_PLAN Phase 8, blocked on Alex creating the Enable Banking account.
-- **2026-07-14 (signup fix):** Email confirmation ON made `signUp()` return no session/no error; Signup.jsx now shows a "Check your inbox" fallback. Alex turned confirmation off everywhere.
-- **2026-07-13 (v1 deploy):** Deployed client+API to Vercel free tier. Test account `trim.tester@example.com` / `trim-test-1234`; mock API via `cd server && npm run dev:mock`.
+- **2026-07-18 (Phase 9 + 6.12a):** 9.1–9.4 (PLN, opt-in special expenses, budget pace, monthly
+  history) merged to `main` (`e4f7a79`) and deployed; migrations 010 + 011 applied to the live DB.
+  **9.5 encryption is half-built and INERT on main** — crypto lib + 19 tests + migration 012 file +
+  backfill script, but no route imports it and `DATA_ENCRYPTION_KEY` is unset, so it can't run by
+  accident. Alex must generate and back up that key himself before it resumes; the runbook is
+  `docs/superpowers/plans/2026-07-17-phase9-…md` Task 5, stopping for explicit confirmation before
+  migration 013 (irreversible plaintext drop). The crypto review found **3 Critical defects, two from
+  the plan's own example code** (an infinite-looping backfill against production; a "verification"
+  that never read the DB; `decryptField` accepting 4-byte auth tags) — corrected in `fc420b0`.
+  Task 6.12a (recurring transactions **server** half) built on `claude/task-6.12-recurring` — see the
+  deployment hazard above. Monthly history goes back 24 months, not 5; Alex sees ~5 rows only because
+  the Supabase project dates from 2026-04-24.
+- **2026-07-15 (bank sync + billing design):** Design only, merged. Stripe can't read card purchases —
+  bank sync needs Enable Banking (open banking); Stripe is billing-only. Blocked on Alex's account.
+- **2026-07-14 (signup fix):** Email confirmation ON made `signUp()` return no session/no error;
+  Signup.jsx now shows a "Check your inbox" fallback. Alex turned confirmation off everywhere.
+- **2026-07-13 (v1 deploy):** Client + API on Vercel free tier. Test account
+  `trim.tester@example.com` / `trim-test-1234`; mock API via `cd server && npm run dev:mock`.
