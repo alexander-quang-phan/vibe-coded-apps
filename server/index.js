@@ -16,6 +16,7 @@ import subscriptionsRouter from './routes/subscriptions.js';
 import projectionsRouter from './routes/projections.js';
 import affordabilityRouter from './routes/affordability.js';
 import askRouter from './routes/ask.js';
+import cronRouter from './routes/cron.js';
 
 const CLIENT_URL = process.env.CLIENT_URL;
 if (!CLIENT_URL) {
@@ -101,6 +102,11 @@ app.use('/api/subscriptions', requireAuth, subscriptionsRouter);
 app.use('/api/projections', requireAuth, projectionsRouter);
 app.use('/api/affordability', requireAuth, affordabilityRouter);
 app.use('/api/ask', requireAuth, askLimiter, askRouter);
+
+// Task 6.12a — machine-invoked, no requireAuth (no user JWT exists here).
+// Guards itself with CRON_SECRET; see routes/cron.js for the fail-closed
+// contract and the deliberate cross-user service-role exception.
+app.use('/api/cron', cronRouter);
 
 app.use((req, res) => {
   res.status(404).json({ error: 'Not found' });

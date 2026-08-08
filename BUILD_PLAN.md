@@ -502,6 +502,24 @@ Acceptance criteria:
 Out of scope: variable-amount recurrences ("£12–18 for groceries"), multi-step recurrences, mid-cycle changes.
 ```
 
+**In progress (2026-07-19):** the server half (Task 6.12a) is built and tested on branch
+`claude/task-6.12-recurring` — `server/migrations/014_recurrences.sql` (separate `recurrences`
+table + `transactions.recurrence_id`, written but **not applied**; used 014 instead of 013 to
+avoid colliding with Phase 9's reserved encryption plaintext-drop number), `server/lib/recurrences.js`
+(pure date math incl. the monthly anchor-drift fix, `node --test` TDD RED-then-GREEN), `server/lib/runRecurrences.js`
+(claim-first optimistic-concurrency executor, no `applyLogEvent`), `server/routes/cron.js`
+(`POST/GET /api/cron/recurrences`, fail-closed on unset `CRON_SECRET`, generic 401 on mismatch,
+its own rate limiter), `recurring: {interval}` on `POST /api/transactions`, manual-row handling
+on `GET/PATCH /api/subscriptions`, and `devMock.js` mirrors (including a `CRON_SECRET`-shaped
+mock cron endpoint so the security contract is provable without a real Supabase project).
+Executor venue is **Vercel Cron**, not Railway cron as this prompt originally specced — Trim
+moved to Vercel 2026-07-13 and Railway cron no longer exists (Alex's decision, 2026-07-18).
+Verified via `npm test` + curl against `devMock.js` only — no login, no real database touched.
+**Client half (6.12b — QuickAdd toggle, `/transactions` Recurring badge, `/subscriptions` manual
+row management) is not built.** Do not tick this task until 6.12b lands; Alex still needs to
+generate `CRON_SECRET` and set it on the server's env (Vercel + local `server/.env`) before the
+cron route will do anything but 503.
+
 ---
 
 ### ▢ Task 6.13 — Weekly digest card (Sunday summary)
