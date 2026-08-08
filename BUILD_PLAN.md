@@ -735,6 +735,64 @@ migration 013 (irreversible plaintext drop + category-seeding trigger change).
 
 ---
 
+## Phase 10 — daily-use fixes (Alex's list, 2026-08-08)
+
+Seven items Alex raised from dogfooding, split into two batches. **Batch A needs nothing from
+Alex** — no SQL, no env vars. **Batch B needs him to run SQL and generate a secret.**
+Plan: `~/.claude/plans/i-would-like-to-snappy-willow.md`.
+
+Two of the seven turned out to be different problems than they looked:
+
+- **"All Expenses" does not exist in Trim.** Zero references repo-wide. Alex had created a
+  *category* by that name to fake an overall cap — and because every "total" was
+  `SUM(amount_limit)` over the category budgets, his £1200 umbrella was **added on top of**
+  the categories it was meant to contain. Fixed properly in A5.
+- **"Can't type decimals on phone" was a real bug**, not a preference — see A1.
+
+Three further defects surfaced underneath the requested work and were fixed with it:
+1. `projections.js` paired a budgeted-only *target* with an all-categories *actual*, so partial
+   budgeting read as permanently ahead of pace — and disagreed with `affordability.js`, which
+   filtered correctly, on the same screen. Both now share `server/lib/overallBudget.js`.
+2. Emoji validation (`.max(8)` UTF-16) rejected real emoji and accepted plain text.
+3. (Batch B) `subscriptions.js` collapses every non-`annual` cadence to "Monthly", but 6.12a's
+   server emits `weekly`.
+
+### ✅ Batch A — shipped 2026-08-08
+
+| Task | What |
+|---|---|
+| ✅ A1 | `MoneyInput` (`type="text"` + `inputMode="decimal"` + sanitiser, comma→dot, VND 0-dp) replacing all 7 money fields. Fixes decimal entry on phone. |
+| ✅ A2 | Quick-Add: Note always visible above the grid; category chips need **two taps** (first arms, second logs). |
+| ✅ A3 | Any-emoji picker (~1,135 emoji, search, 9 groups, paste field, dynamic-imported 26KB chunk) for categories **and** savings goals + grapheme-based server validation. |
+| ✅ A4+A5 | Overall monthly budget (reuses `user_stats.monthly_limit`, **no migration**) + pace gap and per-day allowance, via the shared `overallBudget.js`. |
+| ✅ A6 | Dashboard hero "incl./excl. special" toggle (client-only, localStorage). |
+
+New files: `client/src/components/ui/money-input.jsx`, `client/src/components/EmojiPicker.jsx`,
+`client/src/components/PaceLine.jsx`, `client/src/lib/emojiData.js`, `client/src/lib/emoji.js`,
+`server/lib/emoji.js`, `server/lib/overallBudget.js`, `server/test/overallBudget.test.js`.
+
+**Alex's one-time cleanup after this deploys** — his old "All Expenses" category is still there
+and would double-count if it keeps a budget:
+1. **Budgets** → delete the budget attached to "All Expenses".
+2. **Budgets** → set the new **Overall monthly budget** card to his real monthly total.
+3. **Settings → Categories** → delete "All Expenses"; if it holds transactions the existing
+   reassign dialog will ask where to move them. (Deliberately not automated — it's his data.)
+
+### ⬜ Batch B — not built
+
+| Task | What | Needs from Alex |
+|---|---|---|
+| ⬜ B1 | Special-expense **groups** ("September 2026 Paris holiday"): migration `015_special_groups.sql`, `/api/special-groups` CRUD, optional group pick in Quick-Add + edit dialog, Dashboard panel with per-group totals and an "Ungrouped" row. Grouping is optional throughout. | run migration 015 |
+| ⬜ B2 | **Task 6.12b** — the client half of recurring transactions: Quick-Add recurring opt-in, "Recurring" pill + filter on /transactions, manual-row management on /subscriptions (gate off Rename and "Not a subscription" — the server 400s both for manual keys — add the amount edit, fix the weekly cadence label). | run migration 014; generate `CRON_SECRET` himself and set it on trim-api + local `server/.env` |
+
+> ⚠️ **6.12a's server half is NOT on `main`.** It lives only on branch `claude/task-6.12-recurring`
+> (`ff2509b`, `d81693f`). That code's `GET /api/subscriptions` reads the `recurrences` table and
+> selects `transactions.recurrence_id`, so **merging that branch without first applying migration
+> 014 will 500 the Subscriptions page in production.** Apply 014 before (or in the same window as)
+> that merge. Batch A was branched from `main` specifically to stay clear of this.
+
+---
+
 ## Deferred further (flagged in FEATURES.md, don't start without explicit ask)
 
 **Deferred during Phase 6 plan review (2026-05-08):**

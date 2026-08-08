@@ -48,6 +48,7 @@ No route is exposed without `requireAuth` except `/api/health`.
 - Date fields: ISO `YYYY-MM-DD` regex.
 - String fields have `.trim().max(N)` to kill giant payloads and trailing whitespace.
 - UUID route params validated with `/^[0-9a-f-]{36}$/i` **before** any DB call.
+- Emoji fields (`categories.icon`, `savings_goals.emoji`) use `.max(64)` as a cheap outer bound plus a `.refine(isSingleEmoji)` — **exactly one pictographic grapheme** (`server/lib/emoji.js`). Phase 10 A3 replaced the old `.max(8)`, which counted UTF-16 code units: it rejected legitimate emoji (👨‍👩‍👧‍👦 is 11 units) while accepting `"hack"` and `"🍔🍔🍔🍔"`, both of which then rendered as-is in every chip and row. The grapheme rule additionally admits flags (regional-indicator pairs) and keycaps, neither of which is `Extended_Pictographic`. The client mirrors it (`client/src/lib/emoji.js`) for instant feedback — the server check is the one that counts.
 - `express.json({ limit: '100kb' })` to reject oversize JSON at the parser.
 
 ## Rate limiting

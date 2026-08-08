@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { supabase } from '../lib/supabase.js';
 import { excludeSpecial } from '../lib/special.js';
+import { resolveTotalBudget, buildPace } from '../lib/overallBudget.js';
 
 const router = Router();
 
@@ -58,7 +59,9 @@ router.get('/month', async (req, res, next) => {
     const [thisMonthRes, lastMonthRes, budgetsRes, statsRes] = await Promise.all([
       supabase
         .from('transactions')
-        .select('amount, is_special')
+        // category_id is needed so the pace maths can measure spend on the
+        // same basis as the limit it's compared against (Phase 10 A4).
+        .select('amount, category_id, is_special')
         .eq('user_id', req.user.id)
         .eq('type', 'expense')
         .gte('date', firstISO)
@@ -72,12 +75,12 @@ router.get('/month', async (req, res, next) => {
         .lt('date', firstISO),
       supabase
         .from('budgets')
-        .select('amount_limit')
+        .select('category_id, amount_limit')
         .eq('user_id', req.user.id)
         .eq('period', 'monthly'),
       supabase
         .from('user_stats')
-        .select('simple_mode, monthly_limit, special_expenses_enabled')
+        .select('monthly_limit, special_expenses_enabled')
         .eq('user_id', req.user.id)
         .single(),
     ]);
@@ -95,21 +98,28 @@ router.get('/month', async (req, res, next) => {
       (sum, t) => sum + Number(t.amount),
       0,
     );
-    const monthlyBudget = budgetsRes.data.length === 0
-      ? null
-      : budgetsRes.data.reduce((sum, b) => sum + Number(b.amount_limit), 0);
-
-    const stats = statsRes.data;
-    const budgetSource = stats?.simple_mode && stats?.monthly_limit !== null
-      ? Number(stats.monthly_limit)
-      : monthlyBudget; // sum of monthly budgets, or null
-    const pace = budgetSource === null || budgetSource <= 0
-      ? null
-      : {
-          target: Number(((budgetSource * daysElapsed) / daysInMonth).toFixed(2)),
-          spent: Number(spendSoFar.toFixed(2)),
-          delta: Number(((budgetSource * daysElapsed) / daysInMonth - spendSoFar).toFixed(2)),
-        };
+    // Phase 10 (A4/A5). `pace` now measures spend on the SAME basis as the
+    // limit it's compared against — see lib/overallBudget.js. Before this,
+    // target came from the budgeted categories while spent counted every
+    // category, so partial budgeting read as permanently ahead of pace.
+    // monthly_limit is also no longer gated behind simple_mode: an overall
+    // budget is exactly as meaningful in normal mode.
+    const spendByCat = new Map();
+    for (const t of thisMonthTx) {
+      spendByCat.set(t.category_id, (spendByCat.get(t.category_id) ?? 0) + Number(t.amount));
+    }
+    const resolved = resolveTotalBudget({
+      monthlyLimit: statsRes.data.monthly_limit,
+      monthlyBudgets: budgetsRes.data,
+      spendByCat,
+    });
+    const monthlyBudget = resolved.limit;
+    const pace = buildPace({
+      limit: resolved.limit,
+      spent: resolved.spent,
+      daysElapsed,
+      daysInMonth,
+    });
 
     if (daysElapsed < COLD_START_MIN_DAYS || thisMonthTx.length === 0) {
       return res.json({

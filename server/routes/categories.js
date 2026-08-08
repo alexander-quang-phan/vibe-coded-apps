@@ -2,14 +2,26 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { supabase } from '../lib/supabase.js';
 import { suggestCategoryName } from '../lib/categoryKeywords.js';
+import { isSingleEmoji } from '../lib/emoji.js';
 
 const router = Router();
 
 const UUID_RE = /^[0-9a-f-]{36}$/i;
 
+// Phase 10 (A3): users can now pick ANY emoji, so the old `.max(8)` UTF-16
+// bound had to go — it rejected 👨‍👩‍👧‍👦 (11 units) while waving through
+// "hack" and "🍔🍔🍔🍔". `.max(64)` is just a cheap outer bound before the
+// real check, which is exactly-one-pictographic-grapheme.
+const emojiField = z
+  .string()
+  .trim()
+  .min(1)
+  .max(64)
+  .refine(isSingleEmoji, { message: 'Pick a single emoji.' });
+
 const createSchema = z.object({
   name: z.string().trim().min(1).max(40),
-  icon: z.string().trim().min(1).max(8).default('📦'),
+  icon: emojiField.default('📦'),
   color: z.string().regex(/^#[0-9a-fA-F]{6}$/).default('#64748b'),
   type: z.enum(['income', 'expense']),
 });
@@ -17,7 +29,7 @@ const createSchema = z.object({
 const updateSchema = z
   .object({
     name: z.string().trim().min(1).max(40).optional(),
-    icon: z.string().trim().min(1).max(8).optional(),
+    icon: emojiField.optional(),
     color: z.string().regex(/^#[0-9a-fA-F]{6}$/).optional(),
   })
   .refine((d) => d.name !== undefined || d.icon !== undefined || d.color !== undefined, {

@@ -15,6 +15,8 @@ import { randomUUID } from 'node:crypto';
 import { applyLogEvent, titleForLevel, levelProgress } from '../lib/gamification.js';
 import { detectSubscriptions } from '../lib/subscriptions.js';
 import { suggestCategoryName } from '../lib/categoryKeywords.js';
+import { isSingleEmoji } from '../lib/emoji.js';
+import { resolveTotalBudget, buildPace } from '../lib/overallBudget.js';
 
 const PORT = process.env.PORT || 3001;
 const app = express();
@@ -238,6 +240,11 @@ app.get('/api/categories/suggest', (req, res) => {
 
 app.post('/api/categories', (req, res) => {
   const { name, icon = '📦', color = '#64748b', type } = req.body ?? {};
+  // Task 10 A3 — mirror the real route's any-single-emoji rule so the
+  // reject-"hack" / accept-👨‍👩‍👧‍👦 contract is provable without Supabase.
+  if (!isSingleEmoji(icon)) {
+    return res.status(400).json({ error: 'Invalid category', details: { fieldErrors: { icon: ['Pick a single emoji.'] } } });
+  }
   const c = { id: randomUUID(), name, icon, color, type, is_default: false, sort_order: 99 };
   categories.push(c);
   res.status(201).json({ category: c });
@@ -246,6 +253,9 @@ app.post('/api/categories', (req, res) => {
 app.patch('/api/categories/:id', (req, res) => {
   const c = catById(req.params.id);
   if (!c) return res.status(404).json({ error: 'Category not found' });
+  if (req.body?.icon !== undefined && !isSingleEmoji(req.body.icon)) {
+    return res.status(400).json({ error: 'Invalid update', details: { fieldErrors: { icon: ['Pick a single emoji.'] } } });
+  }
   for (const k of ['name', 'icon', 'color']) if (req.body?.[k] !== undefined) c[k] = req.body[k];
   res.json({ category: c });
 });
@@ -449,6 +459,9 @@ app.get('/api/budgets', (_req, res) => {
     if (specialEnabled && t.is_special) continue;
     spendByCat.set(t.category_id, (spendByCat.get(t.category_id) ?? 0) + Number(t.amount));
   }
+  // Task 10 A5 — the overall monthly budget card.
+  const overallLimit = stats.monthly_limit === null ? null : Number(stats.monthly_limit);
+  const totalSpend = [...spendByCat.values()].reduce((s, v) => s + v, 0);
   res.json({
     budgets: budgets.map((b) => {
       const spent = spendByCat.get(b.category_id) ?? 0;
@@ -462,6 +475,11 @@ app.get('/api/budgets', (_req, res) => {
         category: catShape(catById(b.category_id)),
       };
     }),
+    overall: {
+      limit: overallLimit,
+      spent: round2(totalSpend),
+      percent: overallLimit && overallLimit > 0 ? totalSpend / overallLimit : 0,
+    },
   });
 });
 
@@ -577,6 +595,9 @@ app.get('/api/goals', (_req, res) => {
 
 app.post('/api/goals', (req, res) => {
   const { name, emoji, targetAmount, targetDate } = req.body ?? {};
+  if (emoji != null && emoji !== '' && !isSingleEmoji(emoji)) {
+    return res.status(400).json({ error: 'Invalid goal', details: { fieldErrors: { emoji: ['Pick a single emoji.'] } } });
+  }
   const g = {
     id: randomUUID(),
     name,
@@ -595,6 +616,9 @@ app.post('/api/goals', (req, res) => {
 app.patch('/api/goals/:id', (req, res) => {
   const g = goals.find((x) => x.id === req.params.id);
   if (!g) return res.status(404).json({ error: 'Goal not found' });
+  if (req.body?.emoji != null && req.body.emoji !== '' && !isSingleEmoji(req.body.emoji)) {
+    return res.status(400).json({ error: 'Invalid update', details: { fieldErrors: { emoji: ['Pick a single emoji.'] } } });
+  }
   if (req.body?.name !== undefined) g.name = req.body.name;
   if (req.body?.emoji !== undefined) g.emoji = req.body.emoji || null;
   if (req.body?.targetAmount !== undefined) g.target_amount = req.body.targetAmount;
@@ -711,17 +735,25 @@ app.get('/api/projections/month', (_req, res) => {
     (t) => t.type === 'expense' && t.date >= firstISO && t.date < nextFirstISO && !(specialEnabled && t.is_special),
   );
   const spendSoFar = monthTx.reduce((s, t) => s + Number(t.amount), 0);
-  const monthlyBudget = budgets.filter((b) => b.period === 'monthly').reduce((s, b) => s + Number(b.amount_limit), 0) || null;
-  const budgetSource = stats.simple_mode && stats.monthly_limit !== null
-    ? Number(stats.monthly_limit)
-    : monthlyBudget;
-  const pace = budgetSource === null || budgetSource <= 0
-    ? null
-    : {
-        target: round2((budgetSource * daysElapsed) / daysInMonth),
-        spent: round2(spendSoFar),
-        delta: round2((budgetSource * daysElapsed) / daysInMonth - spendSoFar),
-      };
+  // Task 10 A4/A5 — mirror the real route: one shared resolver so pace measures
+  // spend on the same basis as the limit, and monthly_limit is no longer gated
+  // behind simple_mode.
+  const paceSpendByCat = new Map();
+  for (const t of monthTx) {
+    paceSpendByCat.set(t.category_id, (paceSpendByCat.get(t.category_id) ?? 0) + Number(t.amount));
+  }
+  const resolved = resolveTotalBudget({
+    monthlyLimit: stats.monthly_limit,
+    monthlyBudgets: budgets.filter((b) => b.period === 'monthly'),
+    spendByCat: paceSpendByCat,
+  });
+  const monthlyBudget = resolved.limit;
+  const pace = buildPace({
+    limit: resolved.limit,
+    spent: resolved.spent,
+    daysElapsed,
+    daysInMonth,
+  });
   if (daysElapsed < 3 || monthTx.length === 0) {
     return res.json({ ready: false, daysElapsed, daysInMonth, pace });
   }
@@ -767,17 +799,16 @@ app.post('/api/affordability', (req, res) => {
       categoryRemaining = round2(categoryLimit - (spendByCat.get(categoryId) ?? 0) - amount);
     }
   }
-  let totalRemaining = null;
-  let totalLimit = 0;
-  const monthly = budgets.filter((b) => b.period === 'monthly');
-  if (monthly.length > 0) {
-    totalLimit = monthly.reduce((s, b) => s + Number(b.amount_limit), 0);
-    const budgeted = new Set(monthly.map((b) => b.category_id));
-    const budgetedSpend = [...spendByCat.entries()]
-      .filter(([id]) => budgeted.has(id))
-      .reduce((s, [, v]) => s + v, 0);
-    totalRemaining = round2(totalLimit - budgetedSpend - amount);
-  }
+  // Task 10 A5 — same shared resolver as projections, so the two agree.
+  const resolvedTotal = resolveTotalBudget({
+    monthlyLimit: stats.monthly_limit,
+    monthlyBudgets: budgets.filter((b) => b.period === 'monthly'),
+    spendByCat,
+  });
+  const totalLimit = resolvedTotal.limit ?? 0;
+  const totalRemaining =
+    resolvedTotal.limit === null ? null : round2(resolvedTotal.limit - resolvedTotal.spent - amount);
+  const totalSource = resolvedTotal.source;
   const open = goals.filter((g) => Number(g.current_amount) < Number(g.target_amount));
   let goal = null;
   let goalImpactDays = null;
@@ -799,7 +830,7 @@ app.post('/api/affordability', (req, res) => {
       : signals.some((s) => s.remaining < s.limit * 0.15)
         ? 'Tight but yes'
         : 'Comfortably yes';
-  res.json({ categoryRemaining, totalRemaining, goalImpactDays, goal, verdict });
+  res.json({ categoryRemaining, totalRemaining, totalSource, goalImpactDays, goal, verdict });
 });
 
 app.get('/api/ask/history', (_req, res) => {

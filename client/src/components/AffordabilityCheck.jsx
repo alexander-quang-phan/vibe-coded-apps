@@ -2,7 +2,8 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { HelpCircle } from 'lucide-react';
 import { Card, CardContent } from '@/components/ui/card';
-import { Input } from '@/components/ui/input';
+import { MoneyInput, isValidMoney } from '@/components/ui/money-input';
+import { PaceLine } from '@/components/PaceLine';
 import { useApi } from '@/hooks/useApi';
 import { formatMoney } from '@/lib/format';
 import { cn } from '@/lib/utils';
@@ -25,7 +26,7 @@ export function AffordabilityCheck({ currency }) {
   const timerRef = useRef(null);
 
   const amount = Number(amountStr);
-  const amountValid = amountStr !== '' && Number.isFinite(amount) && amount > 0;
+  const amountValid = isValidMoney(amountStr);
 
   const { data: categoriesData } = useQuery({
     queryKey: ['categories'],
@@ -64,7 +65,6 @@ export function AffordabilityCheck({ currency }) {
   });
 
   const showResult = amountValid && result && !isFetching;
-  const symbol = formatMoney(0, currency).replace(/\d|[.,]/g, '').trim() || '$';
 
   return (
     <Card className="lift relative overflow-hidden border-border/60 bg-card/70 backdrop-blur">
@@ -79,40 +79,23 @@ export function AffordabilityCheck({ currency }) {
           </span>
         </div>
 
-        {pace ? (
-          <p className="mt-2 text-xs text-muted-foreground">
-            {pace.delta >= 0 ? (
-              <span className="text-primary">✓</span>
-            ) : (
-              <span className="text-amber-400">◷</span>
-            )}{' '}
-            By day {proj.daysElapsed}, about {formatMoney(pace.target, currency)} of your budget
-            would typically be used — you're at{' '}
-            <span className={cn('nums font-medium', pace.delta >= 0 ? 'text-primary' : 'text-amber-400')}>
-              {formatMoney(pace.spent, currency)}
-            </span>
-            {pace.delta < 0 ? ' — a touch ahead of pace, plenty of month left.' : '.'}
-          </p>
-        ) : null}
+        <PaceLine
+          pace={pace}
+          daysElapsed={proj?.daysElapsed}
+          currency={currency}
+          className="mt-2"
+        />
 
         <div className="mt-3 flex flex-col gap-3 sm:flex-row sm:items-center">
-          <div className="relative sm:w-40">
-            <span className="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 text-base font-semibold text-muted-foreground">
-              {symbol}
-            </span>
-            <Input
-              aria-label="Hypothetical amount"
-              className="no-spin h-11 pl-8 text-lg font-semibold"
-              type="number"
-              inputMode="decimal"
-              step="0.01"
-              min="0"
-              placeholder="0.00"
-              value={amountStr}
-              onChange={(e) => setAmountStr(e.target.value)}
-              autoComplete="off"
-            />
-          </div>
+          <MoneyInput
+            aria-label="Hypothetical amount"
+            currency={currency}
+            showSymbol
+            containerClassName="sm:w-40"
+            className="no-spin h-11 pl-8 text-lg font-semibold"
+            value={amountStr}
+            onValueChange={setAmountStr}
+          />
 
           <div className="flex min-w-0 flex-1 gap-1.5 overflow-x-auto pb-1 sm:pb-0">
             {expenseCategories.map((c) => {
@@ -152,10 +135,16 @@ export function AffordabilityCheck({ currency }) {
               {result.totalRemaining !== null ? (
                 <p className="nums">
                   {formatMoney(Math.abs(result.totalRemaining), currency)}{' '}
-                  {result.totalRemaining >= 0 ? 'left across all budgets' : 'past your combined budgets'}
+                  {result.totalSource === 'overall'
+                    ? result.totalRemaining >= 0
+                      ? 'left in your monthly budget'
+                      : 'past your monthly budget'
+                    : result.totalRemaining >= 0
+                      ? 'left across all budgets'
+                      : 'past your combined budgets'}
                 </p>
               ) : (
-                <p>No monthly budgets yet — set one for a sharper answer.</p>
+                <p>No monthly budget yet — set one for a sharper answer.</p>
               )}
               {result.goal && result.goalImpactDays !== null ? (
                 <p>

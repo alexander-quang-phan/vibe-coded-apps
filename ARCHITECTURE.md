@@ -18,7 +18,8 @@
 │   │   ├── components/      # UI primitives + composed components
 │   │   ├── components/ui/   # shadcn-style primitives (Button, Dialog, Select, etc.)
 │   │   ├── hooks/           # useAuth, useApi
-│   │   ├── lib/             # api.js, format.js, confetti.js, utils.js, supabase client
+│   │   ├── lib/             # api.js, format.js, confetti.js, utils.js, supabase client,
+│   │   │                    #   emoji.js (single-emoji check), emojiData.js (dynamic-imported catalogue)
 │   │   ├── pages/           # Dashboard, Transactions, Budgets, Analytics, SavingsGoals, Subscriptions, Settings, Login, Signup
 │   │   ├── App.jsx          # Auth-aware shell + nav + theme toggle + Ask Trim chatbot
 │   │   └── main.jsx         # QueryClient + AuthProvider + Router
@@ -35,11 +36,14 @@
 │   ├── lib/askContext.js    # Pure context-bundle builder + DB loader for Ask Trim
 │   ├── lib/askPrompt.js     # Ask Trim system-prompt builder (one-shot/cold-open variants, cache_control)
 │   ├── lib/categoryKeywords.js # Keyword map + matcher for GET /api/categories/suggest (Task 6.9)
+│   ├── lib/special.js       # Pure excludeSpecial/sumSpecial — the one place special expenses leave budget math (9.2)
+│   ├── lib/overallBudget.js # Pure resolveTotalBudget/buildPace — the ONE definition of "your total budget" (Phase 10 A5). Shared by projections, affordability and budgets so they can't disagree. Unit-tested.
+│   ├── lib/emoji.js         # Pure isSingleEmoji — grapheme-based validation for category icons + goal emoji (Phase 10 A3). Mirror of client/src/lib/emoji.js.
 │   ├── middleware/auth.js   # requireAuth — verifies Supabase JWT, sets req.user
 │   ├── routes/              # me, categories, transactions, dashboard, budgets, analytics, goals, wins, subscriptions, projections, affordability, ask
 │   ├── scripts/askEval.js   # 20-question ship-gate eval (hybrid grading)
 │   ├── scripts/devMock.js   # `npm run dev:mock` — full in-memory /api/* on :3001, no Supabase/Anthropic needed (UI dev + demos)
-│   ├── migrations/          # 001_init.sql … 009 — run in order on a fresh project
+│   ├── migrations/          # 001_init.sql … 012 — run in order on a fresh project
 │   └── .env                 # PORT, CLIENT_URL, SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, SUPABASE_JWT_SECRET, ANTHROPIC_API_KEY
 │
 ├── ARCHITECTURE.md          # this file
@@ -93,7 +97,7 @@ All routes require a valid Supabase JWT except `/api/health`. Express router nam
 - `PATCH /api/transactions/:id` — inline edit.
 - `DELETE /api/transactions/:id`.
 - `GET  /api/dashboard` — aggregated widget payload (month totals, category breakdown, budget alerts ≥75%, recent 5, stats).
-- `GET  /api/budgets` — list + this-month spend per category.
+- `GET  /api/budgets` — list + this-month spend per category, plus `overall: { limit, spent, percent }` (Phase 10 A5). `overall.limit` is `user_stats.monthly_limit` (null when unset) and `overall.spent` is the whole month's countable expense spend across **every** category, not a per-category slice. Additive — the `budgets[]` shape is unchanged.
 - `POST /api/budgets` — create (expense categories only, unique per category+period).
 - `PATCH /api/budgets/:id` — update amount/period.
 - `DELETE /api/budgets/:id`.
@@ -106,8 +110,8 @@ All routes require a valid Supabase JWT except `/api/health`. Express router nam
 - `GET  /api/wins` — derives at-most-10 recent positive events ({ type, title, body, at, icon }) from transactions vs budgets (rolling 7d), `user_stats` streak/shields, and savings contributions. No new tables.
 - `GET  /api/subscriptions` — runs `detectSubscriptions` on the user's expense transactions, merges `subscription_overrides`, returns `{ subscriptions[], summary }`. Default rule: ≥3 same-merchant charges at ~30d or ~365d intervals (±5d) with amounts within 10%.
 - `PATCH /api/subscriptions/:merchantKey` — upsert into `subscription_overrides` to mark a detected subscription `active`, `cancelled`, or `dismissed` (false positive — only meaningful on inferred/synthetic-key rows; excluded from the saved-money totals). Also accepts `displayName` to name an inferred row. Decisions survive re-detection.
-- `GET  /api/projections/month` — linear-extrapolation forecast for current-month expenses. Returns `{ ready, projectedSpend, monthlyBudget, delta, spendSoFar, daysElapsed, daysInMonth, paceLabel }`. `ready: false` when day-of-month < 3 or zero transactions logged this month (cold-start guard). **Outlier guard:** when a single transaction is >40% of spend-so-far (rent on the 1st), it's counted once and the run-rate is projected from everything else — otherwise day-4 projections explode. `paceLabel` compares projectedSpend against last month's total. `monthlyBudget`/`delta` are null when the user has no monthly budgets set.
-- `POST /api/affordability` — pure read+compute, no DB writes. Body `{ amount, categoryId? }`. Returns `{ categoryRemaining, totalRemaining, goalImpactDays, goal, verdict }`. `categoryRemaining` is null when no category is given or the picked category has no monthly budget; `totalRemaining` is null when the user has no monthly budgets at all. `goal` (and `goalImpactDays`) reference the soonest-target_date open savings goal, falling back to the earliest-created open goal; both are null when there are no open goals or no contributions in the last 90 days. Verdict is one of `'Comfortably yes' | 'Tight but yes' | 'Would push you over'` — never red language.
+- `GET  /api/projections/month` — linear-extrapolation forecast for current-month expenses. Returns `{ ready, projectedSpend, monthlyBudget, delta, spendSoFar, daysElapsed, daysInMonth, paceLabel, pace }`. `ready: false` when day-of-month < 3 or zero transactions logged this month (cold-start guard) — but `pace` is returned in **both** branches, so the pace line shows from day 1. **Outlier guard:** when a single transaction is >40% of spend-so-far (rent on the 1st), it's counted once and the run-rate is projected from everything else — otherwise day-4 projections explode. `paceLabel` compares projectedSpend against last month's total. `pace` is `{ target, spent, delta, budget, daysRemaining, perDayLeft, overBy }` or null when there's no budget at all; `perDayLeft` is floored at 0 and `overBy` carries the overage instead (Phase 10 A4). `monthlyBudget` and `pace` both come from `lib/overallBudget.js`, so the target and the spend it's compared against are always on the same basis — before Phase 10 they weren't, and partial budgeting read as permanently ahead of pace.
+- `POST /api/affordability` — pure read+compute, no DB writes. Body `{ amount, categoryId? }`. Returns `{ categoryRemaining, totalRemaining, totalSource, goalImpactDays, goal, verdict }`. `categoryRemaining` is null when no category is given or the picked category has no monthly budget; `totalRemaining` is null when the user has neither an overall budget nor any monthly category budgets. `totalSource` is `'overall' | 'categories' | 'none'` and only exists so the client can say "left in your monthly budget" vs "left across all budgets" — two genuinely different claims. Uses the same `lib/overallBudget.js` resolver as projections. `goal` (and `goalImpactDays`) reference the soonest-target_date open savings goal, falling back to the earliest-created open goal; both are null when there are no open goals or no contributions in the last 90 days. Verdict is one of `'Comfortably yes' | 'Tight but yes' | 'Would push you over'` — never red language.
 - `POST /api/ask` — Ask Trim chat (Task 6.10). Body `{ message }` (≤2000 chars). Persists the user message, loads the last 90 days of transactions / current budgets / goals / contributions / stats via `loadAskContext`, builds a two-part system prompt (rules block `cache_control: ephemeral` + JSON user data) via `buildAskSystem`, and streams `claude-haiku-4-5` (max_tokens 1500; override with `ASK_MODEL` env var) back to the client over **SSE** with events `user_message` (canonical row for the just-inserted user message), `delta` (text chunk), `done` (final assistant row + token usage), and `error`. Includes the latest 10 prior messages as conversation context. Persists the final assistant text. Answer-only — the route never writes to any table except `ask_messages`. 503 when `ANTHROPIC_API_KEY` is unset. Client-disconnect aborts hang off `res.on('close')`, **never** `req.on('close')` — on Node 16+ the request emits `close` as soon as its body is consumed, which would abort the Anthropic stream instantly (this was a real shipped bug, fixed 2026-07).
 - `GET  /api/ask/history` — most-recent 50 chat messages for the user, oldest-first.
 - `DELETE /api/ask/history` — wipes the user's chat history.

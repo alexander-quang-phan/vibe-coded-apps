@@ -22,10 +22,13 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { SegmentGroup, SegmentButton } from '@/components/ui/toggle-group';
+import { EmojiPicker } from '@/components/EmojiPicker';
 import { useApi } from '@/hooks/useApi';
 import { cn } from '@/lib/utils';
 
-const CATEGORY_EMOJI_CHOICES = [
+// The old fixed palette, kept only as a one-tap shortcut row above the full
+// picker — these are the icons that actually suit spending categories.
+const QUICK_EMOJI_CHOICES = [
   '🍔', '🛒', '🚗', '🏠', '💡', '🎬', '🛍️', '💊',
   '💼', '💻', '🎓', '✈️', '☕', '🍺', '🎁', '💰',
   '🐾', '⛽', '🏥', '📦',
@@ -118,11 +121,12 @@ function CategoryDialog({ open, onOpenChange, editing, onSubmit, submitting }) {
           <div className="space-y-1.5">
             <Label>Icon</Label>
             <div className="flex flex-wrap gap-1.5">
-              {CATEGORY_EMOJI_CHOICES.map((e) => (
+              {QUICK_EMOJI_CHOICES.map((e) => (
                 <button
                   key={e}
                   type="button"
                   onClick={() => setIcon(e)}
+                  aria-pressed={icon === e}
                   className={cn(
                     'flex h-9 w-9 items-center justify-center rounded-lg border text-lg transition',
                     icon === e
@@ -134,6 +138,7 @@ function CategoryDialog({ open, onOpenChange, editing, onSubmit, submitting }) {
                 </button>
               ))}
             </div>
+            <EmojiPicker value={icon} onChange={setIcon} className="pt-1" />
           </div>
 
           <div className="space-y-1.5">

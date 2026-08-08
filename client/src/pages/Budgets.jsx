@@ -19,7 +19,7 @@ import {
 } from '@/components/ui/select';
 import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
+import { MoneyInput, isValidMoney } from '@/components/ui/money-input';
 import { Label } from '@/components/ui/label';
 import { Skeleton } from '@/components/ui/skeleton';
 import { useApi } from '@/hooks/useApi';
@@ -46,6 +46,158 @@ function progressTone(percent) {
     bar: 'from-emerald-400 to-primary',
     copy: 'You have room to breathe.',
   };
+}
+
+/**
+ * Phase 10 (A5) — the overall monthly budget. Every expense category counts
+ * toward this one number, which is what Alex was faking with a category
+ * literally named "All Expenses". It's backed by user_stats.monthly_limit
+ * (already there since migration 008, previously reachable only in Simple
+ * mode), so there's no new table and no migration.
+ */
+function OverallBudgetCard({ overall, currency, onSave, onClear, saving }) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState('');
+
+  const hasLimit = overall?.limit !== null && overall?.limit !== undefined;
+  const percent = hasLimit ? Math.min(overall.percent, 1.1) : 0;
+  const tone = progressTone(percent);
+  const remaining = hasLimit ? overall.limit - overall.spent : 0;
+
+  function startEditing() {
+    setDraft(hasLimit ? String(overall.limit) : '');
+    setEditing(true);
+  }
+
+  if (!hasLimit && !editing) {
+    return (
+      <Card className="relative overflow-hidden border-primary/30 bg-card/70 backdrop-blur">
+        <div
+          aria-hidden
+          className="pointer-events-none absolute -top-16 left-1/3 h-40 w-40 rounded-full bg-primary/15 blur-3xl"
+        />
+        <CardContent className="relative flex flex-wrap items-center justify-between gap-4 p-5">
+          <div className="space-y-1">
+            <h3 className="text-xs font-semibold uppercase tracking-[0.16em] text-muted-foreground">
+              Overall monthly budget
+            </h3>
+            <p className="text-sm font-medium">Set one ceiling for everything</p>
+            <p className="max-w-md text-xs leading-relaxed text-muted-foreground">
+              Every category counts toward it — food, rent, the lot. Category budgets below
+              become sub-limits inside this one.
+            </p>
+          </div>
+          <Button onClick={startEditing} className="bg-gradient-to-br from-primary to-emerald-700">
+            <Plus className="h-4 w-4" /> Set a total
+          </Button>
+        </CardContent>
+      </Card>
+    );
+  }
+
+  return (
+    <Card className="relative overflow-hidden border-primary/30 bg-card/70 backdrop-blur">
+      <div
+        aria-hidden
+        className="pointer-events-none absolute -top-16 -right-10 h-40 w-40 rounded-full bg-primary/20 blur-3xl"
+      />
+      <CardContent className="relative space-y-3 p-5">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <h3 className="text-xs font-semibold uppercase tracking-[0.16em] text-muted-foreground">
+              Overall monthly budget
+            </h3>
+            <p className="text-xs text-muted-foreground">Every category counts toward this</p>
+          </div>
+          {!editing ? (
+            <div className="flex gap-1">
+              <Button variant="ghost" size="icon" className="h-8 w-8" onClick={startEditing} aria-label="Edit overall budget">
+                <Pencil className="h-3.5 w-3.5" />
+              </Button>
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-8 w-8"
+                aria-label="Remove overall budget"
+                onClick={() => {
+                  if (confirm('Remove your overall monthly budget?')) onClear();
+                }}
+              >
+                <Trash2 className="h-3.5 w-3.5" />
+              </Button>
+            </div>
+          ) : null}
+        </div>
+
+        {editing ? (
+          <form
+            className="flex max-w-sm gap-2"
+            onSubmit={(e) => {
+              e.preventDefault();
+              if (isValidMoney(draft) && !saving) {
+                onSave(Number(draft));
+                setEditing(false);
+              }
+            }}
+          >
+            <MoneyInput
+              aria-label="Overall monthly budget"
+              currency={currency}
+              showSymbol
+              containerClassName="flex-1"
+              className="no-spin h-11 pl-8 text-lg font-semibold"
+              value={draft}
+              onValueChange={setDraft}
+              autoFocus
+            />
+            <Button type="submit" className="h-11" disabled={!isValidMoney(draft) || saving}>
+              Save
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              className="h-11"
+              onClick={() => setEditing(false)}
+              disabled={saving}
+            >
+              Cancel
+            </Button>
+          </form>
+        ) : (
+          <>
+            <div className="flex flex-wrap items-baseline justify-between gap-2">
+              <p className="nums text-3xl font-extrabold tracking-tight">
+                {remaining >= 0 ? (
+                  <>
+                    <span className="text-gradient">{formatMoney(remaining, currency)}</span>{' '}
+                    <span className="text-base font-semibold text-muted-foreground">left</span>
+                  </>
+                ) : (
+                  <>
+                    {formatMoney(Math.abs(remaining), currency)}{' '}
+                    <span className="text-base font-semibold text-rose-400">over</span>
+                  </>
+                )}
+              </p>
+              <span className="nums text-xs text-muted-foreground">
+                {formatMoney(overall.spent, currency)} of {formatMoney(overall.limit, currency)}
+              </span>
+            </div>
+            <div className="h-2.5 overflow-hidden rounded-full bg-muted/70">
+              <div
+                className={cn(
+                  'shimmer-bar h-full rounded-full bg-gradient-to-r transition-all duration-700',
+                  tone.bar,
+                )}
+                style={{ width: `${Math.min(100, Math.round(percent * 100))}%` }}
+              />
+            </div>
+            <p className="text-xs text-muted-foreground">{tone.copy}</p>
+          </>
+        )}
+      </CardContent>
+    </Card>
+  );
 }
 
 function BudgetCard({ budget, currency, onEdit, onDelete }) {
@@ -125,7 +277,7 @@ function BudgetCard({ budget, currency, onEdit, onDelete }) {
   );
 }
 
-function BudgetDialog({ open, onOpenChange, editing, categoriesUsed, onSubmit, submitting }) {
+function BudgetDialog({ open, onOpenChange, editing, categoriesUsed, onSubmit, submitting, currency }) {
   const api = useApi();
   const { data: catsData } = useQuery({
     queryKey: ['categories'],
@@ -157,7 +309,7 @@ function BudgetDialog({ open, onOpenChange, editing, categoriesUsed, onSubmit, s
   }, [editing, open]);
 
   const amount = Number(limit);
-  const canSubmit = (editing || categoryId) && Number.isFinite(amount) && amount > 0;
+  const canSubmit = Boolean(editing || categoryId) && isValidMoney(limit);
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -196,15 +348,11 @@ function BudgetDialog({ open, onOpenChange, editing, categoriesUsed, onSubmit, s
 
           <div className="space-y-1.5">
             <Label htmlFor="limit">Amount</Label>
-            <Input
+            <MoneyInput
               id="limit"
-              type="number"
-              inputMode="decimal"
-              step="0.01"
-              min="0"
-              placeholder="0.00"
+              currency={currency}
               value={limit}
-              onChange={(e) => setLimit(e.target.value)}
+              onValueChange={setLimit}
               className="no-spin"
             />
           </div>
@@ -253,6 +401,7 @@ export default function Budgets() {
   const currency = me?.preferences?.currency ?? 'GBP';
 
   const budgets = data?.budgets ?? [];
+  const overall = data?.overall ?? null;
   const categoriesUsed = useMemo(
     () => new Set(budgets.map((b) => b.category?.id).filter(Boolean)),
     [budgets],
@@ -297,6 +446,22 @@ export default function Budgets() {
     onError: (err) => toast.error(err?.message || 'Could not delete'),
   });
 
+  // Phase 10 (A5). The overall budget is user_stats.monthly_limit, so it saves
+  // through PATCH /api/me — no new route. Null clears it.
+  const overallMutation = useMutation({
+    mutationFn: (monthlyLimit) => api.patch('/api/me', { monthlyLimit }),
+    onSuccess: (_res, monthlyLimit) => {
+      for (const key of ['budgets', 'dashboard', 'projections', 'me', 'wins']) {
+        queryClient.invalidateQueries({ queryKey: [key] });
+      }
+      toast.success(monthlyLimit === null ? 'Overall budget removed' : 'Overall budget set', {
+        description:
+          monthlyLimit === null ? undefined : 'Every category now counts toward it.',
+      });
+    },
+    onError: (err) => toast.error(err?.message || 'Could not save your overall budget'),
+  });
+
   function handleSubmit({ categoryId, amountLimit, period }) {
     if (editing) {
       updateMutation.mutate({ id: editing.id, payload: { amountLimit, period } });
@@ -324,6 +489,16 @@ export default function Budgets() {
         </Button>
       </header>
 
+      {!isLoading && !isError ? (
+        <OverallBudgetCard
+          overall={overall}
+          currency={currency}
+          saving={overallMutation.isPending}
+          onSave={(limit) => overallMutation.mutate(limit)}
+          onClear={() => overallMutation.mutate(null)}
+        />
+      ) : null}
+
       {isLoading ? (
         <div className="grid gap-4 sm:grid-cols-2">
           {Array.from({ length: 4 }).map((_, i) => (
@@ -349,9 +524,9 @@ export default function Budgets() {
               🎯
             </span>
             <div className="space-y-1">
-              <p className="font-semibold">No budgets yet</p>
+              <p className="font-semibold">No category budgets yet</p>
               <p className="text-sm text-muted-foreground">
-                Pick a spending category and give it a ceiling.
+                Pick a spending category and give it a ceiling of its own.
               </p>
             </div>
             <Button
@@ -396,6 +571,7 @@ export default function Budgets() {
         categoriesUsed={categoriesUsed}
         onSubmit={handleSubmit}
         submitting={createMutation.isPending || updateMutation.isPending}
+        currency={currency}
       />
     </div>
   );

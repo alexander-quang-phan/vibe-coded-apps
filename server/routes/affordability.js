@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { supabase } from '../lib/supabase.js';
 import { excludeSpecial } from '../lib/special.js';
+import { resolveTotalBudget } from '../lib/overallBudget.js';
 
 const router = Router();
 
@@ -71,7 +72,7 @@ router.post('/', async (req, res, next) => {
         .gte('created_at', ninetyDaysAgo),
       supabase
         .from('user_stats')
-        .select('special_expenses_enabled')
+        .select('special_expenses_enabled, monthly_limit')
         .eq('user_id', req.user.id)
         .single(),
     ]);
@@ -101,17 +102,20 @@ router.post('/', async (req, res, next) => {
       }
     }
 
-    // Total remaining across all monthly budgets — null when none are set.
-    let totalRemaining = null;
-    let totalLimit = 0;
-    if (budgetsRes.data.length > 0) {
-      totalLimit = budgetsRes.data.reduce((sum, b) => sum + Number(b.amount_limit), 0);
-      const budgetedCatIds = new Set(budgetsRes.data.map((b) => b.category_id));
-      const budgetedSpend = [...spendByCat.entries()]
-        .filter(([catId]) => budgetedCatIds.has(catId))
-        .reduce((sum, [, v]) => sum + v, 0);
-      totalRemaining = round2(totalLimit - budgetedSpend - amount);
-    }
+    // Total remaining — null when there's nothing to measure against.
+    // Phase 10 (A5): an overall monthly budget, when set, IS the total and
+    // every category counts toward it. Otherwise this falls back to the sum of
+    // the category budgets measured against budgeted spend only, exactly as
+    // before. Shared with projections.js so both agree — they used to differ.
+    const resolved = resolveTotalBudget({
+      monthlyLimit: statsRes.data.monthly_limit,
+      monthlyBudgets: budgetsRes.data,
+      spendByCat,
+    });
+    const totalLimit = resolved.limit ?? 0;
+    const totalRemaining =
+      resolved.limit === null ? null : round2(resolved.limit - resolved.spent - amount);
+    const totalSource = resolved.source;
 
     // Goal impact — soonest-target_date open goal, falling back to
     // earliest-created open goal. Needs recent contributions to know the pace.
@@ -140,6 +144,9 @@ router.post('/', async (req, res, next) => {
     res.json({
       categoryRemaining,
       totalRemaining,
+      // Lets the client say "left in your monthly budget" vs "left across all
+      // budgets" — two genuinely different claims.
+      totalSource,
       goalImpactDays,
       goal,
       verdict: verdictFor({ categoryRemaining, totalRemaining, categoryLimit, totalLimit }),

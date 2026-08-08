@@ -47,7 +47,7 @@ router.get('/', async (req, res, next) => {
         .lt('date', nextFirstISO),
       supabase
         .from('user_stats')
-        .select('special_expenses_enabled')
+        .select('special_expenses_enabled, monthly_limit')
         .eq('user_id', req.user.id)
         .single(),
     ]);
@@ -77,7 +77,21 @@ router.get('/', async (req, res, next) => {
       };
     });
 
-    res.json({ budgets });
+    // Phase 10 (A5) — the overall monthly budget. Every expense category
+    // counts toward it, so `spent` here is the whole month's countable spend,
+    // not a per-category slice. Additive key: nothing above changed shape.
+    const overallLimit =
+      statsRes.data.monthly_limit === null ? null : Number(statsRes.data.monthly_limit);
+    const totalSpend = [...spendByCat.values()].reduce((sum, v) => sum + v, 0);
+
+    res.json({
+      budgets,
+      overall: {
+        limit: overallLimit,
+        spent: Number(totalSpend.toFixed(2)),
+        percent: overallLimit && overallLimit > 0 ? totalSpend / overallLimit : 0,
+      },
+    });
   } catch (err) {
     next(err);
   }

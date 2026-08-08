@@ -81,9 +81,40 @@ function greetingFor(date = new Date()) {
   return 'Up late';
 }
 
+// Phase 10 (A6). Alex wants to see his monthly total with and without special
+// expenses. No server change is needed: /api/dashboard already returns
+// `expenses` INCLUDING special (deliberately — the hero is honest cash flow)
+// alongside `specialThisMonth`, so subtracting gives the excluding view exactly.
+const HERO_SPECIAL_KEY = 'trim:heroIncludeSpecial';
+
+function readIncludeSpecial() {
+  try {
+    return localStorage.getItem(HERO_SPECIAL_KEY) !== 'false';
+  } catch {
+    return true; // private mode / storage disabled — just default to including
+  }
+}
+
 function HeroBalance({ income, expenses, balance, currency, displayName, specialThisMonth = 0 }) {
-  const animated = useCountUp(Math.abs(balance));
-  const positive = balance >= 0;
+  const [includeSpecial, setIncludeSpecial] = useState(readIncludeSpecial);
+
+  // Only worth offering when there IS special spend to take out.
+  const canToggle = specialThisMonth > 0;
+  const shownExpenses = canToggle && !includeSpecial ? expenses - specialThisMonth : expenses;
+  const shownBalance = canToggle && !includeSpecial ? balance + specialThisMonth : balance;
+
+  function toggleSpecial() {
+    const next = !includeSpecial;
+    setIncludeSpecial(next);
+    try {
+      localStorage.setItem(HERO_SPECIAL_KEY, String(next));
+    } catch {
+      // Not being able to remember the choice is not worth an error.
+    }
+  }
+
+  const animated = useCountUp(Math.abs(shownBalance));
+  const positive = shownBalance >= 0;
   const sign = positive ? '' : '−';
   const display = `${sign}${formatMoney(animated, currency)}`;
 
@@ -106,7 +137,19 @@ function HeroBalance({ income, expenses, balance, currency, displayName, special
               <Sparkles className="h-3.5 w-3.5 text-primary" />
               {displayName ? `${greetingFor()}, ${displayName}` : greetingFor()}
             </p>
-            <p className="text-sm text-muted-foreground">Net this month</p>
+            <div className="flex flex-wrap items-center gap-2">
+              <p className="text-sm text-muted-foreground">Net this month</p>
+              {canToggle ? (
+                <button
+                  type="button"
+                  onClick={toggleSpecial}
+                  aria-pressed={!includeSpecial}
+                  className="rounded-full border border-border/70 bg-background/40 px-2.5 py-0.5 text-[11px] font-medium text-muted-foreground transition-colors hover:border-amber-400/50 hover:text-amber-400"
+                >
+                  {includeSpecial ? 'incl. special' : 'excl. special'}
+                </button>
+              ) : null}
+            </div>
             <p
               className={
                 'nums text-5xl font-extrabold leading-none tracking-tight sm:text-7xl ' +
@@ -137,7 +180,7 @@ function HeroBalance({ income, expenses, balance, currency, displayName, special
                 Out
               </div>
               <p className="mt-1 nums text-base font-semibold">
-                {formatMoney(expenses, currency)}
+                {formatMoney(shownExpenses, currency)}
               </p>
             </div>
             {specialThisMonth > 0 ? (
@@ -146,7 +189,7 @@ function HeroBalance({ income, expenses, balance, currency, displayName, special
                   <span className="flex h-5 w-5 items-center justify-center rounded-full bg-amber-400/15 text-amber-400">
                     <Star className="h-3 w-3" strokeWidth={3} />
                   </span>
-                  Special
+                  {includeSpecial ? 'Special' : 'Special (out)'}
                 </div>
                 <p className="mt-1 nums text-base font-semibold text-amber-400">
                   {formatMoney(specialThisMonth, currency)}

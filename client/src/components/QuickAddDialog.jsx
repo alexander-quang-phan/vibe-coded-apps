@@ -11,11 +11,11 @@ import {
 } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { MoneyInput, isValidMoney } from '@/components/ui/money-input';
 import { Textarea } from '@/components/ui/textarea';
 import { Label } from '@/components/ui/label';
 import { SegmentGroup, SegmentButton } from '@/components/ui/toggle-group';
 import { useApi } from '@/hooks/useApi';
-import { formatMoney } from '@/lib/format';
 import { cn } from '@/lib/utils';
 import {
   celebrateLevelUp,
@@ -52,6 +52,10 @@ export function QuickAddDialog({
   const [freeformText, setFreeformText] = useState('');
   const [parseError, setParseError] = useState(null);
   const [suggestedCategoryId, setSuggestedCategoryId] = useState(null);
+  // Phase 10 (A2): a category chip must be tapped TWICE. The first tap only
+  // arms it — a misdirected thumb can no longer log an expense to the wrong
+  // category, which was the whole complaint.
+  const [armedCategoryId, setArmedCategoryId] = useState(null);
   const [isSpecial, setIsSpecial] = useState(false);
   const amountRef = useRef(null);
   const freeformRef = useRef(null);
@@ -67,6 +71,7 @@ export function QuickAddDialog({
       setFreeformText('');
       setParseError(null);
       setSuggestedCategoryId(null);
+      setArmedCategoryId(null);
       setIsSpecial(false);
       setTimeout(() => amountRef.current?.focus(), 80);
     }
@@ -107,8 +112,13 @@ export function QuickAddDialog({
     return all.filter((c) => c.type === type);
   }, [categoriesData, type]);
 
+  const armedCategory = useMemo(
+    () => categories.find((c) => c.id === armedCategoryId) ?? null,
+    [categories, armedCategoryId],
+  );
+
   const amount = Number(amountStr);
-  const amountValid = amountStr !== '' && Number.isFinite(amount) && amount > 0;
+  const amountValid = isValidMoney(amountStr);
 
   const mutation = useMutation({
     mutationFn: (payload) => api.post('/api/transactions', payload),
@@ -171,8 +181,10 @@ export function QuickAddDialog({
       setDescription(p.description ?? '');
       setDate(p.occurredAt || todayISO());
       setSuggestedCategoryId(matched?.id ?? null);
-      // Reveal advanced section if AI populated date or note so user sees what was set.
-      setShowMore((p.occurredAt && p.occurredAt !== todayISO()) || Boolean(p.description));
+      // Reveal advanced section only if AI moved the date — the note is now
+      // always visible, so it no longer needs the disclosure opened for it.
+      setShowMore(Boolean(p.occurredAt) && p.occurredAt !== todayISO());
+      setArmedCategoryId(null);
       setParseError(null);
       setMode('structured');
     },
@@ -188,6 +200,12 @@ export function QuickAddDialog({
 
   function handleCategoryTap(category) {
     if (!amountValid || mutation.isPending) return;
+    // First tap on a chip only arms it; tapping a different chip moves the
+    // arm rather than logging. Only the second tap on the SAME chip commits.
+    if (armedCategoryId !== category.id) {
+      setArmedCategoryId(category.id);
+      return;
+    }
     mutation.mutate({
       categoryId: category.id,
       amount,
@@ -243,7 +261,7 @@ export function QuickAddDialog({
               ? 'Amount, then Log. Two taps and done.'
               : mode === 'freeform'
                 ? 'Describe it in your own words — we’ll turn it into a draft.'
-                : "Amount, then tap a category. That's it."}
+                : 'Amount, then tap a category twice to confirm.'}
           </DialogDescription>
         </DialogHeader>
 
@@ -327,10 +345,22 @@ export function QuickAddDialog({
             {/* Step 1: type (hidden in simple mode — everything is an expense) */}
             {simpleMode ? null : (
               <SegmentGroup className="self-start">
-                <SegmentButton active={type === 'expense'} onClick={() => setType('expense')}>
+                <SegmentButton
+                  active={type === 'expense'}
+                  onClick={() => {
+                    setType('expense');
+                    setArmedCategoryId(null);
+                  }}
+                >
                   Expense
                 </SegmentButton>
-                <SegmentButton active={type === 'income'} onClick={() => setType('income')}>
+                <SegmentButton
+                  active={type === 'income'}
+                  onClick={() => {
+                    setType('income');
+                    setArmedCategoryId(null);
+                  }}
+                >
                   Income
                 </SegmentButton>
               </SegmentGroup>
@@ -339,24 +369,33 @@ export function QuickAddDialog({
             {/* Step 2: amount */}
             <div className="space-y-2">
               <Label htmlFor="qa-amount">Amount</Label>
-              <div className="relative">
-                <span className="pointer-events-none absolute left-4 top-1/2 -translate-y-1/2 text-2xl font-semibold text-muted-foreground">
-                  {formatMoney(0, currency).replace(/\d|[.,]/g, '').trim() || '$'}
-                </span>
-                <Input
-                  id="qa-amount"
-                  ref={amountRef}
-                  className="no-spin h-16 pl-10 text-3xl font-bold tracking-tight"
-                  type="number"
-                  inputMode="decimal"
-                  step="0.01"
-                  min="0"
-                  placeholder="0.00"
-                  value={amountStr}
-                  onChange={(e) => setAmountStr(e.target.value)}
-                  autoComplete="off"
-                />
-              </div>
+              <MoneyInput
+                id="qa-amount"
+                ref={amountRef}
+                currency={currency}
+                showSymbol
+                symbolClassName="left-4 text-2xl"
+                className="no-spin h-16 pl-10 text-3xl font-bold tracking-tight"
+                value={amountStr}
+                onValueChange={(v) => {
+                  setAmountStr(v);
+                  setArmedCategoryId(null);
+                }}
+              />
+            </div>
+
+            {/* Note — always visible (Phase 10 A2). It also feeds the merchant
+                memory that rings a chip below, so it has to come first. */}
+            <div className={simpleMode ? 'hidden' : 'space-y-1.5'}>
+              <Label htmlFor="qa-desc">Note</Label>
+              <Input
+                id="qa-desc"
+                type="text"
+                placeholder="Optional (e.g. weekly shop)"
+                value={description}
+                maxLength={200}
+                onChange={(e) => setDescription(e.target.value)}
+              />
             </div>
 
             {/* Simple mode: one Log button instead of the chip grid */}
@@ -384,21 +423,26 @@ export function QuickAddDialog({
               <div className="grid grid-cols-3 gap-2 sm:grid-cols-4">
                 {categories.map((c) => {
                   const isSuggested = c.id === suggestedCategoryId;
+                  const isArmed = c.id === armedCategoryId;
                   return (
                     <button
                       key={c.id}
                       type="button"
                       disabled={!amountValid || mutation.isPending}
                       onClick={() => handleCategoryTap(c)}
+                      aria-pressed={isArmed}
+                      aria-label={isArmed ? `${c.name} — tap again to log` : c.name}
                       className={cn(
                         'group relative flex flex-col items-center gap-1.5 overflow-hidden rounded-xl border p-3 text-xs font-medium transition-all',
-                        'hover:-translate-y-0.5 hover:border-primary/50 hover:bg-accent hover:text-accent-foreground hover:shadow-md hover:shadow-primary/10',
+                        'hover:-translate-y-0.5 hover:border-primary/50 hover:shadow-md hover:shadow-primary/10',
                         'active:scale-95 active:translate-y-0',
                         'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
                         'disabled:pointer-events-none disabled:opacity-40',
-                        isSuggested
-                          ? 'border-primary/60 bg-primary/10 ring-2 ring-primary/60'
-                          : 'border-border/70 bg-secondary/40',
+                        isArmed
+                          ? 'border-primary bg-primary text-primary-foreground shadow-lg shadow-primary/30'
+                          : isSuggested
+                            ? 'border-primary/60 bg-primary/10 ring-2 ring-primary/60 hover:bg-accent hover:text-accent-foreground'
+                            : 'border-border/70 bg-secondary/40 hover:bg-accent hover:text-accent-foreground',
                       )}
                       style={{ ['--cat-color']: c.color }}
                     >
@@ -406,14 +450,16 @@ export function QuickAddDialog({
                         aria-hidden
                         className={cn(
                           'absolute inset-x-0 -bottom-6 h-12 rounded-full blur-2xl transition-opacity group-hover:opacity-60',
-                          isSuggested ? 'opacity-40' : 'opacity-0',
+                          isSuggested && !isArmed ? 'opacity-40' : 'opacity-0',
                         )}
                         style={{ backgroundColor: c.color }}
                       />
                       <span className="relative text-2xl transition-transform duration-200 group-hover:scale-110" aria-hidden>
                         {c.icon}
                       </span>
-                      <span className="relative truncate">{c.name}</span>
+                      <span className="relative truncate">
+                        {isArmed ? 'Tap again' : c.name}
+                      </span>
                     </button>
                   );
                 })}
@@ -423,9 +469,15 @@ export function QuickAddDialog({
               </div>
               {!amountValid ? (
                 <p className="text-xs text-muted-foreground">Enter an amount to enable categories.</p>
+              ) : armedCategory ? (
+                <p className="text-xs font-medium text-primary">
+                  Tap {armedCategory.name} again to log it — or pick a different one.
+                </p>
               ) : suggestedCategoryId ? (
-                <p className="text-xs text-muted-foreground">Suggested — tap to confirm, or pick another.</p>
-              ) : null}
+                <p className="text-xs text-muted-foreground">Suggested — tap it twice to log, or pick another.</p>
+              ) : (
+                <p className="text-xs text-muted-foreground">Tap a category twice to log it.</p>
+              )}
             </div>
 
             {/* Advanced: date + description (hidden by default to keep 3-tap promise) */}
@@ -436,7 +488,11 @@ export function QuickAddDialog({
                 className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
               >
                 <ChevronDown className={cn('h-3.5 w-3.5 transition-transform', showMore && 'rotate-180')} />
-                {showMore ? 'Hide details' : 'Add a note or change the date'}
+                {showMore
+                  ? 'Hide details'
+                  : specialEnabled && type === 'expense'
+                    ? 'Change the date or mark it special'
+                    : 'Change the date'}
               </button>
 
               {showMore ? (
@@ -448,17 +504,6 @@ export function QuickAddDialog({
                       type="date"
                       value={date}
                       onChange={(e) => setDate(e.target.value)}
-                    />
-                  </div>
-                  <div className="space-y-1.5">
-                    <Label htmlFor="qa-desc">Note</Label>
-                    <Input
-                      id="qa-desc"
-                      type="text"
-                      placeholder="Optional (e.g. weekly shop)"
-                      value={description}
-                      maxLength={200}
-                      onChange={(e) => setDescription(e.target.value)}
                     />
                   </div>
                   {specialEnabled && type === 'expense' ? (

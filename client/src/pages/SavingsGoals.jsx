@@ -13,8 +13,10 @@ import {
 import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { MoneyInput, isValidMoney, sanitizeMoneyInput } from '@/components/ui/money-input';
 import { Label } from '@/components/ui/label';
 import { Skeleton } from '@/components/ui/skeleton';
+import { EmojiPicker } from '@/components/EmojiPicker';
 import { useApi } from '@/hooks/useApi';
 import { formatMoney } from '@/lib/format';
 import { celebrateGoalCompleted, celebrateGoalMilestone } from '@/lib/confetti';
@@ -108,7 +110,7 @@ function GoalCard({ goal, currency, onEdit, onDelete, onContribute }) {
   );
 }
 
-function GoalDialog({ open, onOpenChange, editing, onSubmit, submitting }) {
+function GoalDialog({ open, onOpenChange, editing, onSubmit, submitting, currency = 'GBP' }) {
   const [name, setName] = useState('');
   const [emoji, setEmoji] = useState('🎯');
   const [target, setTarget] = useState('');
@@ -119,7 +121,7 @@ function GoalDialog({ open, onOpenChange, editing, onSubmit, submitting }) {
     if (editing) {
       setName(editing.name);
       setEmoji(editing.emoji || '🎯');
-      setTarget(String(editing.targetAmount));
+      setTarget(sanitizeMoneyInput(String(editing.targetAmount), currency));
       setDate(editing.targetDate ?? '');
     } else {
       setName('');
@@ -130,7 +132,7 @@ function GoalDialog({ open, onOpenChange, editing, onSubmit, submitting }) {
   }, [editing, open]);
 
   const targetNum = Number(target);
-  const canSubmit = name.trim() && Number.isFinite(targetNum) && targetNum > 0;
+  const canSubmit = Boolean(name.trim()) && isValidMoney(target);
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -151,6 +153,7 @@ function GoalDialog({ open, onOpenChange, editing, onSubmit, submitting }) {
                   key={e}
                   type="button"
                   onClick={() => setEmoji(e)}
+                  aria-pressed={emoji === e}
                   className={`flex h-10 w-10 items-center justify-center rounded-lg border text-xl transition ${
                     emoji === e
                       ? 'border-primary bg-primary/10'
@@ -161,6 +164,7 @@ function GoalDialog({ open, onOpenChange, editing, onSubmit, submitting }) {
                 </button>
               ))}
             </div>
+            <EmojiPicker value={emoji} onChange={setEmoji} className="pt-1" />
           </div>
           <div className="space-y-1.5">
             <Label htmlFor="goal-name">Name</Label>
@@ -174,14 +178,11 @@ function GoalDialog({ open, onOpenChange, editing, onSubmit, submitting }) {
           </div>
           <div className="space-y-1.5">
             <Label htmlFor="goal-target">Target amount</Label>
-            <Input
+            <MoneyInput
               id="goal-target"
-              type="number"
-              step="0.01"
-              min="0"
+              currency={currency}
               value={target}
-              onChange={(e) => setTarget(e.target.value)}
-              placeholder="0.00"
+              onValueChange={setTarget}
               className="no-spin"
             />
           </div>
@@ -231,7 +232,7 @@ function ContributeDialog({ open, onOpenChange, goal, onSubmit, submitting, curr
 
   if (!goal) return null;
   const amountNum = Number(amount);
-  const canSubmit = Number.isFinite(amountNum) && amountNum > 0;
+  const canSubmit = isValidMoney(amount);
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -247,14 +248,11 @@ function ContributeDialog({ open, onOpenChange, goal, onSubmit, submitting, curr
         <div className="space-y-4">
           <div className="space-y-1.5">
             <Label htmlFor="contrib-amount">Amount</Label>
-            <Input
+            <MoneyInput
               id="contrib-amount"
-              type="number"
-              step="0.01"
-              min="0"
+              currency={currency}
               value={amount}
-              onChange={(e) => setAmount(e.target.value)}
-              placeholder="0.00"
+              onValueChange={setAmount}
               className="no-spin"
               autoFocus
             />
@@ -445,6 +443,7 @@ export default function SavingsGoals() {
           if (!v) setEditing(null);
         }}
         editing={editing}
+        currency={currency}
         submitting={createMutation.isPending || updateMutation.isPending}
         onSubmit={handleGoalSubmit}
       />

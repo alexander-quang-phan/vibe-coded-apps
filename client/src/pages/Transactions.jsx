@@ -21,6 +21,7 @@ import {
 import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { MoneyInput, isValidMoney, sanitizeMoneyInput } from '@/components/ui/money-input';
 import { Label } from '@/components/ui/label';
 import { Skeleton } from '@/components/ui/skeleton';
 import { SegmentGroup, SegmentButton } from '@/components/ui/toggle-group';
@@ -47,7 +48,16 @@ function downloadCsv(rows, filename) {
   URL.revokeObjectURL(url);
 }
 
-function EditDialog({ tx, open, onOpenChange, categories, onSave, saving, specialEnabled = false }) {
+function EditDialog({
+  tx,
+  open,
+  onOpenChange,
+  categories,
+  onSave,
+  saving,
+  specialEnabled = false,
+  currency = 'GBP',
+}) {
   const [amount, setAmount] = useState('');
   const [description, setDescription] = useState('');
   const [date, setDate] = useState('');
@@ -56,7 +66,7 @@ function EditDialog({ tx, open, onOpenChange, categories, onSave, saving, specia
 
   useEffect(() => {
     if (!tx || !open) return;
-    setAmount(String(tx.amount));
+    setAmount(sanitizeMoneyInput(String(tx.amount), currency));
     setDescription(tx.description ?? '');
     setDate(tx.date);
     setCategoryId(tx.category_id);
@@ -80,13 +90,11 @@ function EditDialog({ tx, open, onOpenChange, categories, onSave, saving, specia
         <div className="space-y-4">
           <div className="space-y-1.5">
             <Label htmlFor="edit-amount">Amount</Label>
-            <Input
+            <MoneyInput
               id="edit-amount"
-              type="number"
-              step="0.01"
-              min="0"
+              currency={currency}
               value={amount}
-              onChange={(e) => setAmount(e.target.value)}
+              onValueChange={setAmount}
               className="no-spin"
             />
           </div>
@@ -150,7 +158,7 @@ function EditDialog({ tx, open, onOpenChange, categories, onSave, saving, specia
                 ...(tx.type === 'expense' ? { isSpecial } : {}),
               })
             }
-            disabled={saving || !(amountNum > 0) || !categoryId || !date}
+            disabled={saving || !isValidMoney(amount) || !categoryId || !date}
           >
             {saving ? 'Saving…' : 'Save'}
           </Button>
@@ -498,6 +506,7 @@ export default function Transactions() {
         categories={categories}
         saving={updateMutation.isPending}
         specialEnabled={specialEnabled}
+        currency={currency}
         onSave={(payload) => updateMutation.mutate({ id: editing.id, payload })}
       />
     </div>

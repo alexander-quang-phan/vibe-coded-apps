@@ -1,21 +1,33 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import { supabase } from '../lib/supabase.js';
+import { isSingleEmoji } from '../lib/emoji.js';
 
 const router = Router();
 
 const isoDate = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Expected YYYY-MM-DD');
 
+// Phase 10 (A3) — same any-emoji rule as category icons. Nullable here because
+// a goal is allowed to have no emoji at all.
+const emojiField = z
+  .string()
+  .trim()
+  .min(1)
+  .max(64)
+  .refine(isSingleEmoji, { message: 'Pick a single emoji.' })
+  .optional()
+  .nullable();
+
 const createSchema = z.object({
   name: z.string().trim().min(1).max(80),
-  emoji: z.string().trim().max(8).optional().nullable(),
+  emoji: emojiField,
   targetAmount: z.number().positive().finite().max(1_000_000_000),
   targetDate: isoDate.optional().nullable(),
 });
 
 const updateSchema = z.object({
   name: z.string().trim().min(1).max(80).optional(),
-  emoji: z.string().trim().max(8).optional().nullable(),
+  emoji: emojiField,
   targetAmount: z.number().positive().finite().max(1_000_000_000).optional(),
   targetDate: isoDate.optional().nullable(),
 });

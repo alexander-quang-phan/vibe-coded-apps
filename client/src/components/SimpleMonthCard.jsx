@@ -4,7 +4,8 @@ import { toast } from 'sonner';
 import { Check } from 'lucide-react';
 import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
+import { MoneyInput, isValidMoney } from '@/components/ui/money-input';
+import { PaceLine } from '@/components/PaceLine';
 import { Label } from '@/components/ui/label';
 import { useApi } from '@/hooks/useApi';
 import { formatMoney } from '@/lib/format';
@@ -38,11 +39,9 @@ export function SimpleMonthCard({ spent, currency, monthlyLimit }) {
   });
   const pace = proj?.pace ?? null;
 
-  const symbol = formatMoney(0, currency).replace(/\d|[.,]/g, '').trim() || '$';
-
   if (monthlyLimit === null || monthlyLimit === undefined) {
     const limit = Number(limitStr);
-    const valid = limitStr !== '' && Number.isFinite(limit) && limit > 0;
+    const valid = isValidMoney(limitStr);
     return (
       <Card className="lift relative overflow-hidden border-border/60 bg-card/70 backdrop-blur">
         <CardContent className="p-6">
@@ -61,24 +60,18 @@ export function SimpleMonthCard({ spent, currency, monthlyLimit }) {
               if (valid && !limitMutation.isPending) limitMutation.mutate(limit);
             }}
           >
-            <div className="relative flex-1">
-              <span className="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 text-base font-semibold text-muted-foreground">
-                {symbol}
-              </span>
+            <div className="flex-1">
               <Label htmlFor="simple-limit" className="sr-only">
                 Monthly limit
               </Label>
-              <Input
+              <MoneyInput
                 id="simple-limit"
+                currency={currency}
+                showSymbol
                 className="no-spin h-11 pl-8 text-lg font-semibold"
-                type="number"
-                inputMode="decimal"
-                step="1"
-                min="0"
                 placeholder="1000"
                 value={limitStr}
-                onChange={(e) => setLimitStr(e.target.value)}
-                autoComplete="off"
+                onValueChange={setLimitStr}
               />
             </div>
             <Button type="submit" className="h-11" disabled={!valid || limitMutation.isPending}>
@@ -144,21 +137,12 @@ export function SimpleMonthCard({ spent, currency, monthlyLimit }) {
               : 'Comfortably on track.'}
         </p>
 
-        {pace ? (
-          <p className="mt-2 text-xs text-muted-foreground">
-            {pace.delta >= 0 ? (
-              <span className="text-primary">✓</span>
-            ) : (
-              <span className="text-amber-400">◷</span>
-            )}{' '}
-            By day {proj.daysElapsed}, about {formatMoney(pace.target, currency)} of your budget
-            would typically be used — you're at{' '}
-            <span className={cn('nums font-medium', pace.delta >= 0 ? 'text-primary' : 'text-amber-400')}>
-              {formatMoney(pace.spent, currency)}
-            </span>
-            {pace.delta < 0 ? ' — a touch ahead of pace, plenty of month left.' : '.'}
-          </p>
-        ) : null}
+        <PaceLine
+          pace={pace}
+          daysElapsed={proj?.daysElapsed}
+          currency={currency}
+          className="mt-2"
+        />
       </CardContent>
     </Card>
   );
