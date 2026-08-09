@@ -51,15 +51,41 @@ import { encryptField, decryptField } from '../lib/crypto.js';
 
 export const PAGE_SIZE = 500;
 
+/**
+ * SCOPE (re-decided 2026-08-09, before this script had ever been run):
+ * encrypt the MONEY, leave the searchable text in plaintext.
+ *
+ * Every amount column, plus `ask_messages.content` (free text that could
+ * contain anything and that nothing queries). Deliberately NOT encrypted:
+ *
+ *   transactions.description  — routes/categories.js:89 runs `.ilike()` on it
+ *                               in the DATABASE for merchant memory (Task 6.9).
+ *                               You cannot ILIKE a ciphertext, and decrypting
+ *                               after fetch does not help. Encrypting it would
+ *                               silently break that feature forever.
+ *   categories.name           — lib/categoryKeywords.js matches on it by name.
+ *   savings_goals.name,
+ *   savings_contributions.note,
+ *   subscription_overrides.display_name
+ *                             — labels, not amounts. Nothing queries them, so
+ *                               they could be added cheaply later if wanted.
+ *
+ * This is the bulk of the privacy benefit (how much you have and move) at a
+ * fraction of the risk: no feature coupling, and roughly half the route sweep.
+ * `transactions.description` can be added later behind a blind index (an HMAC
+ * of the normalised merchant, searched instead of the ciphertext).
+ */
 export const JOBS = [
-  { table: 'transactions', fields: [['amount', 'amount_enc'], ['description', 'description_enc']] },
+  { table: 'transactions', fields: [['amount', 'amount_enc']] },
   { table: 'budgets', fields: [['amount_limit', 'amount_limit_enc']] },
-  { table: 'categories', fields: [['name', 'name_enc']] },
-  { table: 'savings_goals', fields: [['name', 'name_enc'], ['target_amount', 'target_amount_enc'], ['current_amount', 'current_amount_enc']] },
-  { table: 'savings_contributions', fields: [['amount', 'amount_enc'], ['note', 'note_enc']] },
-  { table: 'subscription_overrides', fields: [['display_name', 'display_name_enc']], pk: ['user_id', 'merchant_key'] },
+  { table: 'savings_goals', fields: [['target_amount', 'target_amount_enc'], ['current_amount', 'current_amount_enc']] },
+  { table: 'savings_contributions', fields: [['amount', 'amount_enc']] },
   { table: 'user_stats', fields: [['monthly_limit', 'monthly_limit_enc']], pk: ['user_id'] },
   { table: 'ask_messages', fields: [['content', 'content_enc']] },
+  // Added 2026-08-09: `recurrences` did not exist when this script was written
+  // (migration 014, Phase 10). Without it the nightly cron would keep writing
+  // plaintext amounts into a table the rest of the app treats as encrypted.
+  { table: 'recurrences', fields: [['amount', 'amount_enc']] },
 ];
 
 const uniq = (xs) => xs.filter((v, i, a) => a.indexOf(v) === i);
@@ -108,37 +134,80 @@ async function processRow(supabase, job, row, { dryRun }) {
   const { error: upErr } = await update;
   if (upErr) throw upErr;
 
-  // 3. Re-SELECT what Postgres actually stored. This is the step that can catch
-  //    a truncating column, an encoding mangle, or a write that silently did
-  //    not land — none of which an in-memory comparison can see.
-  let select = supabase.from(job.table).select(job.fields.map(([, e]) => e).join(', '));
-  for (const k of pk) select = select.eq(k, row[k]);
-  const { data: stored, error: selErr } = await select.maybeSingle();
-  if (selErr) throw selErr;
-  if (!stored) {
-    throw new Error(`VERIFY FAILED (row not found on re-read after write) ${job.table} ${pkLabel(job, row)}`);
+  // 3-4. Verify against the DATABASE. Anything that goes wrong from here on
+  // leaves a row that is committed but UNVERIFIED, so it must be rolled back —
+  // see rollbackEnc below for why that is not optional.
+  try {
+    // 3. Re-SELECT what Postgres actually stored. This is the step that can
+    //    catch a truncating column, an encoding mangle, or a write that
+    //    silently did not land — none of which an in-memory comparison sees.
+    let select = supabase.from(job.table).select(job.fields.map(([, e]) => e).join(', '));
+    for (const k of pk) select = select.eq(k, row[k]);
+    const { data: stored, error: selErr } = await select.maybeSingle();
+    if (selErr) throw selErr;
+    if (!stored) {
+      throw new Error(`VERIFY FAILED (row not found on re-read after write) ${job.table} ${pkLabel(job, row)}`);
+    }
+
+    // 4. Decrypt the DATABASE's bytes and compare to the original plaintext.
+    for (const [plain, enc] of job.fields) {
+      const expected = isBlank(row[plain]) ? null : String(row[plain]);
+      let got;
+      try {
+        got = decryptField(row.user_id, stored[enc]);
+      } catch {
+        // The underlying message is deliberately withheld: it can echo the
+        // stored value, and this script must never print user data.
+        throw new Error(
+          `VERIFY FAILED (stored value will not decrypt) ${job.table} ${pkLabel(job, row)} column=${enc}`,
+        );
+      }
+      if (got !== expected) {
+        throw new Error(
+          `VERIFY FAILED (database round-trip mismatch) ${job.table} ${pkLabel(job, row)} column=${enc}`,
+        );
+      }
+    }
+  } catch (err) {
+    await rollbackEnc(supabase, job, row, err);
+    throw err;
   }
 
-  // 4. Decrypt the DATABASE's bytes and compare to the original plaintext.
-  for (const [plain, enc] of job.fields) {
-    const expected = isBlank(row[plain]) ? null : String(row[plain]);
-    let got;
-    try {
-      got = decryptField(row.user_id, stored[enc]);
-    } catch {
-      // The underlying message is deliberately withheld: it can echo the stored
-      // value, and this script must never print user data to a terminal.
-      throw new Error(
-        `VERIFY FAILED (stored value will not decrypt) ${job.table} ${pkLabel(job, row)} column=${enc}`,
-      );
-    }
-    if (got !== expected) {
-      throw new Error(
-        `VERIFY FAILED (database round-trip mismatch) ${job.table} ${pkLabel(job, row)} column=${enc}`,
-      );
-    }
-  }
   return 'encrypted';
+}
+
+/**
+ * Undo an unverified write by NULLing the `_enc` columns again.
+ *
+ * Why this has to exist (found by adversarial audit 2026-08-09, and required by
+ * the spec all along): the write at step 2 commits BEFORE verification. If
+ * anything after it fails — including a transient PostgREST timeout on the
+ * re-read, which says nothing about the data — the row stays committed with a
+ * NON-NULL `_enc`. The idempotency filter in keysetScan is `.is(<enc>, null)`,
+ * so on the re-run this script's own header invites, that row is now INVISIBLE.
+ * It is never re-encrypted and never re-verified, the run prints "Backfill
+ * complete", and migration 013 drops its plaintext on the strength of a check
+ * that never actually passed for it.
+ *
+ * NULLing the columns puts the row back in the filter's sights so a re-run
+ * fixes it. If the rollback ITSELF fails we must be loud: that is the one state
+ * a re-run cannot repair on its own.
+ */
+async function rollbackEnc(supabase, job, row, cause) {
+  const patch = {};
+  for (const [, enc] of job.fields) patch[enc] = null;
+  try {
+    let undo = supabase.from(job.table).update(patch);
+    for (const k of pkOf(job)) undo = undo.eq(k, row[k]);
+    const { error } = await undo;
+    if (error) throw error;
+  } catch {
+    cause.message +=
+      `\n  !! ROLLBACK ALSO FAILED for ${job.table} ${pkLabel(job, row)}.` +
+      `\n  !! This row is committed with UNVERIFIED ciphertext and a re-run will SKIP it.` +
+      `\n  !! Set its ${job.fields.map(([, e]) => e).join(', ')} back to NULL by hand before re-running,` +
+      `\n  !! and do NOT run migration 013 until you have.`;
+  }
 }
 
 /**
@@ -247,8 +316,28 @@ export async function runBackfill({ supabase, jobs = JOBS, dryRun = false, log =
   return totals;
 }
 
+export const KNOWN_FLAGS = new Set(['--dry-run']);
+
+/**
+ * Fail on anything we don't recognise. `argv.includes('--dry-run')` alone means
+ * `--dryrun`, `--dry_run` or `--dry-run=true` are silently treated as "no flags"
+ * — i.e. a typo performs a LIVE production run against real user data. Refusing
+ * to start is the only safe reading of an unrecognised flag.
+ */
+export function parseArgs(argv) {
+  const unknown = argv.filter((a) => a.startsWith('-') && !KNOWN_FLAGS.has(a));
+  if (unknown.length) {
+    throw new Error(
+      `Unknown option(s): ${unknown.join(' ')}\n` +
+        `Did you mean --dry-run? Refusing to run: an unrecognised flag would otherwise ` +
+        `perform a LIVE run against real data.`,
+    );
+  }
+  return { dryRun: argv.includes('--dry-run') };
+}
+
 async function main() {
-  const dryRun = process.argv.includes('--dry-run');
+  const { dryRun } = parseArgs(process.argv.slice(2));
   const { SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY } = process.env;
   if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
     throw new Error('SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY must be set in server/.env');

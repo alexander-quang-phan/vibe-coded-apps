@@ -726,6 +726,27 @@ older than the 200-row window load. Verify by tapping into an old month in the r
 
 ### ▢ Task 9.5 — Encryption at rest (LAST — destructive migration at the end)
 
+> **Re-scoped and de-risked 2026-08-09.** An adversarial audit (report:
+> `docs/2026-08-09-encryption-readiness-audit.md`) confirmed defects 1 and 3 from the July review
+> are genuinely fixed, but found the verification GATE unsound. Landed since:
+> - **Scope decision (Alex):** encrypt the MONEY, leave searchable text in plaintext.
+>   `transactions.description` is `.ilike()`d in the database by merchant memory — encrypting it
+>   would break that feature permanently. Migration 012 re-scoped accordingly (never applied, so
+>   edited in place) and `recurrences.amount` added — that table postdates the original plan.
+> - **Backfill rollback:** a verification failure (or a transient read blip) used to leave a row
+>   committed-but-unverified, which the idempotency filter then hid from every re-run while the
+>   script printed "Backfill complete". Now rolled back to NULL so a re-run repairs it.
+> - **`--dry-run` typo guard:** unknown flags are refused instead of performing a live run.
+> - **`scripts/verify-encryption.mjs`:** the completeness gate 013 must depend on — queries the
+>   database for plaintext-without-ciphertext and spot-checks that stored bytes decrypt. Exit 0
+>   is the only thing that authorises 013, replacing a manual click-through.
+> - **First tests the backfill has ever had** (9), including two regression tests proven to fail
+>   when the rollback is removed.
+>
+> **Still outstanding before this can run:** 18 audit findings never got verified (the run died on
+> a session limit); Alex must generate + back up `DATA_ENCRYPTION_KEY`; the ~7-route sweep and
+> migration 013 are unwritten.
+
 **Chat prompt:**
 ```
 Read docs/superpowers/plans/2026-07-17-phase9-pln-privacy-history-pace-special.md (Task 5)
