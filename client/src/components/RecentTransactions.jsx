@@ -58,6 +58,14 @@ export function RecentTransactions({ transactions, currency, onDelete, pendingDe
                       {/* Skip the category when it's already the title (no-note quick-adds) */}
                       {t.description?.trim() ? `${t.category?.name ?? 'Uncategorised'} · ` : ''}
                       {formatDate(t.date, { format: 'relative' })}
+                      {t.original_currency ? (
+                        <>
+                          {' · '}
+                          <span className="nums text-amber-400/90">
+                            {formatMoney(Number(t.original_amount), t.original_currency)}
+                          </span>
+                        </>
+                      ) : null}
                     </p>
                   </div>
                   <p

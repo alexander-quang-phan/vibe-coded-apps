@@ -12,6 +12,7 @@ import {
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { MoneyInput, isValidMoney } from '@/components/ui/money-input';
+import { CurrencyPicker, ConversionLine } from '@/components/CurrencyEntry';
 import { SpecialGroupPicker } from '@/components/SpecialGroupPicker';
 import { Textarea } from '@/components/ui/textarea';
 import { Label } from '@/components/ui/label';
@@ -67,6 +68,11 @@ export function QuickAddDialog({
   // advanced area so the two-tap path never grows a step.
   const [recurringInterval, setRecurringInterval] = useState(null); // null | 'monthly' | 'weekly'
   const [specialGroupId, setSpecialGroupId] = useState(null); // Phase 10 B1, optional
+  // Phase 12 — foreign currency. `entryCurrency` is what the user typed in;
+  // `currency` (the prop) stays their base, which is what gets stored.
+  const [entryCurrency, setEntryCurrency] = useState(currency);
+  const [rate, setRate] = useState('1');
+  const [rateState, setRateState] = useState('idle'); // idle | loading | ready | unavailable
   const amountRef = useRef(null);
   const freeformRef = useRef(null);
 
@@ -88,9 +94,49 @@ export function QuickAddDialog({
       setIsSpecial(false);
       setRecurringInterval(null);
       setSpecialGroupId(null);
+      setEntryCurrency(currency);
+      setRate('1');
+      setRateState('idle');
       setTimeout(() => amountRef.current?.focus(), 80);
     }
-  }, [open, initialDate]);
+  }, [open, initialDate, currency]);
+
+  // Phase 12 — fetch the day's rate whenever the entry currency changes to
+  // something other than the user's own. Same currency short-circuits to 1
+  // without a request. A failed or unquotable pair is not an error: rateState
+  // goes 'unavailable' and the user types the rate themselves.
+  const isForeign = entryCurrency !== currency;
+  useEffect(() => {
+    if (!open) return;
+    if (!isForeign) {
+      setRate('1');
+      setRateState('idle');
+      return;
+    }
+    let cancelled = false;
+    setRateState('loading');
+    // Clear the old rate immediately. Leaving the previous currency's rate in
+    // the box meant switching EUR -> SEK showed "No rate available" and
+    // "Logs as £38.50" side by side, the second computed at the euro rate.
+    setRate('');
+    api
+      .get(`/api/fx?from=${entryCurrency}&to=${currency}`)
+      .then((r) => {
+        if (cancelled) return;
+        if (r && typeof r.rate === 'number' && r.rate > 0) {
+          setRate(String(r.rate));
+          setRateState('ready');
+        } else {
+          setRateState('unavailable');
+        }
+      })
+      .catch(() => {
+        if (!cancelled) setRateState('unavailable');
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [open, isForeign, entryCurrency, currency, api]);
 
   useEffect(() => {
     if (mode === 'freeform') {
@@ -233,6 +279,7 @@ export function QuickAddDialog({
   function handleCategoryTap(category) {
     if (!amountValid || mutation.isPending) return;
     // First tap on a chip only arms it; tapping a different chip moves the
+    // (see foreignPayload below for the Phase 12 currency fields)
     // arm rather than logging. Only the second tap on the SAME chip commits.
     if (armedCategoryId !== category.id) {
       setArmedCategoryId(category.id);
@@ -249,7 +296,23 @@ export function QuickAddDialog({
       ...(type === 'expense' && recurringInterval
         ? { recurring: { interval: recurringInterval } }
         : {}),
+      ...foreignPayload(),
     });
+  }
+
+  /**
+   * Phase 12 — the currency fields, only when the entry really is foreign.
+   * `amount` still goes in the payload but the server IGNORES it whenever this
+   * block is present and derives the stored figure itself, so the two can never
+   * drift apart. Returns {} for the ordinary same-currency case.
+   */
+  function foreignPayload() {
+    if (!isForeign) return {};
+    const fxRate = Number(rate);
+    if (!Number.isFinite(fxRate) || fxRate <= 0) return {};
+    return {
+      foreign: { originalAmount: amount, originalCurrency: entryCurrency, fxRate },
+    };
   }
 
   // Simple mode files everything against the seeded "Other" expense category
@@ -267,6 +330,7 @@ export function QuickAddDialog({
       type: 'expense',
       description: null,
       date,
+      ...foreignPayload(),
     });
   }
 
@@ -406,11 +470,16 @@ export function QuickAddDialog({
 
             {/* Step 2: amount */}
             <div className="space-y-2">
-              <Label htmlFor="qa-amount">Amount</Label>
+              <div className="flex items-end justify-between gap-2">
+                <Label htmlFor="qa-amount">Amount</Label>
+                {/* Phase 12. Defaults to the user's own currency, so the normal
+                    two-tap path is untouched — this only does anything abroad. */}
+                <CurrencyPicker value={entryCurrency} base={currency} onChange={setEntryCurrency} />
+              </div>
               <MoneyInput
                 id="qa-amount"
                 ref={amountRef}
-                currency={currency}
+                currency={entryCurrency}
                 showSymbol
                 symbolClassName="left-4 text-2xl"
                 className="no-spin h-16 pl-10 text-3xl font-bold tracking-tight"
@@ -420,6 +489,16 @@ export function QuickAddDialog({
                   setArmedCategoryId(null);
                 }}
               />
+              {isForeign ? (
+                <ConversionLine
+                  amountStr={amountStr}
+                  entryCurrency={entryCurrency}
+                  baseCurrency={currency}
+                  rate={rate}
+                  rateState={rateState}
+                  onRateChange={setRate}
+                />
+              ) : null}
             </div>
 
             {/* Note — always visible (Phase 10 A2). It also feeds the merchant

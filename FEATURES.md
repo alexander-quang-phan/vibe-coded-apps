@@ -62,6 +62,25 @@
 - **Special-expense groups (Phase 10 B1):** a collapsible "Special expenses" panel listing each group with its **lifetime** running total (a Paris trip is paid across months — a total that reset on the 1st would answer the wrong question), tapping through to `/transactions?specialGroup=<id>`. Rendered only when the special-expenses pref is on. A closing line states the month's special spend and notes the group totals are lifetime, so the two figures are never silently mistaken for each other.
 - **Special in/out toggle (Phase 10 A6):** a small "incl. special / excl. special" chip next to "Net this month" flips the hero's Out figure and net between counting special expenses and leaving them out, so Alex can see his month with and without the one-offs. Purely client-side — `/api/dashboard` already returns `expenses` *including* special plus `specialThisMonth`, so excluding is `expenses − specialThisMonth` exactly. Persisted in `localStorage` under `trim:heroIncludeSpecial`. Rendered only when the pref is on **and** `specialThisMonth > 0`; while excluding, the Special chip relabels to "Special (out)" so the difference is always explained.
 
+### Foreign-currency expenses (Phase 12)
+
+An expense can be entered in another currency and is converted at entry into **the user's own
+default currency** (`user_stats.currency` — never a hard-coded GBP). `transactions.amount` therefore
+stays single-currency exactly as before, which is why no total, budget, average, projection or
+affordability check needed changing. The original amount, its currency and the rate used are stored
+alongside purely for display and audit; all three are NULL for an ordinary same-currency row.
+
+- A quiet currency chip sits beside the Amount field in Quick Add, defaulting to the user's own
+  currency, so the two-tap path is unchanged for anyone not travelling.
+- Rates come from `GET /api/fx` (Frankfurter / ECB daily, free, no API key), cached per day.
+- **The rate is always editable**, and manual entry is a first-class path, not just a fallback:
+  Frankfurter covers 30 currencies and does **not** include VND, which is one of Trim's five base
+  currencies. An unquotable pair returns `rate: null` and asks the user to type the rate.
+- **The server derives the stored amount** from original × rate and ignores whatever `amount` the
+  client sent — one figure, one place. See `server/lib/fx.js`.
+- Rounding follows the *base* currency, so a VND-based user never ends up holding 38.50 dong.
+- Editing a transaction cannot change its currency; the row keeps what it was created with.
+
 ### Quick-Add flow (critical)
 
 - Amount input auto-focuses on open.

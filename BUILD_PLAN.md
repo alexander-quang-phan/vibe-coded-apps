@@ -870,6 +870,30 @@ refresh. Would also have made the new empty-month prompt appear broken.
 
 ---
 
+## Phase 12 — foreign-currency expenses (2026-08-10)
+
+Alex is travelling to France and Italy and booked a tour in euros. Convert at entry into **the
+user's own default currency**. Spec: `docs/superpowers/specs/2026-08-10-multi-currency-design.md`.
+
+**Needs migration 016 applied BEFORE deploying** — the insert writes three new columns, so
+deploying first would 500 every transaction create.
+
+- [x] **12.1** Migration `016_foreign_currency.sql` — three nullable columns + two check constraints.
+- [x] **12.2** `server/lib/fx.js` + 8 unit tests (suite now 72).
+- [x] **12.3** `GET /api/fx` — ECB daily rates, per-day cache, 200-with-null for unquotable pairs.
+- [x] **12.4** `POST /api/transactions` takes `foreign` and DERIVES the stored amount.
+- [x] **12.5** Currency chip + conversion panel in Quick Add; original shown on transaction rows.
+- [x] **12.6** Mirrored into `scripts/devMock.js`, including a seeded euro row.
+
+Two things worth not rediscovering:
+
+- **Frankfurter does not cover VND**, one of our five base currencies. Manual rate entry is a
+  first-class path because of this, not a nicety.
+- **The server derives `amount`; the client's `amount` is ignored** when a `foreign` block is
+  present. Verified by posting a deliberately wrong 999 and getting 38.50 stored.
+
+---
+
 ## Deferred further (flagged in FEATURES.md, don't start without explicit ask)
 
 **Deferred during Phase 6 plan review (2026-05-08):**

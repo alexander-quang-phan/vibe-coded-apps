@@ -4,6 +4,7 @@ import { supabase } from '../lib/supabase.js';
 import { applyLogEvent } from '../lib/gamification.js';
 import { parseTransactionText } from '../lib/parser.js';
 import { nextRunDate, manualMerchantKey } from '../lib/recurrences.js';
+import { convertToBase } from '../lib/fx.js';
 
 const router = Router();
 
@@ -47,6 +48,17 @@ const createSchema = z.object({
   // Null clears it. Only ever valid on a special EXPENSE (guarded below).
   specialGroupId: z.string().uuid().optional().nullable(),
   recurring: recurringSchema.optional(),
+  // Phase 12 — paid in a foreign currency. All three travel together or not at
+  // all (the DB enforces the same rule). When present, the server DERIVES
+  // `amount` from them and ignores whatever `amount` the client sent: two places
+  // computing the same figure is precisely how this codebase got a bug before.
+  foreign: z
+    .object({
+      originalAmount: z.number().positive().finite().max(1_000_000_000),
+      originalCurrency: z.string().regex(/^[A-Za-z]{3}$/),
+      fxRate: z.number().positive().finite(),
+    })
+    .optional(),
 });
 
 const updateSchema = z.object({
@@ -83,7 +95,7 @@ router.get('/', async (req, res, next) => {
     let query = supabase
       .from('transactions')
       .select(
-        'id, amount, type, description, date, category_id, is_recurring, is_special, special_group_id, recurrence_id, created_at',
+        'id, amount, type, description, date, category_id, is_recurring, is_special, special_group_id, recurrence_id, original_amount, original_currency, fx_rate, created_at',
       )
       .eq('user_id', req.user.id);
 
@@ -112,6 +124,8 @@ router.post('/', async (req, res, next) => {
     const { categoryId, amount, type, description, date } = parsed.data;
 
     // Verify category belongs to this user and matches the requested type.
+    // (foreign-currency resolution happens further down, once we have the
+    // user's base currency from user_stats)
     const { data: category, error: catErr } = await supabase
       .from('categories')
       .select('id, type')
@@ -141,6 +155,40 @@ router.post('/', async (req, res, next) => {
       return res.status(404).json({ error: 'Special group not found' });
     }
 
+    // Phase 12 — resolve a foreign-currency entry into the user's own currency.
+    // `amount` is DERIVED here rather than trusted from the client, so the stored
+    // figure can never disagree with the original × rate shown beside it.
+    let storedAmount = amount;
+    let foreign = null;
+    if (parsed.data.foreign) {
+      const { originalAmount, fxRate } = parsed.data.foreign;
+      const originalCurrency = parsed.data.foreign.originalCurrency.toUpperCase();
+
+      const { data: prefs, error: prefsErr } = await supabase
+        .from('user_stats')
+        .select('currency')
+        .eq('user_id', req.user.id)
+        .single();
+      if (prefsErr) throw prefsErr;
+      const baseCurrency = prefs.currency;
+
+      if (originalCurrency === baseCurrency) {
+        // Not actually foreign. Store it as an ordinary row rather than leaving
+        // a pointless "EUR 45 at 1.0" annotation on every home-currency expense.
+        storedAmount = convertToBase({ originalAmount, fxRate: 1, baseCurrency });
+      } else {
+        storedAmount = convertToBase({ originalAmount, fxRate, baseCurrency });
+        if (storedAmount <= 0) {
+          // Guard the sub-minor-unit case: 1 unit of a currency worth less than
+          // half a penny would otherwise be stored as a free transaction.
+          return res.status(400).json({
+            error: 'That converts to zero in your currency — check the amount and rate',
+          });
+        }
+        foreign = { originalAmount, originalCurrency, fxRate };
+      }
+    }
+
     const txDate = date || todayISO();
 
     // Create the recurrences row FIRST so we have its id to attach to the
@@ -163,7 +211,10 @@ router.post('/', async (req, res, next) => {
           user_id: req.user.id,
           category_id: categoryId,
           type,
-          amount,
+          // The converted figure, not the foreign one: every transaction this
+          // schedule generates later is an ordinary base-currency row, and the
+          // rate is frozen at the moment the schedule was created.
+          amount: storedAmount,
           description: description || null,
           interval: parsed.data.recurring.interval,
           next_run_at: initialNextRunAt,
@@ -179,10 +230,13 @@ router.post('/', async (req, res, next) => {
       .insert({
         user_id: req.user.id,
         category_id: categoryId,
-        amount,
+        amount: storedAmount,
         type,
         description: description || null,
         date: txDate,
+        original_amount: foreign?.originalAmount ?? null,
+        original_currency: foreign?.originalCurrency ?? null,
+        fx_rate: foreign?.fxRate ?? null,
         is_special: parsed.data.isSpecial ?? false,
         // Was missing entirely: the route validated and guarded specialGroupId,
         // then dropped it on the floor. A group picked in Quick Add was silently
@@ -194,7 +248,7 @@ router.post('/', async (req, res, next) => {
         recurrence_id: recurrence?.id ?? null,
       })
       .select(
-        'id, amount, type, description, date, category_id, is_special, special_group_id, is_recurring, recurrence_id, created_at',
+        'id, amount, type, description, date, category_id, is_special, special_group_id, is_recurring, recurrence_id, original_amount, original_currency, fx_rate, created_at',
       )
       .single();
     if (txErr) {
@@ -366,7 +420,7 @@ router.patch('/:id', async (req, res, next) => {
       .update(payload)
       .eq('id', id)
       .eq('user_id', req.user.id)
-      .select('id, amount, type, description, date, category_id, is_special, special_group_id, is_recurring, recurrence_id, created_at')
+      .select('id, amount, type, description, date, category_id, is_special, special_group_id, is_recurring, recurrence_id, original_amount, original_currency, fx_rate, created_at')
       .maybeSingle();
     if (error) throw error;
     if (!data) return res.status(404).json({ error: 'Transaction not found' });

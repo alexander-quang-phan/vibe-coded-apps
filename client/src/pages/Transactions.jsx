@@ -522,6 +522,14 @@ export default function Transactions() {
                     <p className="flex items-center gap-1.5 text-xs text-muted-foreground">
                       <span className="truncate">
                         {cat?.name ?? '—'} · {formatDate(t.date, { format: 'relative' })}
+                        {t.original_currency ? (
+                          <>
+                            {' · '}
+                            <span className="nums text-amber-400/90">
+                              {formatMoney(Number(t.original_amount), t.original_currency)}
+                            </span>
+                          </>
+                        ) : null}
                       </span>
                       {t.is_recurring ? (
                         <span className="inline-flex shrink-0 items-center gap-0.5 rounded-full border border-primary/30 bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium text-primary">

@@ -23,6 +23,7 @@ import { nextRunDate, dueRecurrences, manualMerchantKey } from '../lib/recurrenc
 import { isSingleEmoji } from '../lib/emoji.js';
 import { resolveTotalBudget, buildPace } from '../lib/overallBudget.js';
 import { buildRunningAverage } from '../lib/runningAverage.js';
+import { convertToBase } from '../lib/fx.js';
 
 const PORT = process.env.PORT || 3001;
 const app = express();
@@ -112,6 +113,22 @@ for (const [n, amount, description] of [
 // something to show once the user turns it on.
 seedTx('Shopping', 180, "Mum's birthday gift", 10, 'expense', true);
 seedTx('Entertainment', 240, 'Weekend trip', 25, 'expense', true);
+// Phase 12 — a euro expense, so the "you paid €45.00" line is visible in dev.
+transactions.push({
+  id: randomUUID(),
+  amount: 38.5,
+  type: 'expense',
+  description: 'Rome walking tour',
+  date: daysAgoISO(1),
+  category_id: cat('Entertainment').id,
+  is_recurring: false,
+  is_special: false,
+  recurrence_id: null,
+  original_amount: 45,
+  original_currency: 'EUR',
+  fx_rate: 0.85565,
+  created_at: new Date(Date.now() - 86_400_000).toISOString(),
+});
 
 // Task 6.12a — manually-marked recurrences, seeded with the linked "opt-in"
 // transaction the user logged by hand when they created the schedule, so
@@ -344,7 +361,7 @@ app.get('/api/transactions', (req, res) => {
 });
 
 app.post('/api/transactions', (req, res) => {
-  const { categoryId, amount, type, description, date, isSpecial, specialGroupId, recurring } = req.body ?? {};
+  const { categoryId, amount, type, description, date, isSpecial, specialGroupId, recurring, foreign } = req.body ?? {};
   const c = catById(categoryId);
   if (!c) return res.status(404).json({ error: 'Category not found' });
   if (c.type !== type) return res.status(400).json({ error: 'Category type does not match transaction type' });
@@ -356,6 +373,23 @@ app.post('/api/transactions', (req, res) => {
   }
   if (specialGroupId && !isSpecial) {
     return res.status(400).json({ error: 'Only special expenses can belong to a group' });
+  }
+
+  // Phase 12 — mirrors routes/transactions.js: the stored amount is DERIVED
+  // from the original and the rate, never trusted from the client.
+  let storedAmount = amount;
+  let fx = null;
+  if (foreign) {
+    const oc = String(foreign.originalCurrency).toUpperCase();
+    if (oc === stats.currency) {
+      storedAmount = convertToBase({ originalAmount: foreign.originalAmount, fxRate: 1, baseCurrency: stats.currency });
+    } else {
+      storedAmount = convertToBase({ originalAmount: foreign.originalAmount, fxRate: foreign.fxRate, baseCurrency: stats.currency });
+      if (storedAmount <= 0) {
+        return res.status(400).json({ error: 'That converts to zero in your currency — check the amount and rate' });
+      }
+      fx = { originalAmount: foreign.originalAmount, originalCurrency: oc, fxRate: foreign.fxRate };
+    }
   }
 
   const txDate = date || todayUTC();
@@ -381,7 +415,7 @@ app.post('/api/transactions', (req, res) => {
 
   const tx = {
     id: randomUUID(),
-    amount,
+    amount: storedAmount,
     type,
     description: description || null,
     date: txDate,
@@ -390,6 +424,9 @@ app.post('/api/transactions', (req, res) => {
     is_special: !!isSpecial,
     special_group_id: specialGroupId ?? null,
     recurrence_id: recurrence?.id ?? null,
+    original_amount: fx?.originalAmount ?? null,
+    original_currency: fx?.originalCurrency ?? null,
+    fx_rate: fx?.fxRate ?? null,
     created_at: new Date().toISOString(),
   };
   transactions.push(tx);
@@ -756,6 +793,23 @@ app.get('/api/analytics', (req, res) => {
       deltaPct: lastMonth > 0 ? round2(((thisMonth - lastMonth) / lastMonth) * 100) : null,
     },
   });
+});
+
+// Phase 12 — mirrors routes/fx.js. Offline-friendly: a small fixed table rather
+// than a live ECB call, so the mock never depends on the network. Unlisted pairs
+// return rate: null, which is exactly what the real route does for e.g. VND and
+// exercises the client's "type the rate yourself" path.
+const MOCK_RATES = { 'EUR->GBP': 0.85565, 'USD->GBP': 0.7912, 'CHF->GBP': 0.9134, 'JPY->GBP': 0.00512 };
+app.get('/api/fx', (req, res) => {
+  const from = String(req.query.from ?? '').toUpperCase();
+  const to = String(req.query.to ?? '').toUpperCase();
+  if (!/^[A-Z]{3}$/.test(from) || !/^[A-Z]{3}$/.test(to)) {
+    return res.status(400).json({ error: 'Invalid currency pair' });
+  }
+  if (from === to) return res.json({ rate: 1, date: todayUTC(), source: 'identity', from, to });
+  const rate = MOCK_RATES[`${from}->${to}`];
+  if (!rate) return res.json({ rate: null, reason: 'unsupported-pair', from, to });
+  res.json({ rate, date: todayUTC(), source: 'mock', from, to });
 });
 
 app.get('/api/goals', (_req, res) => {
