@@ -3,19 +3,33 @@
 ## DUAL-AGENT BATON  (both models: update this the MOMENT you finish work)
 - Current stage:  no loop active — Phase 11 was ordinary feature work, single-model by design
 - Model A is:     not yet set — Alex chooses at the next kickoff
-- Up next:        **multi-currency (Phase 12)** — design decided, not yet specced or built
+- Up next:        Alex's live click-through; then the 8 unverified sweep leads below
 - Last actor did: Phase 11 (running average) built + verified + committed; three of Alex's
                   reported items fixed; a partial validation sweep whose findings are below
-- Next must:      write the multi-currency spec, then plan, then build. NOTHING is deployed yet.
+- Next must:      nothing blocking — Phase 11 and 12 are live. Pick up the open leads when ready.
 - Last verdict:   —
 - Handoff log:
   - 2026-07-23 Claude Code: baton added — Trim retrofitted into the dual-agent workflow
   - 2026-08-08 Claude Code: Phase 10 A1–A6 + B1 + B2, built, verified, deployed
-  - 2026-08-10 Claude Code: Phase 11 + bug fixes, committed to `main`, **NOT deployed**
+  - 2026-08-10 Claude Code: Phase 11 + Phase 12 + 6 bug fixes, migration 016 applied, DEPLOYED
 
-## ⚠️ Everything below is on `main` but NOT DEPLOYED
-Ten commits, `a2e29db`..`c3afa6f`. Run the `/deploy` skill when Alex is ready. No migration is
-needed — nothing this session touched the schema.
+## ✅ DEPLOYED 2026-08-10 — migration 016 applied, both projects live
+18 commits, `a2e29db`..`fb8ad17`, pushed to `main` and deployed.
+
+**Migration 016 was applied to the live DB** via the Supabase connector (project
+`fqfzjcpypxvikdgmegzq`), with Alex's explicit go-ahead. Verified before/after: 137 transactions and
+85 categories **unchanged**, `transactions` went 13 → 16 columns, **0 existing rows touched**, both
+check constraints present, RLS still on.
+
+Production verified after deploy: `/api/health` 200; `/api/fx`, `/api/analytics`,
+`/api/transactions`, `/api/special-groups`, `/api/affordability`, `/api/dashboard` and `/api/me` all
+401 without a token (`/api/fx` returning 401 rather than 404 is the proof the new route shipped);
+client 200 with every Phase 11 and Phase 12 marker string in the live bundle.
+
+**Phase 12 could not be deployed before the migration** — the insert writes three new columns, so
+API-first would have 500'd every transaction create, and client-first would have been worse: the old
+server strips unknown fields, silently logging a €45 tour as £45. Order was migration → API → client.
+Remember this for the next schema change.
 
 ## What shipped this session
 
@@ -59,20 +73,26 @@ an empty month counts as £0 **but is flagged**, because it may be a month Alex 
   a different subset of keys. All three now invalidate the same set, including `['analytics']`,
   `['special-groups']` and `['budgets']`.
 
-## NEXT UP — Phase 12, multi-currency (Alex going to France + Italy)
+## Phase 12 — multi-currency (BUILT AND LIVE)
 
-**Decided (2026-08-10):** convert at entry, store both.
+**Built 2026-08-10.** Convert at entry, store both. Spec:
+`docs/superpowers/specs/2026-08-10-multi-currency-design.md`.
 
 Store the GBP figure in `amount` as today, plus the original amount, its currency, and the rate
 used. Every existing total, budget, average and projection keeps summing one GBP number and needs
 no change — that is the whole point of the choice, given this codebase has already had two
 screens disagree about the same figure once. Display as `−£38.52` with `€45.00` underneath.
 
-Rate source: **Frankfurter (ECB daily rates, free, no API key)**, with a manual-override box for
-a bad rate or no connection. Still to decide during design: where rates are cached, what happens
-when the fetch fails at entry time, and whether historical rows can be re-rated.
+Rate source: **Frankfurter (ECB daily), free, no API key**, cached in-process per day, 4s abort.
+It publishes 30 currencies and **does NOT cover VND**, one of Trim's five base currencies — so
+typing the rate by hand is a first-class path, and the rate stays editable regardless (ECB's
+reference rate is not what a card charges).
 
-Needs a migration (three columns on `transactions`) — the first this session.
+**The server derives the stored amount** from original × rate and IGNORES the client's `amount`.
+Verified by posting a deliberately wrong 999 and getting 38.50 stored.
+
+Not done: editing a transaction's currency after creation (PATCH does not accept `foreign`);
+re-rating historical rows; currencies on income, budgets or goals.
 
 ## Validation sweep — READ THIS BEFORE TRUSTING ITS NUMBERS
 
@@ -96,15 +116,18 @@ Fixed and personally verified (not by an agent):
 - 8. Settings' special-expenses toggle refreshes only `me` + `dashboard`, leaving budgets,
   projections, analytics, affordability and wins on the old basis — MEDIUM
 - 9. `SimpleMonthCard`'s limit save skips `['projections']`, which the same card renders — LOW
-- 10. `projections.js` compares all-category spend against a partial budget — HIGH
-- 11. Simple-mode card counts special expenses against the monthly limit while its own pace line
-  does not — HIGH
 - 12. Weekly budgets measured against a full month of spend — MEDIUM
 - 13. Donut percentages divide special-excluded category totals by a special-included total — MEDIUM
 - 14. Ask Trim's budget context includes special expenses and ignores budget period — MEDIUM
 
-**10 and 11 are the ones to check first** — both are the "two screens disagree about one figure"
-class that `overallBudget.js` was created to end.
+Both HIGH leads were checked by hand after the sweep:
+- **#10 `projections.js` — REFUTED.** It already uses the shared `resolveTotalBudget`/`buildPace`
+  and applies `excludeSpecial` first. The agent was describing the pre-Phase-10 bug.
+- **#11 simple-mode card — CONFIRMED AND FIXED** (`fb8ad17`). The "X of Y spent" bar used
+  `month.expenses`, which includes special spend, while the PaceLine on the same card came from
+  `/api/projections/month`, which excludes it. The bar now excludes it too.
+
+The 8 above remain unchecked. None is HIGH.
 
 The three lenses that never ran — dates/timezones, empty-and-error states, UX seamlessness —
 are still unexplored. Worth re-running the sweep when the account limit resets.
