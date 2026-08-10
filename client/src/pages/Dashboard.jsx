@@ -303,8 +303,15 @@ export default function Dashboard() {
 
       {simpleMode ? (
         <div className="animate-fade-up" style={{ animationDelay: '150ms' }}>
+          {/* Special spend is deliberately OUT of `spent`. month.expenses
+              includes it, but the PaceLine inside this same card comes from
+              /api/projections/month, which excludes it — so passing the raw
+              total put two different bases on one card. The monthly limit is a
+              budget, and "kept out of your monthly budget" is exactly what the
+              special flag promises. specialThisMonth is already 0 when the
+              preference is off. */}
           <SimpleMonthCard
-            spent={month.expenses}
+            spent={month.expenses - (month.specialThisMonth ?? 0)}
             currency={currency}
             monthlyLimit={data.preferences.monthlyLimit ?? null}
           />
