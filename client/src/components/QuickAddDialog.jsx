@@ -40,6 +40,10 @@ export function QuickAddDialog({
   currency = 'GBP',
   simpleMode = false,
   specialEnabled = false,
+  // Opens the dialog pre-dated to another month. Used by the Analytics average
+  // card to backfill a month with nothing logged. Defaults to today, so every
+  // existing caller is unaffected.
+  initialDate = todayISO(),
 }) {
   const api = useApi();
   const queryClient = useQueryClient();
@@ -48,7 +52,7 @@ export function QuickAddDialog({
   const [type, setType] = useState('expense');
   const [amountStr, setAmountStr] = useState('');
   const [description, setDescription] = useState('');
-  const [date, setDate] = useState(todayISO());
+  const [date, setDate] = useState(initialDate);
   const [showMore, setShowMore] = useState(false);
   const [freeformText, setFreeformText] = useState('');
   const [parseError, setParseError] = useState(null);
@@ -72,8 +76,11 @@ export function QuickAddDialog({
       setType('expense');
       setAmountStr('');
       setDescription('');
-      setDate(todayISO());
-      setShowMore(false);
+      setDate(initialDate);
+      // Auto-open the advanced section when the date is not today, so a pre-dated
+      // add is never invisible. Same rule as the AI parser below, which already
+      // does this when it moves the date off today.
+      setShowMore(initialDate !== todayISO());
       setFreeformText('');
       setParseError(null);
       setSuggestedCategoryId(null);
@@ -83,7 +90,7 @@ export function QuickAddDialog({
       setSpecialGroupId(null);
       setTimeout(() => amountRef.current?.focus(), 80);
     }
-  }, [open]);
+  }, [open, initialDate]);
 
   useEffect(() => {
     if (mode === 'freeform') {
@@ -138,6 +145,10 @@ export function QuickAddDialog({
       queryClient.invalidateQueries({ queryKey: ['projections'] });
       // A recurring opt-in creates a row that surfaces on /subscriptions.
       queryClient.invalidateQueries({ queryKey: ['subscriptions'] });
+      // Any add changes a month's totals, so the average card and the history
+      // list are both stale. Was missing entirely: a backdated add from the
+      // Dashboard used to leave Analytics wrong until a hard refresh.
+      queryClient.invalidateQueries({ queryKey: ['analytics'] });
 
       const d = res?.delta;
       if (d?.levelUp) {
@@ -501,7 +512,9 @@ export function QuickAddDialog({
             </div>
 
             {/* Advanced: date + description (hidden by default to keep 3-tap promise) */}
-            <div className={simpleMode ? 'hidden' : undefined}>
+            {/* Simple mode hides this for ordinary adds, but must never hide a
+                date the user is being asked to confirm on a pre-dated add. */}
+            <div className={simpleMode && initialDate === todayISO() ? 'hidden' : undefined}>
               <button
                 type="button"
                 onClick={() => setShowMore((v) => !v)}
