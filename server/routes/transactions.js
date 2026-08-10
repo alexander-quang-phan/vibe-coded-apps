@@ -9,6 +9,26 @@ const router = Router();
 
 const isoDate = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Expected YYYY-MM-DD');
 
+/**
+ * Confirm a client-supplied special-group id belongs to this user before we
+ * write it. Every other client-supplied foreign key in the API is checked this
+ * way (categories here, reassign_to in routes/categories.js, goal ids in
+ * routes/goals.js); this one was not, and the service-role client bypasses RLS,
+ * so nothing else would have caught it. Returns true when there is nothing to
+ * check (null clears the group, undefined leaves it alone).
+ */
+async function ownsSpecialGroup(userId, groupId) {
+  if (groupId === undefined || groupId === null) return true;
+  const { data, error } = await supabase
+    .from('special_groups')
+    .select('id')
+    .eq('id', groupId)
+    .eq('user_id', userId)
+    .maybeSingle();
+  if (error) throw error;
+  return !!data;
+}
+
 // Task 6.12a — opt-in recurring schedule, expense-only (mirrors /subscriptions,
 // which is expense-only by design). Weekly/monthly only; see lib/recurrences.js.
 const recurringSchema = z.object({
@@ -117,6 +137,9 @@ router.post('/', async (req, res, next) => {
     if (parsed.data.specialGroupId && !parsed.data.isSpecial) {
       return res.status(400).json({ error: 'Only special expenses can belong to a group' });
     }
+    if (!(await ownsSpecialGroup(req.user.id, parsed.data.specialGroupId))) {
+      return res.status(404).json({ error: 'Special group not found' });
+    }
 
     const txDate = date || todayISO();
 
@@ -161,11 +184,17 @@ router.post('/', async (req, res, next) => {
         description: description || null,
         date: txDate,
         is_special: parsed.data.isSpecial ?? false,
+        // Was missing entirely: the route validated and guarded specialGroupId,
+        // then dropped it on the floor. A group picked in Quick Add was silently
+        // discarded and the row never showed up under its group — only re-saving
+        // via PATCH, which does write the column, appeared to "fix" it. Invisible
+        // in dev because scripts/devMock.js persists it correctly.
+        special_group_id: parsed.data.specialGroupId ?? null,
         is_recurring: !!recurrence,
         recurrence_id: recurrence?.id ?? null,
       })
       .select(
-        'id, amount, type, description, date, category_id, is_special, is_recurring, recurrence_id, created_at',
+        'id, amount, type, description, date, category_id, is_special, special_group_id, is_recurring, recurrence_id, created_at',
       )
       .single();
     if (txErr) {
@@ -314,6 +343,9 @@ router.patch('/:id', async (req, res, next) => {
         : existing.special_group_id;
     if (effectiveGroup && !effectiveSpecial) {
       return res.status(400).json({ error: 'Only special expenses can belong to a group' });
+    }
+    if (!(await ownsSpecialGroup(req.user.id, parsed.data.specialGroupId))) {
+      return res.status(404).json({ error: 'Special group not found' });
     }
 
     const payload = {};
