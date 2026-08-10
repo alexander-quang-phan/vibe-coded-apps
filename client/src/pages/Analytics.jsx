@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import {
   CartesianGrid,
@@ -12,6 +13,8 @@ import { TrendingDown, TrendingUp } from 'lucide-react';
 import { Card, CardContent } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
 import { MonthlyHistory } from '@/components/MonthlyHistory';
+import { AverageMonthCard } from '@/components/AverageMonthCard';
+import { QuickAddDialog } from '@/components/QuickAddDialog';
 import { useApi } from '@/hooks/useApi';
 import { formatMoney } from '@/lib/format';
 
@@ -37,6 +40,9 @@ export default function Analytics() {
   });
   const { data: me } = useQuery({ queryKey: ['me'], queryFn: () => api.get('/api/me') });
   const currency = me?.preferences?.currency ?? 'GBP';
+  // 'YYYY-MM-DD' while the backdating dialog is open, null when it is closed.
+  // Declared before any early return so hook order stays stable.
+  const [backdateTo, setBackdateTo] = useState(null);
 
   if (isLoading) return <AnalyticsSkeleton />;
   if (isError) {
@@ -51,7 +57,7 @@ export default function Analytics() {
     );
   }
 
-  const { series, topCategories, mom } = data;
+  const { series, average, topCategories, mom } = data;
   const chartSeries = series.slice(-6);
   const pct = mom.deltaPct;
   const delta = pct === null ? null : pct;
@@ -63,6 +69,8 @@ export default function Analytics() {
         <p className="text-sm text-muted-foreground">Six-month view. See where the money moves.</p>
         <h1 className="text-3xl font-extrabold tracking-tight sm:text-4xl">Analytics</h1>
       </header>
+
+      <AverageMonthCard average={average} currency={currency} onAddToMonth={setBackdateTo} />
 
       <Card className="lift relative overflow-hidden border-border/60 bg-card/70 backdrop-blur">
         <div
@@ -221,6 +229,19 @@ export default function Analytics() {
         series={series}
         currency={currency}
         showSpecial={!!me?.preferences?.specialExpensesEnabled && series.some((s) => s.special > 0)}
+      />
+
+      {/* Opened by the average card's "nothing logged" prompt. Mounted closed
+          costs nothing — the dialog's category query is `enabled: open`. */}
+      <QuickAddDialog
+        open={backdateTo !== null}
+        onOpenChange={(next) => {
+          if (!next) setBackdateTo(null);
+        }}
+        currency={currency}
+        simpleMode={!!me?.preferences?.simpleMode}
+        specialEnabled={!!me?.preferences?.specialExpensesEnabled}
+        initialDate={backdateTo ?? undefined}
       />
     </div>
   );
