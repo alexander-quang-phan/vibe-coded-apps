@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import { supabase } from '../lib/supabase.js';
+import { buildRunningAverage } from '../lib/runningAverage.js';
 
 const router = Router();
 
@@ -110,8 +111,28 @@ router.get('/', async (req, res, next) => {
         ? Number((((thisMonthExpenses - lastMonthExpenses) / lastMonthExpenses) * 100).toFixed(1))
         : null;
 
+    // Three windows in one response so the card's 3m / 6m / 12m switch needs no
+    // refetch. Two extra passes over an in-memory array of at most 24 entries.
+    // `windows` is all-or-nothing: buildRunningAverage only returns null when
+    // there is no completed month at all, which is true for every window or none.
+    const windows = [3, 6, 12]
+      .map((n) => buildRunningAverage({ series, months: n, currentYm: thisYm }))
+      .filter(Boolean);
+
+    // thisMonth* sit outside `windows` because they do not vary by window, and
+    // they are read straight from the current bucket — untouched by the trimming
+    // and windowing that shape the averages.
+    const average = windows.length
+      ? {
+          windows,
+          thisMonthSoFar: thisMonthExpenses,
+          thisMonthSpecial: thisMonthBucket?.special ?? 0,
+        }
+      : null;
+
     res.json({
       series,
+      average,
       topCategories,
       mom: {
         thisMonth: thisMonthExpenses,

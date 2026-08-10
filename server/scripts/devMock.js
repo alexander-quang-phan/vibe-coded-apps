@@ -22,6 +22,7 @@ import { suggestCategoryName } from '../lib/categoryKeywords.js';
 import { nextRunDate, dueRecurrences, manualMerchantKey } from '../lib/recurrences.js';
 import { isSingleEmoji } from '../lib/emoji.js';
 import { resolveTotalBudget, buildPace } from '../lib/overallBudget.js';
+import { buildRunningAverage } from '../lib/runningAverage.js';
 
 const PORT = process.env.PORT || 3001;
 const app = express();
@@ -732,8 +733,22 @@ app.get('/api/analytics', (req, res) => {
 
   const thisMonth = byYm.get(thisYm)?.expenses ?? 0;
   const lastMonth = byYm.get(lastYm)?.expenses ?? 0;
+
+  // Mirrors routes/analytics.js exactly, reusing the same pure lib.
+  const windows = [3, 6, 12]
+    .map((n) => buildRunningAverage({ series, months: n, currentYm: thisYm }))
+    .filter(Boolean);
+  const average = windows.length
+    ? {
+        windows,
+        thisMonthSoFar: thisMonth,
+        thisMonthSpecial: byYm.get(thisYm)?.special ?? 0,
+      }
+    : null;
+
   res.json({
     series,
+    average,
     topCategories,
     mom: {
       thisMonth,
