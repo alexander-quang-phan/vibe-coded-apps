@@ -836,6 +836,40 @@ and would double-count if it keeps a budget:
 
 ---
 
+## Phase 11 — running average of monthly expenses (2026-08-10)
+
+Alex wanted to know what he's been spending in an average month recently, with the same
+incl./excl.-special view the Dashboard hero has. Ordinary single-model feature work.
+Spec: `docs/superpowers/specs/2026-08-10-running-average-design.md`.
+Plan: `docs/superpowers/plans/2026-08-10-running-average.md`.
+
+No migration, no new Supabase query — every figure is derived from transactions
+`/api/analytics` already fetches.
+
+- [x] **11.1** `server/lib/runningAverage.js` — the completed-months rule, 12 unit tests.
+- [x] **11.2** `/api/analytics` returns `average` with the 3 / 6 / 12 windows precomputed.
+      Mirrored into `scripts/devMock.js`.
+- [x] **11.3** `QuickAddDialog` gains an `initialDate` prop and reveals the date field when
+      pre-dated, including in simple mode.
+- [x] **11.4** `AverageMonthCard` — figure, window switch, special toggle, empty-month prompt.
+- [x] **11.5** Mounted at the top of Analytics; the prompt opens Quick Add pre-dated.
+- [x] **11.6** Docs.
+
+Three decisions worth not relitigating:
+
+- **Completed months only.** Including the month in progress biases the mean low and makes the
+  figure creep upward all month. The current month is shown beside the average, never inside it.
+- **The two special toggles are independent.** `trim:avgIncludeSpecial` ≠ `trim:heroIncludeSpecial`.
+  They answer different questions and must not move together.
+- **An empty month counts as £0 but is flagged.** Silently averaging in a month Alex forgot to log
+  would tell him he is thriftier than he is.
+
+**One pre-existing bug fixed in passing:** `QuickAddDialog` never invalidated the `analytics`
+query key, so a backdated add from the Dashboard left the Analytics page stale until a hard
+refresh. Would also have made the new empty-month prompt appear broken.
+
+---
+
 ## Deferred further (flagged in FEATURES.md, don't start without explicit ask)
 
 **Deferred during Phase 6 plan review (2026-05-08):**
