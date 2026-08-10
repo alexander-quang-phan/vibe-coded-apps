@@ -27,6 +27,7 @@ import { Label } from '@/components/ui/label';
 import { Skeleton } from '@/components/ui/skeleton';
 import { SegmentGroup, SegmentButton } from '@/components/ui/toggle-group';
 import { useApi } from '@/hooks/useApi';
+import { QuickAddButton } from '@/components/QuickAddButton';
 import { formatMoney, formatDate } from '@/lib/format';
 import { cn } from '@/lib/utils';
 
@@ -230,6 +231,17 @@ export default function Transactions() {
   const { data: me } = useQuery({ queryKey: ['me'], queryFn: () => api.get('/api/me') });
   const currency = me?.preferences?.currency ?? 'GBP';
   const specialEnabled = !!me?.preferences?.specialExpensesEnabled;
+  const simpleMode = !!me?.preferences?.simpleMode;
+
+  // When the list is filtered to a month that isn't the current one, seed the
+  // add dialog into that month — the user is plainly working there. Compared on
+  // the same UTC basis as the dialog's own todayISO(), so the two agree on which
+  // month is "current". The dialog reveals its date field whenever the date is
+  // not today, so this is never a silent surprise.
+  const addInitialDate =
+    monthFilter !== 'all' && monthFilter !== new Date().toISOString().slice(0, 7)
+      ? `${monthFilter}-01`
+      : undefined;
 
   const categories = catsData?.categories ?? [];
   const catsById = useMemo(() => new Map(categories.map((c) => [c.id, c])), [categories]);
@@ -278,6 +290,9 @@ export default function Transactions() {
       queryClient.invalidateQueries({ queryKey: ['wins'] });
       queryClient.invalidateQueries({ queryKey: ['projections'] });
       queryClient.invalidateQueries({ queryKey: ['subscriptions'] });
+      // Deleting changes a month's totals, so the Analytics averages and history
+      // are stale too. Same omission the Quick Add dialog had.
+      queryClient.invalidateQueries({ queryKey: ['analytics'] });
       toast.success('Transaction removed');
     },
     onError: (err) => toast.error(err?.message || 'Could not delete'),
@@ -291,6 +306,9 @@ export default function Transactions() {
       queryClient.invalidateQueries({ queryKey: ['wins'] });
       queryClient.invalidateQueries({ queryKey: ['projections'] });
       queryClient.invalidateQueries({ queryKey: ['subscriptions'] });
+      // An edit can move a transaction's amount, date or special flag — all of
+      // which change the Analytics figures.
+      queryClient.invalidateQueries({ queryKey: ['analytics'] });
       toast.success('Updated');
       setEditing(null);
     },
@@ -313,7 +331,8 @@ export default function Transactions() {
   }
 
   return (
-    <div className="space-y-5 pb-12 animate-fade-up">
+    // pb-24, not pb-12: the floating add button would otherwise cover the last row.
+    <div className="space-y-5 pb-24 animate-fade-up">
       <header className="flex items-end justify-between gap-3">
         <div className="space-y-1">
           <p className="text-sm text-muted-foreground">The full log, searchable and exportable.</p>
@@ -574,6 +593,16 @@ export default function Transactions() {
         specialEnabled={specialEnabled}
         currency={currency}
         onSave={(payload) => updateMutation.mutate({ id: editing.id, payload })}
+      />
+
+      {/* Adding used to be Dashboard-only: spotting a gap while filtered to a
+          month meant navigating away to fix it. When that filter is a past
+          month, the add is seeded into it rather than today. */}
+      <QuickAddButton
+        currency={currency}
+        simpleMode={simpleMode}
+        specialEnabled={specialEnabled}
+        initialDate={addInitialDate}
       />
     </div>
   );
