@@ -95,7 +95,44 @@ Verified by posting a deliberately wrong 999 and getting 38.50 stored.
 Not done: editing a transaction's currency after creation (PATCH does not accept `foreign`);
 re-rating historical rows; currencies on income, budgets or goals.
 
-## Validation sweep — READ THIS BEFORE TRUSTING ITS NUMBERS
+## Second sweep (dates / edges / ux) — COMPLETED CLEANLY 2026-08-10
+
+11/11 agents, 3/3 lenses, 0 failures. 19 raw findings, 8 verified, 7 confirmed, 1 refuted,
+11 below the verify cap and still unchecked.
+Journal: `~/.claude/projects/.../subagents/workflows/wf_2904c886-297/journal.jsonl`.
+
+**Fixed and deployed (`c500bc4`):**
+- **HIGH, and self-inflicted:** a foreign expense with no rate was logged as base currency.
+  `foreignPayload()` returned `{}` for an empty/zero/half-typed rate while `amount` still held the
+  FOREIGN number, and the server cannot infer the entry currency without the `foreign` block —
+  so EUR 45 stored as GBP 45. Submission is now gated on a valid rate, and `foreignPayload()`
+  throws rather than degrading silently. **Confirmed independently by two lenses.**
+- **MEDIUM:** Dashboard and Analytics white-screened the app when offline — no `!data` guard, and
+  a paused TanStack query leaves `isLoading` and `isError` both false.
+- **LOW:** Settings claimed "Trim doesn't convert between currencies", false since Phase 12.
+
+**Confirmed but NOT fixed — deliberate, judged not worth the change today:**
+- **MEDIUM, dates:** transactions are stamped in UTC (`toISOString().slice(0,10)`) but labelled in
+  local time (`new Date(iso + 'T00:00:00')`). Logging between local and UTC midnight files a row
+  under the previous day: renders as "Yesterday", and on the 1st of a month lands in the previous
+  month for the dashboard, budgets and the running average. ~1h/day in London BST, 2h in CEST.
+  **This will affect Alex in France and Italy.** The real fix is picking one clock end-to-end,
+  which touches every date path in the app — a focused job, not a patch.
+- **MEDIUM, dates:** the streak can break for the same reason (`transactions.js` day comparison).
+- **LOW:** the Dashboard's recent-activity rows never show the foreign-currency line, because
+  `routes/dashboard.js:43` does not select the new columns. Transactions page does show it.
+
+**Refuted on verification:** "editing a foreign transaction leaves its original amount and rate
+stale" — PATCH deliberately does not accept `foreign`, which is documented.
+
+**11 findings below the verify cap, unchecked** (medium/low): month dropdown collapsing to one
+option; Ask Trim hiding the conversation when history fails; amber-400 contrast ~1.7:1 in light
+mode; Transactions empty state pointing at the wrong add button; "set one" budget dead end;
+affordability chips carrying state in colour only; Settings showing factory defaults when
+`/api/me` fails; a permanent spinner on `getSession()` rejection; ZERO_DECIMAL drifted into two
+definitions; budget edit dialog not naming the budget.
+
+## First sweep — READ THIS BEFORE TRUSTING ITS NUMBERS
 
 A 14-agent sweep was run. **11 of 14 agents died on an account session limit.** Only 3 of 6
 finders finished (money, security, cache — `dates`, `edges` and `ux` never ran), and **zero
