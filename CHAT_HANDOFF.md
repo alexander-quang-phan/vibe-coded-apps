@@ -1,118 +1,135 @@
-# Chat Handoff — updated 2026-08-08
+# Chat Handoff — updated 2026-08-10
 
 ## DUAL-AGENT BATON  (both models: update this the MOMENT you finish work)
-- Current stage:  no loop active — Phase 10 was ordinary feature work, single-model by design
+- Current stage:  no loop active — Phase 11 was ordinary feature work, single-model by design
 - Model A is:     not yet set — Alex chooses at the next kickoff
-- Up next:        n/a — 9.5 encryption remains the prime full-loop candidate
-- Last actor did: **Phase 10 complete (all 7 items), merged to `main` and DEPLOYED**; migrations 014 + 015 applied to the live DB
-- Next must:      Alex does the "All Expenses" cleanup (below) — that's the only thing left
+- Up next:        **multi-currency (Phase 12)** — design decided, not yet specced or built
+- Last actor did: Phase 11 (running average) built + verified + committed; three of Alex's
+                  reported items fixed; a partial validation sweep whose findings are below
+- Next must:      write the multi-currency spec, then plan, then build. NOTHING is deployed yet.
 - Last verdict:   —
 - Handoff log:
   - 2026-07-23 Claude Code: baton added — Trim retrofitted into the dual-agent workflow
   - 2026-08-08 Claude Code: Phase 10 A1–A6 + B1 + B2, built, verified, deployed
+  - 2026-08-10 Claude Code: Phase 11 + bug fixes, committed to `main`, **NOT deployed**
 
-## Goal
-Seven things Alex hit using Trim daily. All seven are now **built, verified and live**.
+## ⚠️ Everything below is on `main` but NOT DEPLOYED
+Ten commits, `a2e29db`..`c3afa6f`. Run the `/deploy` skill when Alex is ready. No migration is
+needed — nothing this session touched the schema.
 
-## Current state — all shipped
+## What shipped this session
 
-| # | Item | State |
-|---|---|---|
-| A1 | Decimals on phone | ✅ live |
-| A2 | Note always visible + two-tap category | ✅ live |
-| A3 | Any-emoji picker (categories + goals) | ✅ live |
-| A4+A5 | Overall monthly budget + pace gap / per-day | ✅ live |
-| A6 | Incl./excl. special toggle on the hero | ✅ live |
-| B1 | Special-expense groups | ✅ live (migration 015 applied) |
-| B2 | Task 6.12b recurring client half — **Task 6.12 now complete** | ✅ live (migration 014 applied) |
+### Phase 11 — running average of monthly expenses (the feature Alex asked for)
+Average monthly spend over the last 3 / 6 / 12 **completed** months, on the Analytics page.
+Spec: `docs/superpowers/specs/2026-08-10-running-average-design.md`.
+Plan: `docs/superpowers/plans/2026-08-10-running-average.md`.
 
-Production verified after deploy: API healthy; `/api/special-groups`, `/api/subscriptions` and
-`/api/budgets` all 401 without a token; the cron route is authenticated (see below); and the live
-client bundle contains every Phase 10 marker string. Live DB now has `recurrences`
-and `special_groups`, both with RLS on; existing data untouched (124 transactions, 85 categories).
+- `server/lib/runningAverage.js` — the one definition, 12 unit tests. Suite is 64/64.
+- `/api/analytics` returns `average` with all three windows precomputed (no refetch on switch).
+- `client/src/components/AverageMonthCard.jsx`, mounted at the top of Analytics.
+- `QuickAddDialog` gained `initialDate`; the empty-month prompt opens it pre-dated.
 
-## ✅ CRON_SECRET is set (2026-08-08)
-Alex generated it and set it on trim-api (marked sensitive) plus local `server/.env`. Verified in
-production: `/api/cron/recurrences` now returns **401** to a missing, wrong, and malformed-scheme
-Authorization header — no longer 503. `server/vercel.json` runs it at 03:00 UTC daily.
+Three decisions not to relitigate: completed months only (a part-month biases the mean low);
+`trim:avgIncludeSpecial` is deliberately separate from the hero's `trim:heroIncludeSpecial`;
+an empty month counts as £0 **but is flagged**, because it may be a month Alex forgot to log.
 
-## Dialog scroll fix (2026-08-08, post-deploy)
-Alex reported the category dialog not fitting on screen with no way to scroll or reach its buttons.
-Root cause was **shared, not local**: `DialogContent` is `position: fixed` with no height cap and no
-overflow, so any dialog taller than the viewport grew off both edges. Only QuickAddDialog had a
-local workaround; category, reassign, budget, both savings and transaction-edit were all affected —
-the emoji picker just made two of them tall enough to expose it. Fixed once in the shared component
-(`max-h-[92dvh]`, inner scroll container, X pinned outside it). Verified desktop + mobile, deployed.
+### Alex's three reported items
+1. **Multi-currency** — DESIGN DECIDED, NOT BUILT. See below.
+2. **Special-expense group not saving** — FIXED. Two independent bugs with one symptom:
+   - `POST /api/transactions` validated `specialGroupId`, guarded it, then **omitted
+     `special_group_id` from the insert**. `PATCH` did write it, which is exactly why redoing
+     it appeared to work. Hidden because `scripts/devMock.js` persists it correctly — it worked
+     against the mock and failed only against the real API.
+   - No transaction mutation invalidated `['special-groups']`, so the Dashboard's by-group panel
+     stayed stale even once the write was fixed.
+3. **"Can I afford this?" ignoring the special toggle** — FIXED. It was hard-wired to the
+   excl.-special basis. The toggle now lives on `Dashboard` and drives both cards; the API takes
+   an optional `includeSpecial`.
 
-## Alex's remaining cleanup (2 min, only he can — it's behind login)
-His old "All Expenses" **category** still exists and would double-count if it keeps a budget:
-1. **Budgets** → delete the budget attached to "All Expenses".
-2. **Budgets** → set the new **Overall monthly budget** card to his real monthly total.
-3. **Settings → Categories** → delete "All Expenses"; the reassign dialog handles its transactions.
+### Also fixed (found while working, not asked for)
+- **The floating add button would have been stranded ~7000px down the Transactions page.**
+  `position: fixed` resolves against the nearest ancestor with a transform, and the
+  `animate-fade-up` utility has fill-mode `both` — so it leaves a **permanent identity
+  transform** on any page root that uses it. Dashboard's root happens not to animate, which is
+  why this never surfaced. `QuickAddButton` now portals to `<body>`. **Read this before adding
+  any other fixed-position element to a page whose root has `animate-fade-up`.**
+- Transactions page can now add transactions at all (it was edit/delete only), seeded to the
+  filtered month when that month is in the past.
+- Stale-cache family: Quick Add, Dashboard delete and Transactions edit/delete each invalidated
+  a different subset of keys. All three now invalidate the same set, including `['analytics']`,
+  `['special-groups']` and `['budgets']`.
 
-## Two things that were not what they looked like
-1. **"All Expenses" never existed in Trim.** Alex had made a *category* to fake an overall cap, and
-   since every total was `SUM(amount_limit)` over category budgets, his £1200 umbrella was **added
-   on top of** the categories it was meant to contain. Now a real overall budget, reusing
-   `user_stats.monthly_limit` — no migration needed, it was just gated behind `simple_mode`.
-2. **"Can't add decimals on phone" was a real bug.** `<input type="number">` returns `''` for any
-   value that isn't yet a complete number, so `"12."` erased the separator, and a comma was
-   rejected outright — and the iOS decimal key in a `pl-PL` locale (Alex's currency) IS a comma.
-   Proved in-browser before fixing.
+## NEXT UP — Phase 12, multi-currency (Alex going to France + Italy)
 
-## Four defects found underneath the work (all fixed)
-1. `projections.js` paired a budgeted-only *target* with an all-categories *actual* → partial
-   budgeting read as permanently "ahead of pace", and **disagreed with `affordability.js`** on the
-   same screen. Both now share `server/lib/overallBudget.js` (11 unit tests).
-2. Emoji validation `z.string().max(8)` counted UTF-16 units — rejected 👨‍👩‍👧‍👦 (11 units),
-   accepted `"hack"`. Now exactly one pictographic grapheme, with flags and keycaps allowed.
-3. `lib/subscriptions.js` labelled every non-annual cadence "Monthly" — weekly recurrences were
-   mislabelled. Now a three-way map.
-4. **Found by testing B1:** the resulting-state guard rejected un-starring a *grouped* transaction
-   (400), making such rows impossible to un-star. Un-starring now clears the group.
+**Decided (2026-08-10):** convert at entry, store both.
 
-## Files that matter
+Store the GBP figure in `amount` as today, plus the original amount, its currency, and the rate
+used. Every existing total, budget, average and projection keeps summing one GBP number and needs
+no change — that is the whole point of the choice, given this codebase has already had two
+screens disagree about the same figure once. Display as `−£38.52` with `€45.00` underneath.
+
+Rate source: **Frankfurter (ECB daily rates, free, no API key)**, with a manual-override box for
+a bad rate or no connection. Still to decide during design: where rates are cached, what happens
+when the fetch fails at entry time, and whether historical rows can be re-rated.
+
+Needs a migration (three columns on `transactions`) — the first this session.
+
+## Validation sweep — READ THIS BEFORE TRUSTING ITS NUMBERS
+
+A 14-agent sweep was run. **11 of 14 agents died on an account session limit.** Only 3 of 6
+finders finished (money, security, cache — `dates`, `edges` and `ux` never ran), and **zero
+verifiers ran**. Its `confirmed: 0` therefore means "nothing was verified", NOT "nothing is
+wrong". Raw findings recovered from
+`~/.claude/projects/.../subagents/workflows/wf_6d5d5542-d9b/journal.jsonl`.
+
+Fixed and personally verified (not by an agent):
+1. `POST /api/transactions` dropped `special_group_id` — HIGH
+2. `specialGroupId` written with no ownership check — LOW (also fixed)
+3. No mutation invalidated `['special-groups']` — HIGH
+5. Dashboard delete omitted `['analytics']` — MEDIUM
+7. `['budgets']` never invalidated by a transaction change — MEDIUM
+
+**Still open and still UNVERIFIED — treat each as a lead, not a fact:**
+- 4. `['affordability']` is never invalidated by any mutation — MEDIUM
+- 6. `CategoryManager` invalidates a dead key `['analytics', 6]`; the real key is
+  `['analytics', 24]`, and prefix matching means `6` matches nothing — MEDIUM
+- 8. Settings' special-expenses toggle refreshes only `me` + `dashboard`, leaving budgets,
+  projections, analytics, affordability and wins on the old basis — MEDIUM
+- 9. `SimpleMonthCard`'s limit save skips `['projections']`, which the same card renders — LOW
+- 10. `projections.js` compares all-category spend against a partial budget — HIGH
+- 11. Simple-mode card counts special expenses against the monthly limit while its own pace line
+  does not — HIGH
+- 12. Weekly budgets measured against a full month of spend — MEDIUM
+- 13. Donut percentages divide special-excluded category totals by a special-included total — MEDIUM
+- 14. Ask Trim's budget context includes special expenses and ignores budget period — MEDIUM
+
+**10 and 11 are the ones to check first** — both are the "two screens disagree about one figure"
+class that `overallBudget.js` was created to end.
+
+The three lenses that never ran — dates/timezones, empty-and-error states, UX seamlessness —
+are still unexplored. Worth re-running the sweep when the account limit resets.
+
+## Verification notes for whoever picks this up
+There is no Supabase login available to an agent, so UI verification was done by writing a
+throwaway Vite entry (`client/preview.html` + `src/preview.jsx`) that renders a real page with
+the TanStack Query cache pre-seeded from the mock API's actual payload, driving it in a browser,
+then deleting the harness. This works well — reuse it. `staleTime: Infinity` + `retry: false`
+stops it ever making an authenticated call.
+
+**Not verified:** actually saving a backdated expense and watching the average update live. Needs
+Alex's login. The invalidation is in place but untested end to end.
+
+## Older context (still true)
 - `server/lib/overallBudget.js` — the ONE definition of "your total budget". Read before touching
-  pace, affordability or budgets. `server/test/overallBudget.test.js` covers the four combinations.
-- `server/lib/emoji.js` + `client/src/lib/emoji.js` — the grapheme rule, kept in sync by hand.
-- `client/src/components/ui/money-input.jsx` — every money field goes through this; never
-  reintroduce `type="number"` for money.
-- `server/routes/specialGroups.js`, `client/src/components/SpecialGroupPicker.jsx`,
-  `client/src/components/SpecialGroupsPanel.jsx` — B1.
-- `server/lib/runRecurrences.js` — the nightly executor; idempotency is an optimistic claim
-  (`UPDATE … WHERE next_run_at = <old>`), verified: run 1 created 1, runs 2–3 created 0.
-- `BUILD_PLAN.md` → **Phase 10** — both batches ticked.
-
-## Known limitation worth knowing
-The Special-expenses panel shows **lifetime** group totals but the month's special spend as a
-single closing figure. Those are different time bases and deliberately do not sum — the panel says
-so in words rather than pretending an "Ungrouped" row would reconcile them. If monthly-per-group
-totals are wanted later, that's a real feature, not a tweak.
-
-## Next steps (in order)
-1. **Alex: the "All Expenses" cleanup** (above) — the only outstanding item.
-2. **Alex: live click-through** — type `12,50` on his phone; tap a category twice; Settings →
-   Categories → search an emoji; Budgets → Overall card; Dashboard → incl./excl. special;
-   log one with "Repeat this" → check /subscriptions.
-3. Open: 9.5 encryption at rest (needs him to generate + back up `DATA_ENCRYPTION_KEY`); Phase 8
-   bank sync (blocked on Enable Banking); custom domain; Supabase leaked-password toggle.
+  pace, affordability or budgets.
+- `client/src/components/ui/money-input.jsx` — every money field. Never reintroduce
+  `type="number"` for money.
+- `server/lib/special.js` — special expenses are excluded from budget maths ONLY while the
+  preference is on. Off = flags dormant, everything counts.
+- Alex's old "All Expenses" category cleanup may still be outstanding — check Budgets/Settings.
+- Open: 9.5 encryption at rest (half-built and INERT, migration 012 not applied); Phase 8 bank
+  sync (blocked on Enable Banking); custom domain; Supabase leaked-password toggle.
 
 ## How to resume
-Start a session in this folder and say: "Read @CHAT_HANDOFF.md and continue with next step 3."
-
-## Previous sessions
-- **2026-07-18 (Phase 9 + 6.12a):** 9.1–9.4 merged and deployed; migrations 010 + 011 applied.
-  **9.5 encryption remains half-built and INERT** — crypto lib + 19 tests + migration 012 file +
-  backfill script, but no route imports it and `DATA_ENCRYPTION_KEY` is unset, so it cannot run by
-  accident. Migration 012 is **not** applied. Runbook:
-  `docs/superpowers/plans/2026-07-17-phase9-…md` Task 5, stopping for explicit confirmation before
-  migration 013 (irreversible plaintext drop). Its review found **3 Critical defects, two from the
-  plan's own example code** (infinite-looping backfill; a "verification" that never read the DB;
-  `decryptField` accepting 4-byte auth tags) — corrected in `fc420b0`. Monthly history goes back
-  24 months, not 5.
-- **2026-07-15 (bank sync + billing design):** Design only. Stripe can't read card purchases; bank
-  sync needs Enable Banking. Blocked on Alex's account.
-- **2026-07-14 (signup fix):** Email confirmation ON made `signUp()` return no session/no error;
-  Signup.jsx shows a "Check your inbox" fallback. Confirmation now off everywhere.
-- **2026-07-13 (v1 deploy):** Client + API on Vercel free tier. Test account
-  `trim.tester@example.com`; mock API via `cd server && npm run dev:mock`.
+Start a session in this folder and say: "Read @CHAT_HANDOFF.md and write the Phase 12
+multi-currency spec."
