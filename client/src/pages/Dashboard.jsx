@@ -234,6 +234,9 @@ export default function Dashboard() {
       queryClient.invalidateQueries({ queryKey: ['transactions'] });
       queryClient.invalidateQueries({ queryKey: ['wins'] });
       queryClient.invalidateQueries({ queryKey: ['projections'] });
+      queryClient.invalidateQueries({ queryKey: ['analytics'] });
+      queryClient.invalidateQueries({ queryKey: ['special-groups'] });
+      queryClient.invalidateQueries({ queryKey: ['budgets'] });
       toast.success('Transaction removed');
     },
     onError: (err) => toast.error(err?.message || 'Could not delete'),

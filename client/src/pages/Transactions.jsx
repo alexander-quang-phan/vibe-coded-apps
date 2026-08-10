@@ -293,6 +293,8 @@ export default function Transactions() {
       // Deleting changes a month's totals, so the Analytics averages and history
       // are stale too. Same omission the Quick Add dialog had.
       queryClient.invalidateQueries({ queryKey: ['analytics'] });
+      queryClient.invalidateQueries({ queryKey: ['special-groups'] });
+      queryClient.invalidateQueries({ queryKey: ['budgets'] });
       toast.success('Transaction removed');
     },
     onError: (err) => toast.error(err?.message || 'Could not delete'),
@@ -309,6 +311,8 @@ export default function Transactions() {
       // An edit can move a transaction's amount, date or special flag — all of
       // which change the Analytics figures.
       queryClient.invalidateQueries({ queryKey: ['analytics'] });
+      queryClient.invalidateQueries({ queryKey: ['special-groups'] });
+      queryClient.invalidateQueries({ queryKey: ['budgets'] });
       toast.success('Updated');
       setEditing(null);
     },
