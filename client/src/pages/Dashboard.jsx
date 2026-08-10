@@ -96,23 +96,24 @@ function readIncludeSpecial() {
   }
 }
 
-function HeroBalance({ income, expenses, balance, currency, displayName, specialThisMonth = 0 }) {
-  const [includeSpecial, setIncludeSpecial] = useState(readIncludeSpecial);
-
+// `includeSpecial` is owned by Dashboard, not this component: the affordability
+// card has to answer on the same basis, so one toggle drives both.
+function HeroBalance({
+  income,
+  expenses,
+  balance,
+  currency,
+  displayName,
+  specialThisMonth = 0,
+  includeSpecial,
+  onToggleSpecial,
+}) {
   // Only worth offering when there IS special spend to take out.
   const canToggle = specialThisMonth > 0;
   const shownExpenses = canToggle && !includeSpecial ? expenses - specialThisMonth : expenses;
   const shownBalance = canToggle && !includeSpecial ? balance + specialThisMonth : balance;
 
-  function toggleSpecial() {
-    const next = !includeSpecial;
-    setIncludeSpecial(next);
-    try {
-      localStorage.setItem(HERO_SPECIAL_KEY, String(next));
-    } catch {
-      // Not being able to remember the choice is not worth an error.
-    }
-  }
+  const toggleSpecial = onToggleSpecial;
 
   const animated = useCountUp(Math.abs(shownBalance));
   const positive = shownBalance >= 0;
@@ -212,6 +213,20 @@ export default function Dashboard() {
     queryFn: () => api.get('/api/dashboard'),
   });
 
+  // Lifted out of HeroBalance so "Can I afford this?" answers on the same basis
+  // as the total shown above it. Declared before the early returns below.
+  const [includeSpecial, setIncludeSpecial] = useState(readIncludeSpecial);
+
+  function toggleIncludeSpecial() {
+    const next = !includeSpecial;
+    setIncludeSpecial(next);
+    try {
+      localStorage.setItem(HERO_SPECIAL_KEY, String(next));
+    } catch {
+      // Not being able to remember the choice is not worth an error.
+    }
+  }
+
   const deleteTxMutation = useMutation({
     mutationFn: (id) => api.del(`/api/transactions/${id}`),
     onSuccess: () => {
@@ -256,11 +271,16 @@ export default function Dashboard() {
         currency={currency}
         displayName={displayName}
         specialThisMonth={month.specialThisMonth ?? 0}
+        includeSpecial={includeSpecial}
+        onToggleSpecial={toggleIncludeSpecial}
       />
 
       {simpleMode ? null : (
         <div className="animate-fade-up" style={{ animationDelay: '40ms' }}>
-          <AffordabilityCheck currency={currency} />
+          <AffordabilityCheck
+            currency={currency}
+            includeSpecial={includeSpecial && (month.specialThisMonth ?? 0) > 0}
+          />
         </div>
       )}
 

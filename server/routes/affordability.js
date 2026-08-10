@@ -9,6 +9,11 @@ const router = Router();
 const checkSchema = z.object({
   amount: z.number().positive().finite().max(1_000_000_000),
   categoryId: z.string().uuid().optional().nullable(),
+  // Mirrors the Dashboard hero's incl./excl.-special toggle. Omitted or false
+  // keeps the original behaviour — special spend sits outside the budget, which
+  // is the point of the flag. True counts it, so the answer matches the total
+  // the user is looking at directly above this card.
+  includeSpecial: z.boolean().optional(),
 });
 
 function monthBounds(d = new Date()) {
@@ -44,7 +49,7 @@ router.post('/', async (req, res, next) => {
     if (!parsed.success) {
       return res.status(400).json({ error: 'Invalid check', details: parsed.error.flatten() });
     }
-    const { amount, categoryId } = parsed.data;
+    const { amount, categoryId, includeSpecial } = parsed.data;
     const { firstISO, nextFirstISO } = monthBounds();
     const ninetyDaysAgo = new Date(Date.now() - 90 * 86_400_000).toISOString();
 
@@ -79,7 +84,9 @@ router.post('/', async (req, res, next) => {
     for (const r of [budgetsRes, txRes, goalsRes, contribsRes, statsRes]) if (r.error) throw r.error;
 
     const specialEnabled = !!statsRes.data.special_expenses_enabled;
-    const countable = excludeSpecial(txRes.data, specialEnabled);
+    // `specialEnabled && !includeSpecial` — the flag only excludes while the
+    // preference is on AND the user is viewing the excl. total.
+    const countable = excludeSpecial(txRes.data, specialEnabled && !includeSpecial);
 
     const spendByCat = new Map();
     let totalSpent = 0;

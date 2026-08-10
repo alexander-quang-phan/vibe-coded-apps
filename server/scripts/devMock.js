@@ -1073,14 +1073,16 @@ app.get('/api/projections/month', (_req, res) => {
 });
 
 app.post('/api/affordability', (req, res) => {
-  const { amount, categoryId } = req.body ?? {};
+  const { amount, categoryId, includeSpecial } = req.body ?? {};
   const { firstISO, nextFirstISO } = monthBounds();
   const specialEnabled = !!stats.special_expenses_enabled;
   const spendByCat = new Map();
   let totalSpent = 0;
   for (const t of transactions) {
     if (t.type !== 'expense' || t.date < firstISO || t.date >= nextFirstISO) continue;
-    if (specialEnabled && t.is_special) continue;
+    // Mirrors routes/affordability.js: only skip while the pref is on AND the
+    // user is viewing the excl.-special total.
+    if (specialEnabled && !includeSpecial && t.is_special) continue;
     const amt = Number(t.amount);
     spendByCat.set(t.category_id, (spendByCat.get(t.category_id) ?? 0) + amt);
     totalSpent += amt;

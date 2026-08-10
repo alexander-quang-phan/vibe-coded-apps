@@ -18,7 +18,7 @@ const VERDICT_TONES = {
  * "Can I afford this?" (Task 6.4) — stress-test a purchase before making it.
  * Debounced 300ms; pure read, nothing is logged. Hidden in simple mode.
  */
-export function AffordabilityCheck({ currency }) {
+export function AffordabilityCheck({ currency, includeSpecial = false }) {
   const api = useApi();
   const [amountStr, setAmountStr] = useState('');
   const [categoryId, setCategoryId] = useState(null);
@@ -51,11 +51,14 @@ export function AffordabilityCheck({ currency }) {
       return;
     }
     timerRef.current = setTimeout(
-      () => setDebounced({ amount, categoryId }),
+      () => setDebounced({ amount, categoryId, includeSpecial }),
       300,
     );
     return () => clearTimeout(timerRef.current);
-  }, [amount, amountValid, categoryId]);
+    // includeSpecial is a dependency: flipping the hero's toggle must re-ask the
+    // question on the new basis. It also lands in the payload, so the
+    // ['affordability', debounced] cache key changes and a refetch happens.
+  }, [amount, amountValid, categoryId, includeSpecial]);
 
   const { data: result, isFetching } = useQuery({
     queryKey: ['affordability', debounced],
