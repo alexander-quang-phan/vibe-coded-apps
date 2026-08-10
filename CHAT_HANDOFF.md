@@ -38,7 +38,8 @@ Average monthly spend over the last 3 / 6 / 12 **completed** months, on the Anal
 Spec: `docs/superpowers/specs/2026-08-10-running-average-design.md`.
 Plan: `docs/superpowers/plans/2026-08-10-running-average.md`.
 
-- `server/lib/runningAverage.js` — the one definition, 12 unit tests. Suite is 64/64.
+- `server/lib/runningAverage.js` — the one definition, 12 unit tests. Suite is 72/72
+  (Phase 12 added 8 more in `server/test/fx.test.js`).
 - `/api/analytics` returns `average` with all three windows precomputed (no refetch on switch).
 - `client/src/components/AverageMonthCard.jsx`, mounted at the top of Analytics.
 - `QuickAddDialog` gained `initialDate`; the empty-month prompt opens it pre-dated.
@@ -48,7 +49,7 @@ Three decisions not to relitigate: completed months only (a part-month biases th
 an empty month counts as £0 **but is flagged**, because it may be a month Alex forgot to log.
 
 ### Alex's three reported items
-1. **Multi-currency** — DESIGN DECIDED, NOT BUILT. See below.
+1. **Multi-currency** — BUILT AND LIVE. See the Phase 12 section below.
 2. **Special-expense group not saving** — FIXED. Two independent bugs with one symptom:
    - `POST /api/transactions` validated `specialGroupId`, guarded it, then **omitted
      `special_group_id` from the insert**. `PATCH` did write it, which is exactly why redoing
