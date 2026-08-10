@@ -181,6 +181,16 @@ export function QuickAddDialog({
   const amount = Number(amountStr);
   const amountValid = isValidMoney(amountStr);
 
+  // A foreign entry is only submittable once it has a usable rate. Without this
+  // gate the amount field holds the FOREIGN number while foreignPayload() drops
+  // the block, so the server — which has no way to know the entry currency —
+  // stored the foreign figure verbatim as base currency: €45 logged as £45, and
+  // far worse in a big-denomination currency. Number('') and Number('0.') are
+  // both 0, so the empty and half-typed cases have to be caught here too.
+  const fxRate = Number(rate);
+  const rateValid = !isForeign || (rate !== '' && Number.isFinite(fxRate) && fxRate > 0);
+  const canSubmit = amountValid && rateValid;
+
   const mutation = useMutation({
     mutationFn: (payload) => api.post('/api/transactions', payload),
     onSuccess: (res) => {
@@ -277,7 +287,7 @@ export function QuickAddDialog({
   });
 
   function handleCategoryTap(category) {
-    if (!amountValid || mutation.isPending) return;
+    if (!canSubmit || mutation.isPending) return;
     // First tap on a chip only arms it; tapping a different chip moves the
     // (see foreignPayload below for the Phase 12 currency fields)
     // arm rather than logging. Only the second tap on the SAME chip commits.
@@ -308,8 +318,11 @@ export function QuickAddDialog({
    */
   function foreignPayload() {
     if (!isForeign) return {};
-    const fxRate = Number(rate);
-    if (!Number.isFinite(fxRate) || fxRate <= 0) return {};
+    // Unreachable: canSubmit already refuses a foreign entry without a valid
+    // rate. Throwing rather than returning {} means that if the gate is ever
+    // removed the failure is loud, instead of quietly logging the foreign
+    // number as base currency the way this function used to.
+    if (!rateValid) throw new Error('foreign entry submitted without a valid rate');
     return {
       foreign: { originalAmount: amount, originalCurrency: entryCurrency, fxRate },
     };
@@ -318,7 +331,7 @@ export function QuickAddDialog({
   // Simple mode files everything against the seeded "Other" expense category
   // — the deliberate 2-tap exception to the 3-tap rule (FEATURES.md).
   function handleSimpleLog() {
-    if (!amountValid || mutation.isPending) return;
+    if (!canSubmit || mutation.isPending) return;
     const all = categoriesData?.categories ?? [];
     const fallback =
       all.find((c) => c.type === 'expense' && c.name === 'Other' && c.is_default) ??
@@ -521,7 +534,7 @@ export function QuickAddDialog({
                 type="button"
                 className="h-12 w-full text-base font-semibold"
                 onClick={handleSimpleLog}
-                disabled={!amountValid || mutation.isPending}
+                disabled={!canSubmit || mutation.isPending}
               >
                 {mutation.isPending ? (
                   <>
@@ -545,7 +558,7 @@ export function QuickAddDialog({
                     <button
                       key={c.id}
                       type="button"
-                      disabled={!amountValid || mutation.isPending}
+                      disabled={!canSubmit || mutation.isPending}
                       onClick={() => handleCategoryTap(c)}
                       aria-pressed={isArmed}
                       aria-label={isArmed ? `${c.name} — tap again to log` : c.name}
@@ -586,6 +599,10 @@ export function QuickAddDialog({
               </div>
               {!amountValid ? (
                 <p className="text-xs text-muted-foreground">Enter an amount to enable categories.</p>
+              ) : !rateValid ? (
+                <p className="text-xs text-amber-400">
+                  Enter the {entryCurrency}/{currency} rate to enable categories.
+                </p>
               ) : armedCategory ? (
                 <p className="text-xs font-medium text-primary">
                   Tap {armedCategory.name} again to log it — or pick a different one.

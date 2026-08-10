@@ -242,7 +242,10 @@ export default function Dashboard() {
     onError: (err) => toast.error(err?.message || 'Could not delete'),
   });
 
-  if (isLoading) return <DashboardSkeleton />;
+  // `|| !data` matters: when the browser is offline TanStack Query PAUSES the
+  // query — isLoading and isError are both false while data is undefined, so
+  // without this the next line threw and white-screened the whole app.
+  if (isLoading || !data) return <DashboardSkeleton />;
 
   if (isError) {
     return (

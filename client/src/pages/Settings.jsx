@@ -153,7 +153,8 @@ export default function Settings() {
                   </SelectContent>
                 </Select>
                 <p className="text-xs text-muted-foreground">
-                  Display only — Trim doesn't convert between currencies.
+                  Your base currency. Expenses paid in another currency are converted into
+                  this one when you log them.
                 </p>
               </div>
 

@@ -44,7 +44,9 @@ export default function Analytics() {
   // Declared before any early return so hook order stays stable.
   const [backdateTo, setBackdateTo] = useState(null);
 
-  if (isLoading) return <AnalyticsSkeleton />;
+  // See Dashboard.jsx — a paused (offline) query leaves data undefined with
+  // isLoading and isError both false.
+  if (isLoading || !data) return <AnalyticsSkeleton />;
   if (isError) {
     return (
       <div className="space-y-3 rounded-xl border border-destructive/40 bg-destructive/10 p-6 text-center">
