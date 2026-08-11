@@ -1,19 +1,19 @@
-# Chat Handoff — updated 2026-08-10
+# Chat Handoff — updated 2026-08-11
 
 ## DUAL-AGENT BATON  (both models: update this the MOMENT you finish work)
 - Current stage:  no loop active — Phase 11 was ordinary feature work, single-model by design
 - Model A is:     not yet set — Alex chooses at the next kickoff
-- Up next:        Alex's live click-through. No known open work besides the four items below.
+- Up next:        Alex's live click-through. **No known open bugs.**
 - Last actor did: Phase 11 (running average) built + verified + committed; three of Alex's
                   reported items fixed; a partial validation sweep whose findings are below
-- Next must:      nothing blocking. Phases 11, 12, 12b and 13 are live.
+- Next must:      nothing blocking. Phases 11, 12, 12b, 13 and 14 are live.
 - Last verdict:   —
 - Handoff log:
   - 2026-07-23 Claude Code: baton added — Trim retrofitted into the dual-agent workflow
   - 2026-08-08 Claude Code: Phase 10 A1–A6 + B1 + B2, built, verified, deployed
   - 2026-08-10 Claude Code: Phase 11 + Phase 12 + 6 bug fixes, migration 016 applied, DEPLOYED
-  - 2026-08-11 Claude Code: Phase 12b + Phase 13 finish pass — every sweep finding closed or
-    consciously deferred; DEPLOYED. No migration needed.
+  - 2026-08-11 Claude Code: Phase 12b + 13 + 14 — every sweep finding closed, timezone fix
+    landed, migration 017 applied; DEPLOYED. No known open bugs.
 
 ## ✅ DEPLOYED 2026-08-11 — Phase 13 finish pass
 
@@ -47,23 +47,24 @@ Fixed on 2026-08-11 (`85d7e76`, `c0322fa`, `7f625ac`, `3495075`):
   (`App.jsx` toggles it) where amber-400 on white was ~1.7:1.
 - The budget dialog now names the category being edited.
 
-### The one deliberately left open
+### Phase 14 — the last open item, now closed (migration 017 applied, deployed)
 
-**Server-side month bucketing runs on the server's UTC clock.** A log made in the local-vs-UTC
-window ON the 1st of a month can still land in the wrong month server-side; it self-corrects at
-00:00 UTC. The client side is fixed — day labelling and the streak are correct.
+Server-side month bucketing no longer runs on the server's clock. `user_stats.timezone` holds the
+user's IANA zone, reported automatically by the client only when it differs from what is stored.
+Every boundary comes from `server/lib/month.js` — one pure tz-aware definition that replaced three
+copies of `monthBounds` and a dozen `getUTCMonth()` calls across dashboard, budgets, affordability,
+projections, analytics, wins and ask. 10 unit tests; suite is 82.
 
-Not done because it is not a patch: it needs a stored user timezone (migration 017), and the
-bucketing is spread across **7 files with 3 separate `monthBounds` definitions and 16
-`getUTCMonth` call sites** (`dashboard`, `budgets`, `affordability`, `projections`, `analytics`,
-`wins`, `lib/askContext`). The three `monthBounds` copies were compared and are identical, so
-there is no hidden divergence — but consolidating them into one tz-aware helper and reworking
-every money route is its own task with its own tests. Doing it hastily risks silently wrong money
-figures, which is the one failure this codebase keeps having.
+Migration 017 verified: 7 user rows and 139 transactions **unchanged**, `user_stats` 14 → 15
+columns, **0 rows touched**, constraint in, RLS on. A NULL zone behaves exactly as before (UTC), and
+an unresolvable zone fails open to UTC rather than erroring.
 
-**Suggested approach when picked up:** migration 017 adds `user_stats.timezone`; the client sends
-`Intl.DateTimeFormat().resolvedOptions().timeZone`; one shared `monthBounds(tz)` replaces the three
-copies; then the 16 call sites, with unit tests around a month boundary in a non-UTC zone.
+**Do not reintroduce a UTC clock read for a period boundary.** `transactions.date` is a calendar day
+in the USER's zone; anything compared against it must come from `lib/month.js`.
+
+Known non-issues, checked and deliberately left as UTC: the `/api/fx` daily rate cache, the nightly
+recurrence runner's own "today", and `nextMonthFirstISO()` in transactions.js (pure string
+arithmetic on a supplied `ym`, no clock).
 
 ## Previously deployed 2026-08-10 — migration 016 applied
 18 commits, `a2e29db`..`fb8ad17`, pushed to `main` and deployed.
