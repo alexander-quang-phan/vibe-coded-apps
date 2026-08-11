@@ -3,17 +3,51 @@
 ## DUAL-AGENT BATON  (both models: update this the MOMENT you finish work)
 - Current stage:  no loop active — Phase 11 was ordinary feature work, single-model by design
 - Model A is:     not yet set — Alex chooses at the next kickoff
-- Up next:        Alex's live click-through; then the 8 unverified sweep leads below
+- Up next:        Alex's live click-through. No known open work besides the four items below.
 - Last actor did: Phase 11 (running average) built + verified + committed; three of Alex's
                   reported items fixed; a partial validation sweep whose findings are below
-- Next must:      nothing blocking — Phase 11 and 12 are live. Pick up the open leads when ready.
+- Next must:      nothing blocking. Phases 11, 12, 12b and 13 are live.
 - Last verdict:   —
 - Handoff log:
   - 2026-07-23 Claude Code: baton added — Trim retrofitted into the dual-agent workflow
   - 2026-08-08 Claude Code: Phase 10 A1–A6 + B1 + B2, built, verified, deployed
   - 2026-08-10 Claude Code: Phase 11 + Phase 12 + 6 bug fixes, migration 016 applied, DEPLOYED
+  - 2026-08-11 Claude Code: Phase 12b + Phase 13 finish pass — every sweep finding closed or
+    consciously deferred; DEPLOYED. No migration needed.
 
-## ✅ DEPLOYED 2026-08-10 — migration 016 applied, both projects live
+## ✅ DEPLOYED 2026-08-11 — Phase 13 finish pass
+
+Both projects redeployed. **No migration** — Phase 13 touched no schema. Production verified:
+`/api/health` 200, everything else 401 without a token, and the live bundle carries the new
+strings with no `toISOString().slice(0,10)` day-stamping left anywhere.
+
+### Everything the two sweeps found is now closed or consciously deferred
+
+Fixed on 2026-08-11 (`85d7e76`, `c0322fa`, `7f625ac`, `3495075`):
+- **Local calendar day end-to-end.** One `todayISO()` in `client/src/lib/format.js`; a create sends
+  `clientToday` so the streak follows the user's day, separate from `date` so backdating cannot
+  count as logging today.
+- **Phase 12b** — a transaction's currency can be changed after creation, with the same
+  server-derived amount and rate gate. `foreign: null` restores a plain row.
+- **`invalidateMoney()`** — ten drifted hand-lists became one definition. This is the third time
+  this class of bug has appeared; do not hand-list keys in a mutation again.
+- **One `ZERO_DECIMAL`** (money-input had only VND while fx.js had six, so Quick Add accepted
+  "100.50" in JPY); `/api/dashboard` now returns the Phase 12 columns.
+- **Failure states** — `getSession()` catch, paused-query guards on Dashboard/Analytics/Settings.
+  The Settings one mattered most: offline it showed factory defaults and saving would have written
+  them over the real settings.
+- **Dead ends** — budget link, `aria-pressed` chips, month dropdown no longer collapsing.
+
+### Deliberately still open — four items, none blocking
+
+1. **Server-side month bucketing is UTC.** A log made in the local-vs-UTC window ON the 1st can
+   still land in the wrong month server-side. Needs a stored user timezone and every month-bounds
+   computation reworked — its own piece of work.
+2. Amber-on-dark warning styles drop to ~1.7:1 contrast in light mode.
+3. Ask Trim hides the whole conversation when history fails to load.
+4. The budget edit dialog does not name the budget being edited.
+
+## Previously deployed 2026-08-10 — migration 016 applied
 18 commits, `a2e29db`..`fb8ad17`, pushed to `main` and deployed.
 
 **Migration 016 was applied to the live DB** via the Supabase connector (project
