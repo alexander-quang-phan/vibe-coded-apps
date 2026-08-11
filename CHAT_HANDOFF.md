@@ -38,14 +38,32 @@ Fixed on 2026-08-11 (`85d7e76`, `c0322fa`, `7f625ac`, `3495075`):
   them over the real settings.
 - **Dead ends** — budget link, `aria-pressed` chips, month dropdown no longer collapsing.
 
-### Deliberately still open — four items, none blocking
+### Three of those four closed 2026-08-11 (`65d2728`, deployed)
 
-1. **Server-side month bucketing is UTC.** A log made in the local-vs-UTC window ON the 1st can
-   still land in the wrong month server-side. Needs a stored user timezone and every month-bounds
-   computation reworked — its own piece of work.
-2. Amber-on-dark warning styles drop to ~1.7:1 contrast in light mode.
-3. Ask Trim hides the whole conversation when history fails to load.
-4. The budget edit dialog does not name the budget being edited.
+- Ask Trim rendered the history-failure banner INSTEAD of the message list, and `isError` stays
+  true for the session — so its copy invited you to send something you would then never see. Now a
+  notice above the conversation.
+- 27 bare `text-amber-400` became `text-amber-600 dark:text-amber-400`. There is a real light theme
+  (`App.jsx` toggles it) where amber-400 on white was ~1.7:1.
+- The budget dialog now names the category being edited.
+
+### The one deliberately left open
+
+**Server-side month bucketing runs on the server's UTC clock.** A log made in the local-vs-UTC
+window ON the 1st of a month can still land in the wrong month server-side; it self-corrects at
+00:00 UTC. The client side is fixed — day labelling and the streak are correct.
+
+Not done because it is not a patch: it needs a stored user timezone (migration 017), and the
+bucketing is spread across **7 files with 3 separate `monthBounds` definitions and 16
+`getUTCMonth` call sites** (`dashboard`, `budgets`, `affordability`, `projections`, `analytics`,
+`wins`, `lib/askContext`). The three `monthBounds` copies were compared and are identical, so
+there is no hidden divergence — but consolidating them into one tz-aware helper and reworking
+every money route is its own task with its own tests. Doing it hastily risks silently wrong money
+figures, which is the one failure this codebase keeps having.
+
+**Suggested approach when picked up:** migration 017 adds `user_stats.timezone`; the client sends
+`Intl.DateTimeFormat().resolvedOptions().timeZone`; one shared `monthBounds(tz)` replaces the three
+copies; then the 16 call sites, with unit tests around a month boundary in a non-UTC zone.
 
 ## Previously deployed 2026-08-10 — migration 016 applied
 18 commits, `a2e29db`..`fb8ad17`, pushed to `main` and deployed.
