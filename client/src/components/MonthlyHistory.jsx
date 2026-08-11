@@ -1,7 +1,7 @@
 import { Link } from 'react-router-dom';
 import { Star } from 'lucide-react';
 import { Card, CardContent } from '@/components/ui/card';
-import { formatMoney } from '@/lib/format';
+import { formatMoney, thisMonthISO } from '@/lib/format';
 import { cn } from '@/lib/utils';
 
 /** Phase 9.4 — one row per month, newest first; rows link to the
@@ -11,7 +11,7 @@ export function MonthlyHistory({ series, currency, showSpecial }) {
   const firstWithData = series.findIndex((m) => m.income > 0 || m.expenses > 0);
   const months = firstWithData === -1 ? [] : series.slice(firstWithData).reverse();
   if (months.length === 0) return null;
-  const thisYm = new Date().toISOString().slice(0, 7);
+  const thisYm = thisMonthISO();
 
   return (
     <Card className="lift border-border/60 bg-card/70 backdrop-blur">

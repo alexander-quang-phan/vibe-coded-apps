@@ -48,6 +48,13 @@ const createSchema = z.object({
   // Null clears it. Only ever valid on a special EXPENSE (guarded below).
   specialGroupId: z.string().uuid().optional().nullable(),
   recurring: recurringSchema.optional(),
+  // The caller's LOCAL calendar day. Used ONLY to stamp the streak, never for
+  // money. The server's own clock is UTC, so a user east of UTC logging between
+  // local midnight and UTC midnight was credited to the previous day and could
+  // lose a streak they had actually kept — about an hour a day in London, two
+  // in CEST. Deliberately separate from `date`, which the user may backdate:
+  // backfilling last month must not count as "logged today".
+  clientToday: isoDate.optional(),
   // Phase 12 — paid in a foreign currency. All three travel together or not at
   // all (the DB enforces the same rule). When present, the server DERIVES
   // `amount` from them and ignores whatever `amount` the client sent: two places
@@ -75,6 +82,9 @@ const parseSchema = z.object({
   text: z.string().trim().min(1).max(500),
 });
 
+// The server's UTC day. A FALLBACK ONLY: the client sends both `date` and
+// `clientToday` from its own local clock, because a calendar day is the user's,
+// not the server's. See client/src/lib/format.js todayISO().
 function todayISO() {
   return new Date().toISOString().slice(0, 10);
 }
@@ -271,7 +281,10 @@ router.post('/', async (req, res, next) => {
       .single();
     if (statsErr) throw statsErr;
 
-    const { next: nextStats, delta } = applyLogEvent(stats, todayISO());
+    // Falls back to the server's UTC day when the client did not say — an older
+    // client, or a row created by the nightly recurrence runner.
+    const streakDay = parsed.data.clientToday ?? todayISO();
+    const { next: nextStats, delta } = applyLogEvent(stats, streakDay);
 
     const { error: updErr } = await supabase
       .from('user_stats')

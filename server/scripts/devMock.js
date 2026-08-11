@@ -361,7 +361,7 @@ app.get('/api/transactions', (req, res) => {
 });
 
 app.post('/api/transactions', (req, res) => {
-  const { categoryId, amount, type, description, date, isSpecial, specialGroupId, recurring, foreign } = req.body ?? {};
+  const { categoryId, amount, type, description, date, isSpecial, specialGroupId, recurring, foreign, clientToday } = req.body ?? {};
   const c = catById(categoryId);
   if (!c) return res.status(404).json({ error: 'Category not found' });
   if (c.type !== type) return res.status(400).json({ error: 'Category type does not match transaction type' });
@@ -430,7 +430,7 @@ app.post('/api/transactions', (req, res) => {
     created_at: new Date().toISOString(),
   };
   transactions.push(tx);
-  const { next, delta } = applyLogEvent(stats, todayUTC());
+  const { next, delta } = applyLogEvent(stats, clientToday || todayUTC());
   stats = { ...stats, ...next };
   res.status(201).json({
     transaction: tx,

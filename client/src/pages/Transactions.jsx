@@ -28,7 +28,7 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { SegmentGroup, SegmentButton } from '@/components/ui/toggle-group';
 import { useApi } from '@/hooks/useApi';
 import { QuickAddButton } from '@/components/QuickAddButton';
-import { formatMoney, formatDate } from '@/lib/format';
+import { formatMoney, formatDate, todayISO, thisMonthISO } from '@/lib/format';
 import { cn } from '@/lib/utils';
 
 function csvEscape(v) {
@@ -234,12 +234,12 @@ export default function Transactions() {
   const simpleMode = !!me?.preferences?.simpleMode;
 
   // When the list is filtered to a month that isn't the current one, seed the
-  // add dialog into that month — the user is plainly working there. Compared on
-  // the same UTC basis as the dialog's own todayISO(), so the two agree on which
-  // month is "current". The dialog reveals its date field whenever the date is
-  // not today, so this is never a silent surprise.
+  // add dialog into that month — the user is plainly working there. Both sides
+  // now use the shared LOCAL day helpers, so they agree on which month is
+  // "current". The dialog reveals its date field whenever the date is not today,
+  // so this is never a silent surprise.
   const addInitialDate =
-    monthFilter !== 'all' && monthFilter !== new Date().toISOString().slice(0, 7)
+    monthFilter !== 'all' && monthFilter !== thisMonthISO()
       ? `${monthFilter}-01`
       : undefined;
 
@@ -331,7 +331,7 @@ export default function Transactions() {
         t.amount,
       ]);
     }
-    downloadCsv(rows, `trim-transactions-${new Date().toISOString().slice(0, 10)}.csv`);
+    downloadCsv(rows, `trim-transactions-${todayISO()}.csv`);
   }
 
   return (

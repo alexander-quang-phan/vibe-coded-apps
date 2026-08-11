@@ -19,15 +19,12 @@ import { Label } from '@/components/ui/label';
 import { SegmentGroup, SegmentButton } from '@/components/ui/toggle-group';
 import { useApi } from '@/hooks/useApi';
 import { cn } from '@/lib/utils';
+import { todayISO } from '@/lib/format';
 import {
   celebrateLevelUp,
   celebrateStreakMilestone,
   celebrateShieldEarned,
 } from '@/lib/confetti';
-
-function todayISO() {
-  return new Date().toISOString().slice(0, 10);
-}
 
 function minorToMajorStr(minor, currency) {
   if (!Number.isFinite(minor)) return '';
@@ -307,6 +304,8 @@ export function QuickAddDialog({
         ? { recurring: { interval: recurringInterval } }
         : {}),
       ...foreignPayload(),
+      // The streak belongs to the user's calendar day, not the server's UTC one.
+      clientToday: todayISO(),
     });
   }
 
@@ -344,6 +343,8 @@ export function QuickAddDialog({
       description: null,
       date,
       ...foreignPayload(),
+      // The streak belongs to the user's calendar day, not the server's UTC one.
+      clientToday: todayISO(),
     });
   }
 
