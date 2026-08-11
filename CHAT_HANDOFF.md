@@ -22,7 +22,7 @@ validation sweeps turned up, so the app is trustworthy while he's away.
 
 ## Current state
 
-**Everything below is on `main` and DEPLOYED.** `a2e29db`..`eba6633`. Server suite 82/82, client
+**Everything below is on `main` and DEPLOYED.** `a2e29db`..`42050cf`. Server suite **86/86**, client
 builds clean, working tree clean. Migrations 016 and 017 both applied to the live DB.
 
 **Live and working:**
@@ -35,6 +35,7 @@ builds clean, working tree clean. Migrations 016 and 017 both applied to the liv
 | "Can I afford this?" follows the special toggle | Dashboard |
 | Special-expense groups actually save | Quick Add |
 | Add transactions from the Transactions page | floating + button |
+| Weekly budgets measured correctly | Budgets |
 
 **21 bugs fixed.** The ones worth remembering are under "Key decisions" and "Traps".
 
@@ -111,7 +112,7 @@ browser. See "Traps" for the harness technique.
    Phase 8 bank sync (blocked on Enable Banking); custom domain; Supabase leaked-password toggle.
 
 ## Open questions for Alex
-- None blocking. The four leads above are engineering judgement, not decisions he needs to make.
+- None blocking.
 
 ## How to resume
 Start a session in this folder and say: "Read @CHAT_HANDOFF.md and continue with next step 2."
