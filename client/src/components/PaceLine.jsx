@@ -23,15 +23,15 @@ export function PaceLine({ pace, daysElapsed, currency, className }) {
 
   const overBudget = pace.overBy > 0;
   const aheadOfPace = pace.delta < 0; // spending faster than the flat run-rate
-  const tone = overBudget || aheadOfPace ? 'text-amber-400' : 'text-primary';
+  const tone = overBudget || aheadOfPace ? 'text-amber-600 dark:text-amber-400' : 'text-primary';
   const dayWord = pace.daysRemaining === 1 ? 'day' : 'days';
 
   if (overBudget) {
     return (
       <p className={cn('text-xs text-muted-foreground', className)}>
-        <span className="text-amber-400">◷</span>{' '}
+        <span className="text-amber-600 dark:text-amber-400">◷</span>{' '}
         You're{' '}
-        <span className="nums font-medium text-amber-400">
+        <span className="nums font-medium text-amber-600 dark:text-amber-400">
           {formatMoney(pace.overBy, currency)}
         </span>{' '}
         over your {formatMoney(pace.budget, currency)} budget — nothing left for the last{' '}

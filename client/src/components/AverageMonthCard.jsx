@@ -146,7 +146,7 @@ export function AverageMonthCard({ average, currency, onAddToMonth }) {
           <button
             type="button"
             onClick={() => onAddToMonth(`${gaps[gaps.length - 1]}-01`)}
-            className="mt-3 flex w-full items-center gap-2 rounded-lg border border-amber-400/30 bg-amber-400/5 px-3 py-2 text-left text-xs text-amber-400 transition-colors hover:bg-amber-400/10"
+            className="mt-3 flex w-full items-center gap-2 rounded-lg border border-amber-400/30 bg-amber-400/5 px-3 py-2 text-left text-xs text-amber-600 dark:text-amber-400 transition-colors hover:bg-amber-400/10"
           >
             <TriangleAlert className="h-3.5 w-3.5 shrink-0" aria-hidden />
             <span>

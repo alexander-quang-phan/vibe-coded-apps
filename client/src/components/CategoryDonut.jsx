@@ -13,7 +13,7 @@ function toneForPercent(pct) {
     return {
       bar: 'from-amber-300 to-amber-500',
       hint: 'getting close',
-      pill: 'bg-amber-500/15 text-amber-400',
+      pill: 'bg-amber-500/15 text-amber-600 dark:text-amber-400',
     };
   return {
     bar: 'from-rose-400 to-rose-500',

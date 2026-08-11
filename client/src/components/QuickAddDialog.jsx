@@ -585,7 +585,7 @@ export function QuickAddDialog({
               {!amountValid ? (
                 <p className="text-xs text-muted-foreground">Enter an amount to enable categories.</p>
               ) : !rateValid ? (
-                <p className="text-xs text-amber-400">
+                <p className="text-xs text-amber-600 dark:text-amber-400">
                   Enter the {entryCurrency}/{currency} rate to enable categories.
                 </p>
               ) : armedCategory ? (
@@ -632,7 +632,7 @@ export function QuickAddDialog({
                   {specialEnabled && type === 'expense' ? (
                     <label className="flex items-center justify-between rounded-lg border border-border/60 bg-secondary/30 px-3 py-2">
                       <span className="flex items-center gap-2 text-sm">
-                        <Star className="h-4 w-4 text-amber-400" aria-hidden />
+                        <Star className="h-4 w-4 text-amber-600 dark:text-amber-400" aria-hidden />
                         Special expense
                         <span className="text-xs text-muted-foreground">kept out of your monthly budget</span>
                       </span>

@@ -20,7 +20,7 @@ export function CurrencyPicker({ value, base, onChange }) {
         className={cn(
           'rounded-full border bg-background/40 px-2.5 py-0.5 text-[11px] font-medium transition-colors',
           foreign
-            ? 'border-amber-400/50 text-amber-400'
+            ? 'border-amber-400/50 text-amber-600 dark:text-amber-400'
             : 'border-border/70 text-muted-foreground hover:text-foreground',
         )}
       >
@@ -64,7 +64,7 @@ export function ConversionLine({
   return (
     <div className="space-y-1.5 rounded-lg border border-amber-400/25 bg-amber-400/5 px-3 py-2">
       {rateState === 'unavailable' ? (
-        <p className="flex items-start gap-1.5 text-xs text-amber-400">
+        <p className="flex items-start gap-1.5 text-xs text-amber-600 dark:text-amber-400">
           <TriangleAlert className="mt-0.5 h-3 w-3 shrink-0" aria-hidden />
           <span>
             No rate available for {entryCurrency}/{baseCurrency} — type the rate you were charged.

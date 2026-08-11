@@ -11,7 +11,7 @@ import { cn } from '@/lib/utils';
 
 const VERDICT_TONES = {
   'Comfortably yes': 'text-primary',
-  'Tight but yes': 'text-amber-400',
+  'Tight but yes': 'text-amber-600 dark:text-amber-400',
   'Would push you over': 'text-rose-400',
 };
 

@@ -71,7 +71,7 @@ export function SpecialGroupPicker({ value, onChange, className }) {
             className={cn(
               'max-w-[14rem] truncate rounded-full border px-2.5 py-1 text-xs font-medium transition-colors',
               value === g.id
-                ? 'border-amber-400/60 bg-amber-400/15 text-amber-400'
+                ? 'border-amber-400/60 bg-amber-400/15 text-amber-600 dark:text-amber-400'
                 : 'border-border/70 bg-secondary/40 text-muted-foreground hover:text-foreground',
             )}
           >

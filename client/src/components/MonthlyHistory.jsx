@@ -38,11 +38,11 @@ export function MonthlyHistory({ series, currency, showSpecial }) {
               <span className="nums hidden flex-1 text-right text-muted-foreground sm:block">
                 +{formatMoney(m.income, currency)}
               </span>
-              <span className={cn('nums w-24 shrink-0 text-right font-medium', m.net >= 0 ? 'text-primary' : 'text-amber-400')}>
+              <span className={cn('nums w-24 shrink-0 text-right font-medium', m.net >= 0 ? 'text-primary' : 'text-amber-600 dark:text-amber-400')}>
                 {formatMoney(m.net, currency)}
               </span>
               {showSpecial ? (
-                <span className="nums hidden w-20 shrink-0 items-center justify-end gap-1 text-right text-xs text-amber-400 sm:flex">
+                <span className="nums hidden w-20 shrink-0 items-center justify-end gap-1 text-right text-xs text-amber-600 dark:text-amber-400 sm:flex">
                   {m.special > 0 ? (
                     <>
                       <Star className="h-3 w-3" aria-hidden /> {formatMoney(m.special, currency)}

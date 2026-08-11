@@ -355,12 +355,17 @@ export function AskChatbot() {
           ref={scrollRef}
           className="flex-1 overflow-y-auto px-3 py-3"
         >
+          {/* The history banner is a NOTICE, not a branch. It used to replace the
+              message list, and isError stays true for the rest of the session —
+              so the copy invited you to send something and then never showed
+              it. */}
+          {isError ? (
+            <div className="mb-3 rounded-xl border border-destructive/40 bg-destructive/10 p-3 text-center text-xs">
+              Couldn't load your earlier chat. Anything you send now still works.
+            </div>
+          ) : null}
           {isLoading ? (
             <ChatSkeleton />
-          ) : isError ? (
-            <div className="rounded-xl border border-destructive/40 bg-destructive/10 p-3 text-center text-xs">
-              Couldn't load history. The chat still works — try sending something.
-            </div>
           ) : isEmpty ? (
             <EmptyState onPick={(s) => handleSend(s)} />
           ) : (

@@ -294,6 +294,10 @@ function BudgetDialog({ open, onOpenChange, editing, categoriesUsed, onSubmit, s
 
   const [categoryId, setCategoryId] = useState('');
   const [limit, setLimit] = useState('');
+
+  // The dialog said only "Edit budget" — with several budgets on screen there
+  // was nothing confirming which one you had opened.
+  const editingCategoryName = (catsData?.categories ?? []).find((c) => c.id === categoryId)?.name;
   const [period, setPeriod] = useState('monthly');
 
   useEffect(() => {
@@ -316,7 +320,13 @@ function BudgetDialog({ open, onOpenChange, editing, categoriesUsed, onSubmit, s
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>{editing ? 'Edit budget' : 'New budget'}</DialogTitle>
+          <DialogTitle>
+            {editing
+              ? editingCategoryName
+                ? `Edit ${editingCategoryName} budget`
+                : 'Edit budget'
+              : 'New budget'}
+          </DialogTitle>
           <DialogDescription>
             Set a limit for a category. You'll see progress on your dashboard.
           </DialogDescription>

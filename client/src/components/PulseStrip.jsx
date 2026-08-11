@@ -102,7 +102,7 @@ export function PulseStrip({ stats, transactionCount }) {
             <span className="nums text-muted-foreground">
               {stats.xpIntoLevel}/{stats.xpForNextLevel} XP
             </span>
-            <span className={close ? 'font-medium text-amber-400' : 'text-muted-foreground'}>
+            <span className={close ? 'font-medium text-amber-600 dark:text-amber-400' : 'text-muted-foreground'}>
               {close ? '✨ Almost there' : `${stats.xpForNextLevel - stats.xpIntoLevel} to go`}
             </span>
           </p>

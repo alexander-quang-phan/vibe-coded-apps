@@ -61,7 +61,7 @@ export function RecentTransactions({ transactions, currency, onDelete, pendingDe
                       {t.original_currency ? (
                         <>
                           {' · '}
-                          <span className="nums text-amber-400/90">
+                          <span className="nums text-amber-600/90 dark:text-amber-400/90">
                             {formatMoney(Number(t.original_amount), t.original_currency)}
                           </span>
                         </>

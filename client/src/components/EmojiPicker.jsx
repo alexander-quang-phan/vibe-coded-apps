@@ -102,7 +102,7 @@ export function EmojiPicker({ value, onChange, className }) {
           />
         </div>
       </div>
-      {customError ? <p className="text-xs text-amber-400">{customError}</p> : null}
+      {customError ? <p className="text-xs text-amber-600 dark:text-amber-400">{customError}</p> : null}
 
       {/* The grid is a tall thing to have permanently open inside a dialog that
           also has to fit a Save button on a phone — so it's collapsed by

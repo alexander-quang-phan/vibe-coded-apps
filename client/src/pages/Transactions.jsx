@@ -207,7 +207,7 @@ function EditDialog({
           {specialEnabled && tx.type === 'expense' ? (
             <label className="flex items-center justify-between rounded-lg border border-border/60 bg-secondary/30 px-3 py-2">
               <span className="flex items-center gap-2 text-sm">
-                <Star className="h-4 w-4 text-amber-400" aria-hidden />
+                <Star className="h-4 w-4 text-amber-600 dark:text-amber-400" aria-hidden />
                 Special expense
                 <span className="text-xs text-muted-foreground">kept out of your monthly budget</span>
               </span>
@@ -507,7 +507,7 @@ export default function Transactions() {
                   className={cn(
                     'inline-flex items-center gap-1 rounded-full border px-3 py-1.5 text-xs font-medium transition-colors',
                     specialFilter
-                      ? 'border-amber-400/60 bg-amber-400/10 text-amber-400'
+                      ? 'border-amber-400/60 bg-amber-400/10 text-amber-600 dark:text-amber-400'
                       : 'border-border/60 bg-secondary/40 text-muted-foreground hover:text-foreground',
                   )}
                 >
@@ -519,7 +519,7 @@ export default function Transactions() {
                 <button
                   type="button"
                   onClick={() => setSpecialGroupFilter(null)}
-                  className="inline-flex items-center gap-1 rounded-full border border-amber-400/60 bg-amber-400/10 px-3 py-1.5 text-xs font-medium text-amber-400"
+                  className="inline-flex items-center gap-1 rounded-full border border-amber-400/60 bg-amber-400/10 px-3 py-1.5 text-xs font-medium text-amber-600 dark:text-amber-400"
                 >
                   <Star className="h-3.5 w-3.5 fill-amber-400" aria-hidden />
                   {groupName ?? 'Group'} · clear
@@ -611,7 +611,7 @@ export default function Transactions() {
                         {t.original_currency ? (
                           <>
                             {' · '}
-                            <span className="nums text-amber-400/90">
+                            <span className="nums text-amber-600/90 dark:text-amber-400/90">
                               {formatMoney(Number(t.original_amount), t.original_currency)}
                             </span>
                           </>
@@ -632,7 +632,7 @@ export default function Transactions() {
                     )}
                   >
                     {me?.preferences?.specialExpensesEnabled && t.is_special ? (
-                      <Star className="h-3.5 w-3.5 text-amber-400" aria-label="Special expense" />
+                      <Star className="h-3.5 w-3.5 text-amber-600 dark:text-amber-400" aria-label="Special expense" />
                     ) : null}
                     {isIncome ? '+' : '−'}
                     {formatMoney(Number(t.amount), currency)}
@@ -649,7 +649,7 @@ export default function Transactions() {
                         <Star
                           className={cn(
                             'h-3.5 w-3.5',
-                            t.is_special ? 'fill-amber-400 text-amber-400' : 'text-muted-foreground',
+                            t.is_special ? 'fill-amber-400 text-amber-600 dark:text-amber-400' : 'text-muted-foreground',
                           )}
                         />
                       </Button>

@@ -45,11 +45,11 @@ export function SpecialGroupsPanel({ currency, specialThisMonth = 0 }) {
           className="flex w-full items-center justify-between gap-3 text-left"
         >
           <span className="inline-flex items-center gap-1.5 text-xs font-semibold uppercase tracking-[0.16em] text-muted-foreground">
-            <Star className="h-3.5 w-3.5 text-amber-400" aria-hidden />
+            <Star className="h-3.5 w-3.5 text-amber-600 dark:text-amber-400" aria-hidden />
             Special expenses
           </span>
           <span className="flex items-center gap-2">
-            <span className="nums text-sm font-semibold text-amber-400">
+            <span className="nums text-sm font-semibold text-amber-600 dark:text-amber-400">
               {formatMoney(groupedTotal, currency)}
             </span>
             <ChevronDown

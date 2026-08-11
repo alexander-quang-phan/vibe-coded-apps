@@ -189,12 +189,12 @@ function HeroBalance({
             {specialThisMonth > 0 ? (
               <div className="flex-1 rounded-xl border border-border/70 bg-background/40 px-4 py-3 backdrop-blur-sm sm:flex-initial">
                 <div className="flex items-center gap-2 text-xs uppercase tracking-wider text-muted-foreground">
-                  <span className="flex h-5 w-5 items-center justify-center rounded-full bg-amber-400/15 text-amber-400">
+                  <span className="flex h-5 w-5 items-center justify-center rounded-full bg-amber-400/15 text-amber-600 dark:text-amber-400">
                     <Star className="h-3 w-3" strokeWidth={3} />
                   </span>
                   {includeSpecial ? 'Special' : 'Special (out)'}
                 </div>
-                <p className="mt-1 nums text-base font-semibold text-amber-400">
+                <p className="mt-1 nums text-base font-semibold text-amber-600 dark:text-amber-400">
                   {formatMoney(specialThisMonth, currency)}
                 </p>
               </div>
