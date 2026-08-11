@@ -17,6 +17,7 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { useApi } from '@/hooks/useApi';
 import { useAuth } from '@/hooks/useAuth';
 import { CategoryManager } from '@/components/CategoryManager';
+import { invalidateMoney } from '@/lib/invalidate';
 
 const CURRENCIES = [
   { code: 'GBP', label: 'GBP · British Pound' },
@@ -59,8 +60,7 @@ export default function Settings() {
   const updateMutation = useMutation({
     mutationFn: (payload) => api.patch('/api/me', payload),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['me'] });
-      queryClient.invalidateQueries({ queryKey: ['dashboard'] });
+      invalidateMoney(queryClient);
       toast.success('Preferences saved');
     },
     onError: (err) => toast.error(err?.message || 'Could not save'),

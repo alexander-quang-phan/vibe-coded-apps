@@ -10,6 +10,7 @@ import { Label } from '@/components/ui/label';
 import { useApi } from '@/hooks/useApi';
 import { formatMoney } from '@/lib/format';
 import { cn } from '@/lib/utils';
+import { invalidateMoney } from '@/lib/invalidate';
 
 /**
  * Simple-mode "This month" card (Task 6.5). One big number — what's left of
@@ -25,8 +26,7 @@ export function SimpleMonthCard({ spent, currency, monthlyLimit }) {
   const limitMutation = useMutation({
     mutationFn: (monthlyLimit) => api.patch('/api/me', { monthlyLimit }),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['me'] });
-      queryClient.invalidateQueries({ queryKey: ['dashboard'] });
+      invalidateMoney(queryClient);
       toast.success('Monthly limit set', { description: 'One number. That’s the whole game.' });
     },
     onError: (err) => toast.error(err?.message || 'Could not save'),

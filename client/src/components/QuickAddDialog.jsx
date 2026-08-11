@@ -20,6 +20,7 @@ import { SegmentGroup, SegmentButton } from '@/components/ui/toggle-group';
 import { useApi } from '@/hooks/useApi';
 import { cn } from '@/lib/utils';
 import { todayISO } from '@/lib/format';
+import { invalidateMoney } from '@/lib/invalidate';
 import {
   celebrateLevelUp,
   celebrateStreakMilestone,
@@ -191,24 +192,7 @@ export function QuickAddDialog({
   const mutation = useMutation({
     mutationFn: (payload) => api.post('/api/transactions', payload),
     onSuccess: (res) => {
-      queryClient.invalidateQueries({ queryKey: ['dashboard'] });
-      queryClient.invalidateQueries({ queryKey: ['transactions'] });
-      queryClient.invalidateQueries({ queryKey: ['me'] });
-      queryClient.invalidateQueries({ queryKey: ['wins'] });
-      queryClient.invalidateQueries({ queryKey: ['projections'] });
-      // A recurring opt-in creates a row that surfaces on /subscriptions.
-      queryClient.invalidateQueries({ queryKey: ['subscriptions'] });
-      // Any add changes a month's totals, so the average card and the history
-      // list are both stale. Was missing entirely: a backdated add from the
-      // Dashboard used to leave Analytics wrong until a hard refresh.
-      queryClient.invalidateQueries({ queryKey: ['analytics'] });
-      // Logging a special expense into a group changes that group's total, which
-      // the Dashboard's by-group panel reads from ['special-groups']. Only group
-      // CREATION invalidated this before, so a newly grouped expense never
-      // appeared until a reload — half of the "groups don't save" complaint.
-      queryClient.invalidateQueries({ queryKey: ['special-groups'] });
-      // Budget spend is recomputed from transactions server-side.
-      queryClient.invalidateQueries({ queryKey: ['budgets'] });
+      invalidateMoney(queryClient);
 
       const d = res?.delta;
       if (d?.levelUp) {

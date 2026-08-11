@@ -25,6 +25,7 @@ import { SegmentGroup, SegmentButton } from '@/components/ui/toggle-group';
 import { EmojiPicker } from '@/components/EmojiPicker';
 import { useApi } from '@/hooks/useApi';
 import { cn } from '@/lib/utils';
+import { invalidateMoney } from '@/lib/invalidate';
 
 // The old fixed palette, kept only as a one-tap shortcut row above the full
 // picker — these are the icons that actually suit spending categories.
@@ -308,11 +309,7 @@ export function CategoryManager() {
   const income = categories.filter((c) => c.type === 'income');
 
   function invalidateAffected() {
-    queryClient.invalidateQueries({ queryKey: ['categories'] });
-    queryClient.invalidateQueries({ queryKey: ['dashboard'] });
-    queryClient.invalidateQueries({ queryKey: ['transactions'] });
-    queryClient.invalidateQueries({ queryKey: ['budgets'] });
-    queryClient.invalidateQueries({ queryKey: ['analytics', 6] });
+    invalidateMoney(queryClient);
   }
 
   const createMutation = useMutation({

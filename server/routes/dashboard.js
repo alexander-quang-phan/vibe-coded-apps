@@ -40,7 +40,7 @@ router.get('/', async (req, res, next) => {
         .eq('user_id', req.user.id),
       supabase
         .from('transactions')
-        .select('id, amount, type, description, date, category_id, created_at')
+        .select('id, amount, type, description, date, category_id, original_amount, original_currency, fx_rate, created_at')
         .eq('user_id', req.user.id)
         .order('date', { ascending: false })
         .order('created_at', { ascending: false })
@@ -133,6 +133,12 @@ router.get('/', async (req, res, next) => {
           type: t.type,
           description: t.description,
           date: t.date,
+          // Phase 12 — so the Dashboard's recent list can show "€45.00" under a
+          // converted row, the way the Transactions page already does. These
+          // were simply never added to the select.
+          original_amount: t.original_amount,
+          original_currency: t.original_currency,
+          fx_rate: t.fx_rate,
           category: cat
             ? { id: cat.id, name: cat.name, icon: cat.icon, color: cat.color }
             : null,

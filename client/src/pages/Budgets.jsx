@@ -25,6 +25,7 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { useApi } from '@/hooks/useApi';
 import { formatMoney } from '@/lib/format';
 import { cn } from '@/lib/utils';
+import { invalidateMoney } from '@/lib/invalidate';
 
 function progressTone(percent) {
   if (percent >= 1)
@@ -410,10 +411,7 @@ export default function Budgets() {
   const createMutation = useMutation({
     mutationFn: (payload) => api.post('/api/budgets', payload),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['budgets'] });
-      queryClient.invalidateQueries({ queryKey: ['dashboard'] });
-      queryClient.invalidateQueries({ queryKey: ['wins'] });
-      queryClient.invalidateQueries({ queryKey: ['projections'] });
+      invalidateMoney(queryClient);
       toast.success('Budget created');
       setDialogOpen(false);
     },
@@ -423,10 +421,7 @@ export default function Budgets() {
   const updateMutation = useMutation({
     mutationFn: ({ id, payload }) => api.patch(`/api/budgets/${id}`, payload),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['budgets'] });
-      queryClient.invalidateQueries({ queryKey: ['dashboard'] });
-      queryClient.invalidateQueries({ queryKey: ['wins'] });
-      queryClient.invalidateQueries({ queryKey: ['projections'] });
+      invalidateMoney(queryClient);
       toast.success('Budget updated');
       setDialogOpen(false);
       setEditing(null);
@@ -437,10 +432,7 @@ export default function Budgets() {
   const deleteMutation = useMutation({
     mutationFn: (id) => api.del(`/api/budgets/${id}`),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['budgets'] });
-      queryClient.invalidateQueries({ queryKey: ['dashboard'] });
-      queryClient.invalidateQueries({ queryKey: ['wins'] });
-      queryClient.invalidateQueries({ queryKey: ['projections'] });
+      invalidateMoney(queryClient);
       toast.success('Budget removed');
     },
     onError: (err) => toast.error(err?.message || 'Could not delete'),
@@ -452,7 +444,7 @@ export default function Budgets() {
     mutationFn: (monthlyLimit) => api.patch('/api/me', { monthlyLimit }),
     onSuccess: (_res, monthlyLimit) => {
       for (const key of ['budgets', 'dashboard', 'projections', 'me', 'wins']) {
-        queryClient.invalidateQueries({ queryKey: [key] });
+        invalidateMoney(queryClient);
       }
       toast.success(monthlyLimit === null ? 'Overall budget removed' : 'Overall budget set', {
         description:

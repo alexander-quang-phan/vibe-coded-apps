@@ -658,6 +658,9 @@ app.get('/api/dashboard', (_req, res) => {
       type: t.type,
       description: t.description,
       date: t.date,
+      original_amount: t.original_amount ?? null,
+      original_currency: t.original_currency ?? null,
+      fx_rate: t.fx_rate ?? null,
       category: catShape(catById(t.category_id)),
     }));
 

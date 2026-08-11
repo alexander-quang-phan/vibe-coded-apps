@@ -20,6 +20,7 @@ import { EmojiPicker } from '@/components/EmojiPicker';
 import { useApi } from '@/hooks/useApi';
 import { formatMoney } from '@/lib/format';
 import { celebrateGoalCompleted, celebrateGoalMilestone } from '@/lib/confetti';
+import { invalidateMoney } from '@/lib/invalidate';
 
 const EMOJI_CHOICES = ['🏠', '✈️', '💻', '🎓', '🚗', '💍', '🎮', '📱', '🏖️', '🎁', '💰', '🎸'];
 
@@ -301,7 +302,7 @@ export default function SavingsGoals() {
   const createMutation = useMutation({
     mutationFn: (payload) => api.post('/api/goals', payload),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['goals'] });
+      invalidateMoney(queryClient);
       toast.success('Goal created');
       setGoalOpen(false);
     },
@@ -310,8 +311,7 @@ export default function SavingsGoals() {
   const updateMutation = useMutation({
     mutationFn: ({ id, payload }) => api.patch(`/api/goals/${id}`, payload),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['goals'] });
-      queryClient.invalidateQueries({ queryKey: ['wins'] });
+      invalidateMoney(queryClient);
       toast.success('Goal updated');
       setGoalOpen(false);
       setEditing(null);
@@ -321,8 +321,7 @@ export default function SavingsGoals() {
   const deleteMutation = useMutation({
     mutationFn: (id) => api.del(`/api/goals/${id}`),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['goals'] });
-      queryClient.invalidateQueries({ queryKey: ['wins'] });
+      invalidateMoney(queryClient);
       toast.success('Goal removed');
     },
     onError: (err) => toast.error(err?.message || 'Could not delete'),
@@ -330,8 +329,7 @@ export default function SavingsGoals() {
   const contribMutation = useMutation({
     mutationFn: ({ id, payload }) => api.post(`/api/goals/${id}/contributions`, payload),
     onSuccess: (res) => {
-      queryClient.invalidateQueries({ queryKey: ['goals'] });
-      queryClient.invalidateQueries({ queryKey: ['wins'] });
+      invalidateMoney(queryClient);
       setContributingGoal(null);
       if (res.justCompleted) {
         celebrateGoalCompleted();

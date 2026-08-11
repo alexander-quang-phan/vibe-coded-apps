@@ -7,6 +7,7 @@ import { useApi } from '@/hooks/useApi';
 import { SubscriptionRow } from '@/components/SubscriptionRow';
 import { formatMoney } from '@/lib/format';
 import { subscriptionLabel } from '@/lib/subscriptions';
+import { invalidateMoney } from '@/lib/invalidate';
 
 function SummaryCard({ summary, currency }) {
   return (
@@ -105,8 +106,7 @@ export default function Subscriptions() {
       api.patch(`/api/subscriptions/${encodeURIComponent(merchantKey)}`, { status }),
     onMutate: ({ merchantKey }) => setPendingKey(merchantKey),
     onSuccess: (_data, { sub, status }) => {
-      queryClient.invalidateQueries({ queryKey: ['subscriptions'] });
-      queryClient.invalidateQueries({ queryKey: ['wins'] });
+      invalidateMoney(queryClient);
       const label = subscriptionLabel(sub, currency);
       if (status === 'cancelled') {
         toast.success(
@@ -129,7 +129,7 @@ export default function Subscriptions() {
       api.patch(`/api/subscriptions/${encodeURIComponent(merchantKey)}`, { displayName }),
     onMutate: ({ merchantKey }) => setPendingKey(merchantKey),
     onSuccess: (_data, { displayName }) => {
-      queryClient.invalidateQueries({ queryKey: ['subscriptions'] });
+      invalidateMoney(queryClient);
       toast.success(displayName ? `Saved as ${displayName}.` : 'Name cleared.');
     },
     onError: (err) => toast.error(err?.message || 'Could not save name'),
@@ -143,7 +143,7 @@ export default function Subscriptions() {
       api.patch(`/api/subscriptions/${encodeURIComponent(merchantKey)}`, { amount }),
     onMutate: ({ merchantKey }) => setPendingKey(merchantKey),
     onSuccess: (_data, { amount }) => {
-      queryClient.invalidateQueries({ queryKey: ['subscriptions'] });
+      invalidateMoney(queryClient);
       toast.success(`Updated to ${formatMoney(amount, currency)}`, {
         description: 'Future charges only.',
       });

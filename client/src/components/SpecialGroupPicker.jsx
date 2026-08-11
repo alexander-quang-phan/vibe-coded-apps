@@ -5,6 +5,7 @@ import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { useApi } from '@/hooks/useApi';
 import { cn } from '@/lib/utils';
+import { invalidateMoney } from '@/lib/invalidate';
 
 /**
  * Phase 10 (B1) — pick or create a group for a special expense.
@@ -29,7 +30,7 @@ export function SpecialGroupPicker({ value, onChange, className }) {
   const createMutation = useMutation({
     mutationFn: (name) => api.post('/api/special-groups', { name }),
     onSuccess: (res) => {
-      queryClient.invalidateQueries({ queryKey: ['special-groups'] });
+      invalidateMoney(queryClient);
       onChange(res?.group?.id ?? null);
       setCreating(false);
       setDraft('');

@@ -2,6 +2,7 @@ import { forwardRef } from 'react';
 import { Input } from '@/components/ui/input';
 import { formatMoney } from '@/lib/format';
 import { cn } from '@/lib/utils';
+import { decimalsFor } from '@/lib/fx';
 
 // Phase 10 (A1). Money used to be entered through <input type="number">, which
 // silently ate decimals: a number input reports '' from .value for any string
@@ -17,7 +18,10 @@ import { cn } from '@/lib/utils';
 // Currencies with no minor unit — formatMoney renders these with
 // maximumFractionDigits: 0, so accepting decimals would show a number the user
 // can't actually see.
-const ZERO_DECIMAL = new Set(['VND']);
+// Imported, not redeclared. This file used to carry its own Set containing only
+// VND, while lib/fx.js listed six zero-decimal currencies — so Quick Add would
+// happily accept "100.50" in JPY while every conversion downstream rounded JPY
+// to whole units. One list, one behaviour.
 
 /**
  * Keep only what can grow into a valid amount. Returns the cleaned string —
@@ -34,7 +38,7 @@ export function sanitizeMoneyInput(raw, currency = 'GBP') {
   // Drop everything that isn't a digit or a dot.
   s = s.replace(/[^0-9.]/g, '');
 
-  const decimals = ZERO_DECIMAL.has(currency) ? 0 : 2;
+  const decimals = decimalsFor(currency);
   if (decimals === 0) return s.replace(/\./g, '');
 
   // Keep the first dot, drop any later ones ("1.2.3" → "1.23").
@@ -88,7 +92,7 @@ export const MoneyInput = forwardRef(function MoneyInput(
       type="text"
       inputMode="decimal"
       autoComplete="off"
-      placeholder={ZERO_DECIMAL.has(currency) ? '0' : '0.00'}
+      placeholder={decimalsFor(currency) === 0 ? '0' : '0.00'}
       {...props}
       value={value ?? ''}
       onChange={(e) => onValueChange(sanitizeMoneyInput(e.target.value, currency))}

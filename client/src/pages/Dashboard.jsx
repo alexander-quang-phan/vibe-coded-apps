@@ -13,6 +13,7 @@ import { MonthProjection } from '@/components/MonthProjection';
 import { WinsFeed } from '@/components/WinsFeed';
 import { QuickAddButton } from '@/components/QuickAddButton';
 import { formatMoney } from '@/lib/format';
+import { invalidateMoney } from '@/lib/invalidate';
 
 function DashboardSkeleton() {
   return (
@@ -230,13 +231,7 @@ export default function Dashboard() {
   const deleteTxMutation = useMutation({
     mutationFn: (id) => api.del(`/api/transactions/${id}`),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['dashboard'] });
-      queryClient.invalidateQueries({ queryKey: ['transactions'] });
-      queryClient.invalidateQueries({ queryKey: ['wins'] });
-      queryClient.invalidateQueries({ queryKey: ['projections'] });
-      queryClient.invalidateQueries({ queryKey: ['analytics'] });
-      queryClient.invalidateQueries({ queryKey: ['special-groups'] });
-      queryClient.invalidateQueries({ queryKey: ['budgets'] });
+      invalidateMoney(queryClient);
       toast.success('Transaction removed');
     },
     onError: (err) => toast.error(err?.message || 'Could not delete'),

@@ -31,6 +31,7 @@ import { useApi } from '@/hooks/useApi';
 import { QuickAddButton } from '@/components/QuickAddButton';
 import { formatMoney, formatDate, todayISO, thisMonthISO } from '@/lib/format';
 import { cn } from '@/lib/utils';
+import { invalidateMoney } from '@/lib/invalidate';
 
 function csvEscape(v) {
   const s = String(v ?? '');
@@ -370,16 +371,7 @@ export default function Transactions() {
   const deleteMutation = useMutation({
     mutationFn: (id) => api.del(`/api/transactions/${id}`),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['transactions'] });
-      queryClient.invalidateQueries({ queryKey: ['dashboard'] });
-      queryClient.invalidateQueries({ queryKey: ['wins'] });
-      queryClient.invalidateQueries({ queryKey: ['projections'] });
-      queryClient.invalidateQueries({ queryKey: ['subscriptions'] });
-      // Deleting changes a month's totals, so the Analytics averages and history
-      // are stale too. Same omission the Quick Add dialog had.
-      queryClient.invalidateQueries({ queryKey: ['analytics'] });
-      queryClient.invalidateQueries({ queryKey: ['special-groups'] });
-      queryClient.invalidateQueries({ queryKey: ['budgets'] });
+      invalidateMoney(queryClient);
       toast.success('Transaction removed');
     },
     onError: (err) => toast.error(err?.message || 'Could not delete'),
@@ -388,16 +380,7 @@ export default function Transactions() {
   const updateMutation = useMutation({
     mutationFn: ({ id, payload }) => api.patch(`/api/transactions/${id}`, payload),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['transactions'] });
-      queryClient.invalidateQueries({ queryKey: ['dashboard'] });
-      queryClient.invalidateQueries({ queryKey: ['wins'] });
-      queryClient.invalidateQueries({ queryKey: ['projections'] });
-      queryClient.invalidateQueries({ queryKey: ['subscriptions'] });
-      // An edit can move a transaction's amount, date or special flag — all of
-      // which change the Analytics figures.
-      queryClient.invalidateQueries({ queryKey: ['analytics'] });
-      queryClient.invalidateQueries({ queryKey: ['special-groups'] });
-      queryClient.invalidateQueries({ queryKey: ['budgets'] });
+      invalidateMoney(queryClient);
       toast.success('Updated');
       setEditing(null);
     },
