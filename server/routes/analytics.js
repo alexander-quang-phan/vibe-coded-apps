@@ -1,15 +1,17 @@
 import { Router } from 'express';
 import { supabase } from '../lib/supabase.js';
 import { buildRunningAverage } from '../lib/runningAverage.js';
+import { ymInZone, addMonths } from '../lib/month.js';
+import { userTimeZone } from '../lib/userZone.js';
 
 const router = Router();
 
-function ymKey(d) {
-  return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}`;
-}
-
-function monthLabel(d) {
-  return d.toLocaleString('en-US', { month: 'short', timeZone: 'UTC' });
+// Month keys are built by string arithmetic from the user's own current month
+// (lib/month.js), not from the server's UTC clock. The label is derived from the
+// key so it can never disagree with it.
+const MONTH_LABELS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+function monthLabel(ym) {
+  return MONTH_LABELS[Number(ym.slice(5, 7)) - 1];
 }
 
 // GET /api/analytics?months=6
@@ -20,11 +22,11 @@ router.get('/', async (req, res, next) => {
   try {
     const months = Math.min(Math.max(parseInt(req.query.months, 10) || 6, 1), 24);
 
-    const now = new Date();
-    const startDate = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - (months - 1), 1));
-    const endDate = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1));
-    const startISO = startDate.toISOString().slice(0, 10);
-    const endISO = endDate.toISOString().slice(0, 10);
+    const timeZone = await userTimeZone(req.user.id);
+    const thisYm = ymInZone(timeZone);
+    const startYm = addMonths(thisYm, -(months - 1));
+    const startISO = `${startYm}-01`;
+    const endISO = `${addMonths(thisYm, 1)}-01`;
 
     const [txRes, catsRes, statsRes] = await Promise.all([
       supabase
@@ -52,21 +54,21 @@ router.get('/', async (req, res, next) => {
     // Build empty months series (ascending).
     const series = [];
     for (let i = 0; i < months; i++) {
-      const d = new Date(Date.UTC(startDate.getUTCFullYear(), startDate.getUTCMonth() + i, 1));
-      series.push({ ym: ymKey(d), label: monthLabel(d), income: 0, expenses: 0, net: 0, special: 0 });
+      const ym = addMonths(startYm, i);
+      series.push({ ym, label: monthLabel(ym), income: 0, expenses: 0, net: 0, special: 0 });
     }
     const seriesByYm = new Map(series.map((s) => [s.ym, s]));
 
     const catsById = new Map(catsRes.data.map((c) => [c.id, c]));
 
-    const thisYm = ymKey(new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1)));
-    const lastYm = ymKey(new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - 1, 1)));
+    const lastYm = addMonths(thisYm, -1);
 
     const catTotalsThisMonth = new Map();
 
     for (const t of txRes.data) {
-      const d = new Date(t.date + 'T00:00:00Z');
-      const ym = ymKey(d);
+      // The date column is already a calendar day string — slicing it is exact,
+      // where re-parsing it into a Date only reintroduces zone questions.
+      const ym = t.date.slice(0, 7);
       const bucket = seriesByYm.get(ym);
       if (!bucket) continue;
       const amount = Number(t.amount);

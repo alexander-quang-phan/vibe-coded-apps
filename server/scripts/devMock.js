@@ -24,6 +24,7 @@ import { isSingleEmoji } from '../lib/emoji.js';
 import { resolveTotalBudget, buildPace } from '../lib/overallBudget.js';
 import { buildRunningAverage } from '../lib/runningAverage.js';
 import { convertToBase } from '../lib/fx.js';
+import { dayInZone, monthBounds } from '../lib/month.js';
 
 const PORT = process.env.PORT || 3001;
 const app = express();
@@ -61,7 +62,12 @@ const categories = DEFAULT_CATEGORIES.map(([name, icon, color, type], i) => ({
 }));
 const cat = (name) => categories.find((c) => c.name === name);
 
-const todayUTC = () => new Date().toISOString().slice(0, 10);
+// Mirrors the real server: the USER's calendar day. Held in its own variable
+// rather than read off `stats`, because the seed data below calls this while
+// `stats` is still being initialised (a `let` in its temporal dead zone).
+// PATCH /api/me keeps it in step.
+let mockZone = null;
+const todayUTC = () => dayInZone(mockZone);
 function daysAgoISO(n) {
   const d = new Date();
   d.setUTCDate(d.getUTCDate() - n);
@@ -216,6 +222,7 @@ let stats = {
   level: 13,
   badges: [],
   currency: 'GBP',
+  timezone: null,
   simple_mode: false,
   monthly_limit: null,
   display_name: 'Alex',
@@ -230,14 +237,8 @@ let askMessages = [];
 // Helpers mirroring the real routes
 // ---------------------------------------------------------------------------
 
-function monthBounds(d = new Date()) {
-  const first = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1));
-  const nextFirst = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 1));
-  return {
-    firstISO: first.toISOString().slice(0, 10),
-    nextFirstISO: nextFirst.toISOString().slice(0, 10),
-  };
-}
+// monthBounds comes from lib/month.js, zoned by the reported timezone.
+const monthBoundsForUser = () => monthBounds(mockZone);
 
 const round2 = (n) => Number(n.toFixed(2));
 const catById = (id) => categories.find((c) => c.id === id) ?? null;
@@ -261,6 +262,7 @@ function prefsShape() {
     displayName: stats.display_name,
     monthlyLimit: stats.monthly_limit,
     specialExpensesEnabled: stats.special_expenses_enabled,
+    timezone: stats.timezone ?? null,
   };
 }
 
@@ -279,7 +281,11 @@ app.get('/api/me', (_req, res) => {
 });
 
 app.patch('/api/me', (req, res) => {
-  const { currency, simpleMode, displayName, monthlyLimit, specialExpensesEnabled } = req.body ?? {};
+  const { currency, simpleMode, displayName, monthlyLimit, specialExpensesEnabled, timezone } = req.body ?? {};
+  if (timezone !== undefined) {
+    stats.timezone = timezone;
+    mockZone = timezone; // keep the day/month helpers in step
+  }
   if (currency !== undefined) stats.currency = currency;
   if (simpleMode !== undefined) stats.simple_mode = !!simpleMode;
   if (displayName !== undefined) stats.display_name = displayName || null;
@@ -586,7 +592,7 @@ app.delete('/api/special-groups/:id', (req, res) => {
 });
 
 app.get('/api/dashboard', (_req, res) => {
-  const { firstISO, nextFirstISO } = monthBounds();
+  const { firstISO, nextFirstISO } = monthBoundsForUser();
   const monthTx = transactions.filter((t) => t.date >= firstISO && t.date < nextFirstISO);
   const specialEnabled = !!stats.special_expenses_enabled;
 
@@ -682,7 +688,7 @@ app.get('/api/dashboard', (_req, res) => {
 });
 
 app.get('/api/budgets', (_req, res) => {
-  const { firstISO, nextFirstISO } = monthBounds();
+  const { firstISO, nextFirstISO } = monthBoundsForUser();
   const specialEnabled = !!stats.special_expenses_enabled;
   const spendByCat = new Map();
   for (const t of transactions) {
@@ -1102,7 +1108,7 @@ app.all('/api/cron/recurrences', (req, res) => {
 });
 
 app.get('/api/projections/month', (_req, res) => {
-  const { firstISO, nextFirstISO } = monthBounds();
+  const { firstISO, nextFirstISO } = monthBoundsForUser();
   const specialEnabled = !!stats.special_expenses_enabled;
   const now = new Date();
   const daysElapsed = now.getUTCDate();
@@ -1155,7 +1161,7 @@ app.get('/api/projections/month', (_req, res) => {
 
 app.post('/api/affordability', (req, res) => {
   const { amount, categoryId, includeSpecial } = req.body ?? {};
-  const { firstISO, nextFirstISO } = monthBounds();
+  const { firstISO, nextFirstISO } = monthBoundsForUser();
   const specialEnabled = !!stats.special_expenses_enabled;
   const spendByCat = new Map();
   let totalSpent = 0;

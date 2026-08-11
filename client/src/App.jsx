@@ -3,6 +3,8 @@ import { Link, NavLink, Outlet, useNavigate } from 'react-router-dom';
 import { LogOut, Moon, Sun, Scissors } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { AskChatbot } from '@/components/AskChatbot';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useApi } from '@/hooks/useApi';
 import { useAuth } from '@/hooks/useAuth';
 import { cn } from '@/lib/utils';
 
@@ -33,10 +35,46 @@ function useTheme() {
   return { isDark, toggle: () => setIsDark((v) => !v) };
 }
 
+/**
+ * Phase 14 — report this device's IANA timezone so the server can bucket months
+ * by the USER's calendar, not its own UTC clock. Silent and automatic: a setting
+ * Alex has to find and keep correct while travelling is a setting that will be
+ * wrong. Fires only when it actually differs from what is stored, so it costs
+ * one PATCH after a flight and nothing at all otherwise.
+ */
+function useReportTimezone() {
+  const api = useApi();
+  const queryClient = useQueryClient();
+  const { data: me } = useQuery({
+    queryKey: ['me'],
+    queryFn: () => api.get('/api/me'),
+  });
+  const stored = me?.preferences?.timezone;
+
+  useEffect(() => {
+    if (!me) return;
+    let local;
+    try {
+      local = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    } catch {
+      return; // no Intl zone available — the server's UTC fallback is fine
+    }
+    if (!local || local === stored) return;
+    api
+      .patch('/api/me', { timezone: local })
+      .then(() => queryClient.invalidateQueries({ queryKey: ['me'] }))
+      .catch(() => {
+        // Never surface this. A failed timezone report degrades to the previous
+        // stored zone, which is what the user had a moment ago anyway.
+      });
+  }, [me, stored, api, queryClient]);
+}
+
 export default function App() {
   const { signOut } = useAuth();
   const navigate = useNavigate();
   const { isDark, toggle } = useTheme();
+  useReportTimezone();
 
   async function handleLogout() {
     await signOut();

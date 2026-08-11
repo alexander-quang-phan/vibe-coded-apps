@@ -10,6 +10,8 @@ import {
   ASK_HISTORY_VISIBLE,
   ASK_HISTORY_TO_MODEL,
 } from '../lib/askPrompt.js';
+import { dayInZone } from '../lib/month.js';
+import { userTimeZone } from '../lib/userZone.js';
 
 const router = Router();
 
@@ -17,8 +19,10 @@ const askSchema = z.object({
   message: z.string().trim().min(1).max(2000),
 });
 
-function todayISO() {
-  return new Date().toISOString().slice(0, 10);
+// askContext.js derives every window from this one string, so getting it right
+// in the user's zone fixes the whole AI context at once.
+function todayISO(timeZone) {
+  return dayInZone(timeZone);
 }
 
 function sseWrite(res, payload) {
@@ -93,7 +97,7 @@ router.post('/', async (req, res, next) => {
     const context = await loadAskContext({
       supabase,
       userId: req.user.id,
-      today: todayISO(),
+      today: todayISO(await userTimeZone(req.user.id)),
     });
 
     const variant = process.env.ASK_PROMPT_VARIANT === 'cold-open' ? 'cold-open' : 'one-shot';

@@ -2,21 +2,16 @@ import { Router } from 'express';
 import { supabase } from '../lib/supabase.js';
 import { titleForLevel, levelProgress } from '../lib/gamification.js';
 import { excludeSpecial, sumSpecial } from '../lib/special.js';
+import { monthBounds } from '../lib/month.js';
+import { userTimeZone } from '../lib/userZone.js';
 
 const router = Router();
 
-function monthBounds(d = new Date()) {
-  const first = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1));
-  const nextFirst = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 1));
-  return {
-    firstISO: first.toISOString().slice(0, 10),
-    nextFirstISO: nextFirst.toISOString().slice(0, 10),
-  };
-}
+// monthBounds now lives in lib/month.js and takes the user's timezone.
 
 router.get('/', async (req, res, next) => {
   try {
-    const { firstISO, nextFirstISO } = monthBounds();
+    const { firstISO, nextFirstISO } = monthBounds(await userTimeZone(req.user.id));
 
     const [statsResult, txResult, catResult, budgetResult, recentResult] = await Promise.all([
       supabase

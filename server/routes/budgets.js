@@ -2,6 +2,8 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { supabase } from '../lib/supabase.js';
 import { excludeSpecial } from '../lib/special.js';
+import { monthBounds } from '../lib/month.js';
+import { userTimeZone } from '../lib/userZone.js';
 
 const router = Router();
 
@@ -16,16 +18,12 @@ const updateSchema = z.object({
   period: z.enum(['monthly', 'weekly']).optional(),
 });
 
-function monthBounds(d = new Date()) {
-  const first = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1));
-  const nextFirst = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 1));
-  return { firstISO: first.toISOString().slice(0, 10), nextFirstISO: nextFirst.toISOString().slice(0, 10) };
-}
+// monthBounds now lives in lib/month.js and takes the user's timezone.
 
 // GET /api/budgets — list every budget plus this-month spend per category.
 router.get('/', async (req, res, next) => {
   try {
-    const { firstISO, nextFirstISO } = monthBounds();
+    const { firstISO, nextFirstISO } = monthBounds(await userTimeZone(req.user.id));
 
     const [budgetsRes, catsRes, txRes, statsRes] = await Promise.all([
       supabase

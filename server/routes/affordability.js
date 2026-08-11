@@ -3,6 +3,8 @@ import { z } from 'zod';
 import { supabase } from '../lib/supabase.js';
 import { excludeSpecial } from '../lib/special.js';
 import { resolveTotalBudget } from '../lib/overallBudget.js';
+import { monthBounds } from '../lib/month.js';
+import { userTimeZone } from '../lib/userZone.js';
 
 const router = Router();
 
@@ -16,14 +18,7 @@ const checkSchema = z.object({
   includeSpecial: z.boolean().optional(),
 });
 
-function monthBounds(d = new Date()) {
-  const first = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1));
-  const nextFirst = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 1));
-  return {
-    firstISO: first.toISOString().slice(0, 10),
-    nextFirstISO: nextFirst.toISOString().slice(0, 10),
-  };
-}
+// monthBounds now lives in lib/month.js and takes the user's timezone.
 
 const round2 = (n) => Number(n.toFixed(2));
 
@@ -50,7 +45,7 @@ router.post('/', async (req, res, next) => {
       return res.status(400).json({ error: 'Invalid check', details: parsed.error.flatten() });
     }
     const { amount, categoryId, includeSpecial } = parsed.data;
-    const { firstISO, nextFirstISO } = monthBounds();
+    const { firstISO, nextFirstISO } = monthBounds(await userTimeZone(req.user.id));
     const ninetyDaysAgo = new Date(Date.now() - 90 * 86_400_000).toISOString();
 
     const [budgetsRes, txRes, goalsRes, contribsRes, statsRes] = await Promise.all([

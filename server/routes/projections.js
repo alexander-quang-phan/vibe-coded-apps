@@ -2,26 +2,27 @@ import { Router } from 'express';
 import { supabase } from '../lib/supabase.js';
 import { excludeSpecial } from '../lib/special.js';
 import { resolveTotalBudget, buildPace } from '../lib/overallBudget.js';
+import { dayInZone, addMonths, daysInMonth, dayOfMonth } from '../lib/month.js';
+import { userTimeZone } from '../lib/userZone.js';
 
 const router = Router();
 
 const COLD_START_MIN_DAYS = 3;
 
-function bounds(d = new Date()) {
-  const y = d.getUTCFullYear();
-  const m = d.getUTCMonth();
-  const first = new Date(Date.UTC(y, m, 1));
-  const nextFirst = new Date(Date.UTC(y, m + 1, 1));
-  const lastMonthFirst = new Date(Date.UTC(y, m - 1, 1));
-  const daysInMonth = new Date(Date.UTC(y, m + 1, 0)).getUTCDate();
-  const daysInLastMonth = new Date(Date.UTC(y, m, 0)).getUTCDate();
+// All of this is the USER's month, not the server's. `daysElapsed` in
+// particular drove the pace line: on the 1st in Paris the server still said the
+// last day of the previous month, so the projection divided by ~30 instead of 1.
+function bounds(timeZone, d = new Date()) {
+  const today = dayInZone(timeZone, d);
+  const ym = today.slice(0, 7);
+  const lastYm = addMonths(ym, -1);
   return {
-    firstISO: first.toISOString().slice(0, 10),
-    nextFirstISO: nextFirst.toISOString().slice(0, 10),
-    lastMonthFirstISO: lastMonthFirst.toISOString().slice(0, 10),
-    daysInMonth,
-    daysInLastMonth,
-    daysElapsed: d.getUTCDate(),
+    firstISO: `${ym}-01`,
+    nextFirstISO: `${addMonths(ym, 1)}-01`,
+    lastMonthFirstISO: `${lastYm}-01`,
+    daysInMonth: daysInMonth(ym),
+    daysInLastMonth: daysInMonth(lastYm),
+    daysElapsed: dayOfMonth(today),
   };
 }
 
@@ -54,7 +55,7 @@ router.get('/month', async (req, res, next) => {
       lastMonthFirstISO,
       daysInMonth,
       daysElapsed,
-    } = bounds();
+    } = bounds(await userTimeZone(req.user.id));
 
     const [thisMonthRes, lastMonthRes, budgetsRes, statsRes] = await Promise.all([
       supabase

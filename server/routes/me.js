@@ -13,6 +13,14 @@ const prefsSchema = z.object({
   monthlyLimit: z.number().positive().finite().max(1_000_000_000).optional().nullable(),
   // Opt-in special expenses (Task 9.2). Off by default; flags go dormant when off.
   specialExpensesEnabled: z.boolean().optional(),
+  // Phase 14 — the client reports its IANA zone so month boundaries can be the
+  // user's, not the server's. Shape-checked, not allow-listed; lib/month.js
+  // falls back to UTC for anything Intl cannot resolve.
+  timezone: z
+    .string()
+    .max(64)
+    .regex(/^(UTC|[A-Za-z][A-Za-z0-9_+-]*(\/[A-Za-z0-9_+-]+){1,2})$/)
+    .optional(),
 });
 
 router.get('/', async (req, res, next) => {
@@ -46,6 +54,7 @@ router.get('/', async (req, res, next) => {
         displayName: stats.display_name,
         monthlyLimit: stats.monthly_limit === null ? null : Number(stats.monthly_limit),
         specialExpensesEnabled: stats.special_expenses_enabled,
+        timezone: stats.timezone ?? null,
       },
       stats: {
         currentStreak: stats.current_streak,
@@ -78,6 +87,7 @@ router.patch('/', async (req, res, next) => {
     if (parsed.data.monthlyLimit !== undefined) {
       payload.monthly_limit = parsed.data.monthlyLimit;
     }
+    if (parsed.data.timezone !== undefined) payload.timezone = parsed.data.timezone;
     if (parsed.data.specialExpensesEnabled !== undefined) {
       payload.special_expenses_enabled = parsed.data.specialExpensesEnabled;
     }
@@ -89,7 +99,7 @@ router.patch('/', async (req, res, next) => {
       .from('user_stats')
       .update(payload)
       .eq('user_id', req.user.id)
-      .select('currency, simple_mode, display_name, monthly_limit, special_expenses_enabled')
+      .select('currency, simple_mode, display_name, monthly_limit, special_expenses_enabled, timezone')
       .single();
     if (error) throw error;
 
@@ -100,6 +110,7 @@ router.patch('/', async (req, res, next) => {
         displayName: data.display_name,
         monthlyLimit: data.monthly_limit === null ? null : Number(data.monthly_limit),
         specialExpensesEnabled: data.special_expenses_enabled,
+        timezone: data.timezone ?? null,
       },
     });
   } catch (err) {

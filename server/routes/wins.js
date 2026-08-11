@@ -1,6 +1,8 @@
 import { Router } from 'express';
 import { supabase } from '../lib/supabase.js';
 import { excludeSpecial } from '../lib/special.js';
+import { dayInZone } from '../lib/month.js';
+import { userTimeZone } from '../lib/userZone.js';
 
 const router = Router();
 const DAY_MS = 86_400_000;
@@ -10,8 +12,10 @@ function dateOnly(d) {
   return d.toISOString().slice(0, 10);
 }
 
-function startOfUtcDay(d = new Date()) {
-  return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
+// The user's day, not the server's — a win earned at 00:30 in Paris belongs to
+// that day, not to the one the server is still finishing.
+function startOfUserDay(timeZone, d = new Date()) {
+  return new Date(`${dayInZone(timeZone, d)}T00:00:00Z`);
 }
 
 function formatMoney(amount, currency) {
@@ -32,7 +36,7 @@ function latestDateForCategory(transactions, categoryId, fallback) {
 
 router.get('/', async (req, res, next) => {
   try {
-    const today = startOfUtcDay();
+    const today = startOfUserDay(await userTimeZone(req.user.id));
     const weekStart = new Date(today.getTime() - 6 * DAY_MS);
     const eventCutoff = new Date(today.getTime() - 14 * DAY_MS);
     const todayISO = dateOnly(today);
