@@ -72,9 +72,13 @@ and UTC midnight was stamped yesterday and rendered as "Yesterday" the moment it
 A create also sends `clientToday` purely so the streak follows the user's day, kept separate from
 `date` so backfilling last month cannot count as logging today.
 
-**Known limit:** the server still buckets "this month" on its own UTC clock, so a log made in the
-local-vs-UTC window ON the 1st can land in the wrong month server-side. Fixing that needs a stored
-user timezone and every month-bounds computation reworked.
+The **server** side is fixed too (Phase 14). `user_stats.timezone` holds the user's IANA zone,
+reported automatically by the client whenever it differs from what is stored — no setting to find,
+and none to get wrong mid-trip. Every period boundary now comes from `server/lib/month.js`, one
+pure tz-aware definition that replaced three copies of `monthBounds` and a dozen ad-hoc
+`getUTCMonth()` calls across dashboard, budgets, affordability, projections, analytics, wins and
+ask. A NULL zone falls back to UTC, which is exactly the old behaviour, and an unresolvable zone
+fails open to UTC rather than erroring.
 
 ### Cache invalidation
 

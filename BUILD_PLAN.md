@@ -907,9 +907,20 @@ Everything the two validation sweeps surfaced, plus the two follow-ups Alex aske
       Settings no longer shows or saves factory defaults.
 - [x] **13.7** Dead ends and affordances: budget link, `aria-pressed` chips, month dropdown.
 
-**Still open, deliberately:** server-side month bucketing is UTC (needs a stored user timezone);
-amber-on-dark warning contrast in light mode; Ask Trim hides the conversation when history fails;
-budget edit dialog does not name the budget.
+All four of the items left open on 2026-08-11 were subsequently closed — the last three in
+`65d2728`, and server-side month bucketing in Phase 14 below.
+
+---
+
+## Phase 14 — the user's calendar, not the server's (2026-08-11)
+
+- [x] **14.1** `server/lib/month.js` — one pure tz-aware definition + 10 unit tests (suite 82).
+- [x] **14.2** Migration 017 `user_stats.timezone`; `/api/me` accepts, persists and returns it.
+- [x] **14.3** The client reports its IANA zone automatically, only on a change.
+- [x] **14.4** All 7 money paths converted; 3 duplicate `monthBounds` deleted.
+
+**Do not reintroduce a UTC clock read for a period boundary.** `transactions.date` is a calendar
+day in the USER's zone; anything comparing against it must be derived from `lib/month.js`.
 
 ---
 
