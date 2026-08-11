@@ -469,7 +469,7 @@ app.post('/api/transactions/parse', (req, res) => {
 app.patch('/api/transactions/:id', (req, res) => {
   const tx = transactions.find((t) => t.id === req.params.id);
   if (!tx) return res.status(404).json({ error: 'Transaction not found' });
-  const { categoryId, amount, type, description, date, isSpecial, specialGroupId } = req.body ?? {};
+  const { categoryId, amount, type, description, date, isSpecial, specialGroupId, foreign } = req.body ?? {};
   const effectiveType = type !== undefined ? type : tx.type;
   const effectiveSpecial = isSpecial !== undefined ? isSpecial : tx.is_special;
   if (effectiveSpecial && effectiveType === 'income') {
@@ -488,6 +488,30 @@ app.patch('/api/transactions/:id', (req, res) => {
   }
   if (categoryId !== undefined) tx.category_id = categoryId;
   if (amount !== undefined) tx.amount = amount;
+  // Phase 12b — mirrors routes/transactions.js. Applied AFTER `amount` so the
+  // derived figure wins over anything the client sent, same as the real route.
+  if (foreign === null) {
+    tx.original_amount = null;
+    tx.original_currency = null;
+    tx.fx_rate = null;
+  } else if (foreign) {
+    const oc = String(foreign.originalCurrency).toUpperCase();
+    if (oc === stats.currency) {
+      tx.amount = convertToBase({ originalAmount: foreign.originalAmount, fxRate: 1, baseCurrency: stats.currency });
+      tx.original_amount = null;
+      tx.original_currency = null;
+      tx.fx_rate = null;
+    } else {
+      const converted = convertToBase({ originalAmount: foreign.originalAmount, fxRate: foreign.fxRate, baseCurrency: stats.currency });
+      if (converted <= 0) {
+        return res.status(400).json({ error: 'That converts to zero in your currency — check the amount and rate' });
+      }
+      tx.amount = converted;
+      tx.original_amount = foreign.originalAmount;
+      tx.original_currency = oc;
+      tx.fx_rate = foreign.fxRate;
+    }
+  }
   if (type !== undefined) tx.type = type;
   if (description !== undefined) tx.description = description || null;
   if (date !== undefined) tx.date = date;

@@ -23,6 +23,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { MoneyInput, isValidMoney, sanitizeMoneyInput } from '@/components/ui/money-input';
 import { SpecialGroupPicker } from '@/components/SpecialGroupPicker';
+import { CurrencyPicker, ConversionLine } from '@/components/CurrencyEntry';
 import { Label } from '@/components/ui/label';
 import { Skeleton } from '@/components/ui/skeleton';
 import { SegmentGroup, SegmentButton } from '@/components/ui/toggle-group';
@@ -66,19 +67,66 @@ function EditDialog({
   const [categoryId, setCategoryId] = useState('');
   const [isSpecial, setIsSpecial] = useState(false);
   const [specialGroupId, setSpecialGroupId] = useState(null);
+  // Phase 12b — a mis-picked currency used to mean delete-and-re-add.
+  const [entryCurrency, setEntryCurrency] = useState(currency);
+  const [rate, setRate] = useState('1');
+  const [rateState, setRateState] = useState('idle');
+  const api = useApi();
 
   useEffect(() => {
     if (!tx || !open) return;
-    setAmount(sanitizeMoneyInput(String(tx.amount), currency));
+    // Seed from the row's own currency, so opening an existing euro expense
+    // shows euros and its stored rate rather than silently reverting to base.
+    const wasForeign = !!tx.original_currency;
+    setAmount(
+      sanitizeMoneyInput(
+        String(wasForeign ? tx.original_amount : tx.amount),
+        wasForeign ? tx.original_currency : currency,
+      ),
+    );
+    setEntryCurrency(wasForeign ? tx.original_currency : currency);
+    setRate(wasForeign ? String(tx.fx_rate) : '1');
+    setRateState(wasForeign ? 'ready' : 'idle');
     setDescription(tx.description ?? '');
     setDate(tx.date);
     setCategoryId(tx.category_id);
     setIsSpecial(!!tx.is_special);
     setSpecialGroupId(tx.special_group_id ?? null);
-  }, [tx, open]);
+  }, [tx, open, currency]);
+
+  const isForeign = entryCurrency !== currency;
+
+  // Only fetch when the user CHANGES currency — never on open, which would
+  // overwrite the rate this transaction was actually created at.
+  const [rateDirty, setRateDirty] = useState(false);
+  useEffect(() => {
+    if (!open || !rateDirty || !isForeign) return;
+    let cancelled = false;
+    setRateState('loading');
+    setRate('');
+    api
+      .get(`/api/fx?from=${entryCurrency}&to=${currency}`)
+      .then((r) => {
+        if (cancelled) return;
+        if (r && typeof r.rate === 'number' && r.rate > 0) {
+          setRate(String(r.rate));
+          setRateState('ready');
+        } else setRateState('unavailable');
+      })
+      .catch(() => {
+        if (!cancelled) setRateState('unavailable');
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [open, rateDirty, isForeign, entryCurrency, currency, api]);
 
   if (!tx) return null;
   const amountNum = Number(amount);
+  // Same gate as Quick Add: a foreign edit without a usable rate must not save,
+  // or the foreign figure would be stored as base currency.
+  const fxRate = Number(rate);
+  const rateValid = !isForeign || (rate !== '' && Number.isFinite(fxRate) && fxRate > 0);
   const sameTypeCats = categories.filter((c) => c.type === tx.type);
 
   return (
@@ -93,14 +141,38 @@ function EditDialog({
 
         <div className="space-y-4">
           <div className="space-y-1.5">
-            <Label htmlFor="edit-amount">Amount</Label>
+            <div className="flex items-end justify-between gap-2">
+              <Label htmlFor="edit-amount">Amount</Label>
+              <CurrencyPicker
+                value={entryCurrency}
+                base={currency}
+                onChange={(c) => {
+                  setEntryCurrency(c);
+                  setRateDirty(true);
+                  if (c === currency) {
+                    setRate('1');
+                    setRateState('idle');
+                  }
+                }}
+              />
+            </div>
             <MoneyInput
               id="edit-amount"
-              currency={currency}
+              currency={entryCurrency}
               value={amount}
               onValueChange={setAmount}
               className="no-spin"
             />
+            {isForeign ? (
+              <ConversionLine
+                amountStr={amount}
+                entryCurrency={entryCurrency}
+                baseCurrency={currency}
+                rate={rate}
+                rateState={rateState}
+                onRateChange={setRate}
+              />
+            ) : null}
           </div>
           <div className="space-y-1.5">
             <Label>Category</Label>
@@ -173,9 +245,22 @@ function EditDialog({
                 description: description.trim() || null,
                 ...(tx.type === 'expense' ? { isSpecial } : {}),
                 ...(tx.type === 'expense' && isSpecial ? { specialGroupId } : {}),
+                // Send the block when foreign; send null to convert a row back
+                // to plain base currency; omit entirely if it was never foreign.
+                ...(isForeign
+                  ? {
+                      foreign: {
+                        originalAmount: amountNum,
+                        originalCurrency: entryCurrency,
+                        fxRate: Number(rate),
+                      },
+                    }
+                  : tx.original_currency
+                    ? { foreign: null }
+                    : {}),
               })
             }
-            disabled={saving || !isValidMoney(amount) || !categoryId || !date}
+            disabled={saving || !isValidMoney(amount) || !categoryId || !date || !rateValid}
           >
             {saving ? 'Saving…' : 'Save'}
           </Button>

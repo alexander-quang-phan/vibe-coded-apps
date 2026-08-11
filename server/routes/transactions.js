@@ -76,6 +76,18 @@ const updateSchema = z.object({
   date: isoDate.optional(),
   isSpecial: z.boolean().optional(),
   specialGroupId: z.string().uuid().optional().nullable(),
+  // Phase 12b — change (or clear) a row's currency after the fact. Same rule as
+  // create: the server DERIVES `amount` from the block and ignores any `amount`
+  // sent alongside it. `null` converts the row back to a plain base-currency
+  // entry, keeping whatever `amount` is supplied.
+  foreign: z
+    .object({
+      originalAmount: z.number().positive().finite().max(1_000_000_000),
+      originalCurrency: z.string().regex(/^[A-Za-z]{3}$/),
+      fxRate: z.number().positive().finite(),
+    })
+    .nullable()
+    .optional(),
 });
 
 const parseSchema = z.object({
@@ -423,6 +435,42 @@ router.patch('/:id', async (req, res, next) => {
     if (parsed.data.date !== undefined) payload.date = parsed.data.date;
     if (parsed.data.isSpecial !== undefined) payload.is_special = parsed.data.isSpecial;
     if (parsed.data.specialGroupId !== undefined) payload.special_group_id = parsed.data.specialGroupId;
+
+    // Phase 12b — currency. Derived here so the stored amount can never disagree
+    // with the original x rate displayed beside it, exactly as on create.
+    if (parsed.data.foreign === null) {
+      payload.original_amount = null;
+      payload.original_currency = null;
+      payload.fx_rate = null;
+    } else if (parsed.data.foreign) {
+      const { originalAmount, fxRate } = parsed.data.foreign;
+      const originalCurrency = parsed.data.foreign.originalCurrency.toUpperCase();
+      const { data: prefs, error: prefsErr } = await supabase
+        .from('user_stats')
+        .select('currency')
+        .eq('user_id', req.user.id)
+        .single();
+      if (prefsErr) throw prefsErr;
+      const baseCurrency = prefs.currency;
+
+      if (originalCurrency === baseCurrency) {
+        payload.amount = convertToBase({ originalAmount, fxRate: 1, baseCurrency });
+        payload.original_amount = null;
+        payload.original_currency = null;
+        payload.fx_rate = null;
+      } else {
+        const converted = convertToBase({ originalAmount, fxRate, baseCurrency });
+        if (converted <= 0) {
+          return res.status(400).json({
+            error: 'That converts to zero in your currency — check the amount and rate',
+          });
+        }
+        payload.amount = converted;
+        payload.original_amount = originalAmount;
+        payload.original_currency = originalCurrency;
+        payload.fx_rate = fxRate;
+      }
+    }
     // Un-starring clears the group automatically — the guard above already
     // refuses the contradictory combination, this handles the honest one.
     if (parsed.data.isSpecial === false) payload.special_group_id = null;
