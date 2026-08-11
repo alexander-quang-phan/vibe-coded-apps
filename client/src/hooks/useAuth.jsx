@@ -8,10 +8,21 @@ export function AuthProvider({ children }) {
   const [isLoading, setIsLoading] = useState(true);
 
   useEffect(() => {
-    supabase.auth.getSession().then(({ data }) => {
-      setSession(data.session ?? null);
-      setIsLoading(false);
-    });
+    supabase.auth
+      .getSession()
+      .then(({ data }) => {
+        setSession(data.session ?? null);
+        setIsLoading(false);
+      })
+      .catch(() => {
+        // There was no .catch() here at all. A rejected getSession — offline, or
+        // Supabase unreachable — left isLoading true forever, so the app sat on
+        // a spinner with no error and no way forward. Treating it as "no
+        // session" sends the user to the login screen, which is honest and
+        // recoverable.
+        setSession(null);
+        setIsLoading(false);
+      });
 
     const { data: sub } = supabase.auth.onAuthStateChange((_event, newSession) => {
       setSession(newSession ?? null);

@@ -43,6 +43,11 @@ export default function Settings() {
   const { user, signOut } = useAuth();
 
   const { data, isLoading } = useQuery({ queryKey: ['me'], queryFn: () => api.get('/api/me') });
+  // `|| !data` matters more here than anywhere: offline, TanStack pauses the
+  // query and isLoading goes false with data undefined, so the form would show
+  // its useState defaults (GBP, simple mode off, no name) as if they were the
+  // user's real settings — and saving would write those over the real ones.
+  const notReady = isLoading || !data;
 
   const [currency, setCurrency] = useState('GBP');
   const [simpleMode, setSimpleMode] = useState(false);
@@ -94,7 +99,7 @@ export default function Settings() {
         <h1 className="text-3xl font-extrabold tracking-tight sm:text-4xl">Settings</h1>
       </header>
 
-      {isLoading ? (
+      {notReady ? (
         <SettingsSkeleton />
       ) : (
         <>

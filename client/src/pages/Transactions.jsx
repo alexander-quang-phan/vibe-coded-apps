@@ -332,12 +332,30 @@ export default function Transactions() {
   const categories = catsData?.categories ?? [];
   const catsById = useMemo(() => new Map(categories.map((c) => [c.id, c])), [categories]);
 
+  // Months accumulate across fetches rather than being derived from the current
+  // response. `data` comes from useQuery(['transactions', monthFilter]), which
+  // fetches ONLY the selected month — so deriving the list from it collapsed the
+  // dropdown to the one month you had just picked, and you could not jump
+  // straight to another without going back through "All months" first.
+  const [knownMonths, setKnownMonths] = useState(() => (urlMonth ? [urlMonth] : []));
+  useEffect(() => {
+    const seen = new Set(knownMonths);
+    let added = false;
+    for (const t of data?.transactions ?? []) {
+      const ym = t.date.slice(0, 7);
+      if (!seen.has(ym)) {
+        seen.add(ym);
+        added = true;
+      }
+    }
+    if (added) setKnownMonths([...seen]);
+  }, [data, knownMonths]);
+
   const months = useMemo(() => {
-    const set = new Set();
-    for (const t of data?.transactions ?? []) set.add(t.date.slice(0, 7));
-    if (urlMonth) set.add(urlMonth); // keep the deep-linked month selectable even with no rows yet
+    const set = new Set(knownMonths);
+    if (urlMonth) set.add(urlMonth); // deep-linked month stays selectable with no rows yet
     return [...set].sort().reverse();
-  }, [data, urlMonth]);
+  }, [knownMonths, urlMonth]);
 
   const filtered = useMemo(() => {
     const list = data?.transactions ?? [];

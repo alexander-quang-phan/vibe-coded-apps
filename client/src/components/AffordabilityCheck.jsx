@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { Link } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { HelpCircle } from 'lucide-react';
 import { Card, CardContent } from '@/components/ui/card';
@@ -107,6 +108,9 @@ export function AffordabilityCheck({ currency, includeSpecial = false }) {
                 <button
                   key={c.id}
                   type="button"
+                  // Selection was communicated by colour alone — invisible to a
+                  // screen reader and to anyone who cannot separate these hues.
+                  aria-pressed={active}
                   onClick={() => setCategoryId(active ? null : c.id)}
                   className={cn(
                     'inline-flex shrink-0 items-center gap-1 rounded-full border px-2.5 py-1 text-xs font-medium transition-colors',
@@ -147,7 +151,13 @@ export function AffordabilityCheck({ currency, includeSpecial = false }) {
                       : 'past your combined budgets'}
                 </p>
               ) : (
-                <p>No monthly budget yet — set one for a sharper answer.</p>
+                <p>
+                  No monthly budget yet —{' '}
+                  <Link to="/budgets" className="font-medium text-primary underline-offset-4 hover:underline">
+                    set one
+                  </Link>{' '}
+                  for a sharper answer.
+                </p>
               )}
               {result.goal && result.goalImpactDays !== null ? (
                 <p>
