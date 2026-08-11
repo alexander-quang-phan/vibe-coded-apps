@@ -3,7 +3,7 @@
 ## DUAL-AGENT BATON  (both models: update this the MOMENT you finish work)
 - Current stage:  no loop active — Phases 11–14 were ordinary feature work, single-model by design
 - Model A is:     not yet set — Alex chooses at the next kickoff
-- Up next:        Alex's live click-through; then the 4 unverified leads under "Next steps"
+- Up next:        Alex's live click-through. All sweep findings are now closed.
 - Last actor did: Phases 11, 12, 12b, 13, 14 built + verified + deployed; migrations 016 and 017
                   applied; 21 bugs fixed across two validation sweeps
 - Next must:      nothing blocking — everything is live and working as far as it can be checked
@@ -105,19 +105,9 @@ browser. See "Traps" for the harness technique.
    check it stores the converted figure with the original underneath; pick a group on a special
    expense and confirm the Dashboard panel updates; log something late evening and confirm it says
    "Today".
-2. **Four unverified sweep leads remain.** Each is a claim from an agent that was never
-   adversarially checked — treat as a lead, not a fact:
-   - **`server/routes/budgets.js`** — the schema allows `period: 'weekly'` but spend is queried over
-     a full month, so a weekly budget would be measured against ~4× its window. MEDIUM.
-   - **`server/routes/dashboard.js:81`** — `percentOfExpenses: total / expenses` divides a
-     special-EXCLUDED category total by a special-INCLUDED month total, so donut percentages
-     under-report when special spend exists. MEDIUM.
-   - **`server/lib/askContext.js`** — Ask Trim's budget context reportedly includes special expenses
-     and ignores budget period. MEDIUM.
-   - **`RecentTransactions.jsx:25`** — "Tap the + button" empty-state copy; check it still points
-     somewhere true now that Transactions has its own add button. LOW.
-3. **Re-run the validation sweep** once these are cleared, to catch what two passes missed.
-4. Longer-standing: 9.5 encryption at rest (half-built and INERT, migration 012 NOT applied);
+2. **Re-run the validation sweep** — two passes have been run and everything they found is fixed,
+   so a third would be looking for what both missed. Worth it before any big new feature.
+3. Longer-standing: 9.5 encryption at rest (half-built and INERT, migration 012 NOT applied);
    Phase 8 bank sync (blocked on Enable Banking); custom domain; Supabase leaked-password toggle.
 
 ## Open questions for Alex
@@ -127,6 +117,13 @@ browser. See "Traps" for the harness technique.
 Start a session in this folder and say: "Read @CHAT_HANDOFF.md and continue with next step 2."
 
 ## Previous sessions
+- **2026-08-11 (final pass):** the last four sweep leads, all four real. Weekly budgets were
+  measured against a month of spend (GBP 50/week read ~430% used; weekly IS offered in the UI, so
+  reachable — new `lib/budgetPeriod.js`, 4 tests, verified 28% vs the old 124%). The donut divided a
+  special-excluded category total by a special-included month total, so slices summed short —
+  verified now summing to exactly 100.0% with GBP 180 of special spend. Ask Trim had BOTH faults
+  independently and was the only surface still counting special expenses against budgets. One stale
+  empty-state string. Suite 86.
 - **2026-08-11 (Phases 12b/13/14):** Currency editing after creation; the FX rate gate (a foreign
   expense with no rate was being stored as base currency — self-inflicted, caught by the second
   sweep, confirmed by two lenses); `invalidateMoney()`; one `ZERO_DECIMAL`; offline guards on
