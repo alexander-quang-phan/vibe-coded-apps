@@ -579,7 +579,7 @@ export default function Transactions() {
             </span>
             <p className="font-semibold">Nothing to show here</p>
             <p className="text-sm text-muted-foreground">
-              Try loosening a filter, or tap the + button on Dashboard to log one.
+              Try loosening a filter, or tap the + button to log one.
             </p>
           </CardContent>
         </Card>

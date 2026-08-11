@@ -25,6 +25,7 @@ import { resolveTotalBudget, buildPace } from '../lib/overallBudget.js';
 import { buildRunningAverage } from '../lib/runningAverage.js';
 import { convertToBase } from '../lib/fx.js';
 import { dayInZone, monthBounds } from '../lib/month.js';
+import { monthlyEquivalentLimit } from '../lib/budgetPeriod.js';
 
 const PORT = process.env.PORT || 3001;
 const app = express();
@@ -607,10 +608,12 @@ app.get('/api/dashboard', (_req, res) => {
 
   // By-category breakdown excludes special expenses while the pref is on.
   const categoryTotals = new Map();
+  let countableExpenses = 0;
   for (const t of monthTx) {
     if (t.type !== 'expense') continue;
     if (specialEnabled && t.is_special) continue;
     categoryTotals.set(t.category_id, (categoryTotals.get(t.category_id) ?? 0) + Number(t.amount));
+    countableExpenses += Number(t.amount);
   }
 
   const specialThisMonth = specialEnabled
@@ -627,7 +630,7 @@ app.get('/api/dashboard', (_req, res) => {
         icon: c.icon,
         color: c.color,
         total: round2(total),
-        percentOfExpenses: expenses > 0 ? total / expenses : 0,
+        percentOfExpenses: countableExpenses > 0 ? total / countableExpenses : 0,
       };
     })
     .filter(Boolean)
@@ -703,12 +706,16 @@ app.get('/api/budgets', (_req, res) => {
     budgets: budgets.map((b) => {
       const spent = spendByCat.get(b.category_id) ?? 0;
       const limit = Number(b.amount_limit);
+      // Mirrors routes/budgets.js: `spent` is a month, so a weekly limit is
+      // scaled to the same window before dividing.
+      const effectiveLimit = monthlyEquivalentLimit(limit, b.period, monthBoundsForUser().ym);
       return {
         id: b.id,
         period: b.period,
         limit,
+        effectiveLimit,
         spent: round2(spent),
-        percent: limit > 0 ? spent / limit : 0,
+        percent: effectiveLimit > 0 ? spent / effectiveLimit : 0,
         category: catShape(catById(b.category_id)),
       };
     }),

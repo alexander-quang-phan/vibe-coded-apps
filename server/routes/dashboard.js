@@ -63,9 +63,11 @@ router.get('/', async (req, res, next) => {
     // By-category breakdown (donut, top-5, budget alerts) excludes special
     // expenses while the pref is on — the "outside the monthly budget" promise.
     const categoryTotals = new Map();
+    let countableExpenses = 0;
     for (const t of excludeSpecial(txs, specialEnabled)) {
       if (t.type !== 'expense') continue;
       categoryTotals.set(t.category_id, (categoryTotals.get(t.category_id) ?? 0) + Number(t.amount));
+      countableExpenses += Number(t.amount);
     }
 
     const categoryBreakdown = Array.from(categoryTotals.entries())
@@ -78,7 +80,11 @@ router.get('/', async (req, res, next) => {
           icon: cat.icon,
           color: cat.color,
           total: Number(total.toFixed(2)),
-          percentOfExpenses: expenses > 0 ? total / expenses : 0,
+          // Divided by the SPECIAL-EXCLUDED total, because that is what these
+          // slices are. Dividing by `expenses` (which includes special spend)
+          // meant the slices summed to less than 100% and the donut showed a
+          // phantom gap whenever any special expense existed.
+          percentOfExpenses: countableExpenses > 0 ? total / countableExpenses : 0,
         };
       })
       .filter(Boolean)

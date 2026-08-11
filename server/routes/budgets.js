@@ -4,6 +4,7 @@ import { supabase } from '../lib/supabase.js';
 import { excludeSpecial } from '../lib/special.js';
 import { monthBounds } from '../lib/month.js';
 import { userTimeZone } from '../lib/userZone.js';
+import { monthlyEquivalentLimit } from '../lib/budgetPeriod.js';
 
 const router = Router();
 
@@ -23,7 +24,7 @@ const updateSchema = z.object({
 // GET /api/budgets — list every budget plus this-month spend per category.
 router.get('/', async (req, res, next) => {
   try {
-    const { firstISO, nextFirstISO } = monthBounds(await userTimeZone(req.user.id));
+    const { ym, firstISO, nextFirstISO } = monthBounds(await userTimeZone(req.user.id));
 
     const [budgetsRes, catsRes, txRes, statsRes] = await Promise.all([
       supabase
@@ -65,12 +66,18 @@ router.get('/', async (req, res, next) => {
       const cat = catsById.get(b.category_id);
       const spent = spendByCat.get(b.category_id) ?? 0;
       const limit = Number(b.amount_limit);
+      // `spent` is a MONTH of spend, so a weekly limit has to be scaled to the
+      // same window before the two can be divided. Without this a £50/week
+      // budget read as ~430% used after a normal month. The raw limit and the
+      // period are still returned so the UI can say "£50/week".
+      const effectiveLimit = monthlyEquivalentLimit(limit, b.period, ym);
       return {
         id: b.id,
         period: b.period,
         limit,
+        effectiveLimit,
         spent: Number(spent.toFixed(2)),
-        percent: limit > 0 ? spent / limit : 0,
+        percent: effectiveLimit > 0 ? spent / effectiveLimit : 0,
         category: cat ? { id: cat.id, name: cat.name, icon: cat.icon, color: cat.color } : null,
       };
     });

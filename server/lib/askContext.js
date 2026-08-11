@@ -9,6 +9,7 @@
  */
 
 import { sumSpecial } from './special.js';
+import { monthlyEquivalentLimit } from './budgetPeriod.js';
 
 export const ASK_CONTEXT_DAYS = 90;
 const RECENT_TRANSACTIONS_CAP = 60;
@@ -99,28 +100,38 @@ export function buildAskContext({
 
   // Current-month spent per budget category (for budget questions).
   const thisMonth = monthRange(today, 0);
+  // Declared here, not further down: the budget loop below needs it, and a
+  // `const` referenced above its declaration is a runtime ReferenceError.
+  const specialEnabled = !!stats?.special_expenses_enabled;
   const spentByCatThisMonth = new Map();
   for (const t of inWindow) {
     if (t.type !== 'expense') continue;
     if (t.date < thisMonth.start || t.date > thisMonth.end) continue;
+    // Special expenses leave budget maths everywhere else in the app while the
+    // preference is on. This was the one place that still counted them, so Ask
+    // Trim could tell Alex he was over a budget the app itself showed as fine.
+    if (specialEnabled && t.is_special) continue;
     spentByCatThisMonth.set(t.category_id, (spentByCatThisMonth.get(t.category_id) || 0) + Number(t.amount));
   }
   const budgetsOut = budgets.map((b) => {
     const cat = catById.get(b.category_id);
     const spent = spentByCatThisMonth.get(b.category_id) || 0;
     const limit = Number(b.amount_limit);
+    // Same scaling as /api/budgets — `spent` is a month, so a weekly limit has
+    // to be brought to the same window before dividing.
+    const effectiveLimit = monthlyEquivalentLimit(limit, b.period, thisMonth.ym);
     return {
       category: cat ? cat.name : 'Uncategorised',
       period: b.period,
       limit: round2(limit),
+      effectiveMonthlyLimit: round2(effectiveLimit),
       spentThisMonth: round2(spent),
-      remaining: round2(limit - spent),
-      percentUsed: limit > 0 ? Math.round((spent / limit) * 100) : 0,
+      remaining: round2(effectiveLimit - spent),
+      percentUsed: effectiveLimit > 0 ? Math.round((spent / effectiveLimit) * 100) : 0,
     };
   });
 
   // Opt-in special expenses (Task 9.2) — dormant (no total surfaced) while off.
-  const specialEnabled = !!stats?.special_expenses_enabled;
   const thisMonthRows = inWindow.filter((t) => t.date >= thisMonth.start && t.date <= thisMonth.end);
 
   // Goals + recent contribution pace.
