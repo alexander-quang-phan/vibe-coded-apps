@@ -10,6 +10,18 @@ Hosting (since 2026-07-13): **Vercel free tier**, two projects on Alex's account
 ## Step 0 — confirm the target
 Alex has previously said "deploy" when he meant "run it locally so I can look at it" (May 2026 sessions). If there's any chance that's the case — early-stage feature, no explicit mention of "live"/"production"/"push" — ask one question first: **"Live site, or just running locally?"** A wrong local run costs a minute; a wrong production push is public.
 
+## Step 0.5 — unapplied migration? That gates everything
+
+Check `server/migrations/` against what's applied in Supabase. If any migration is unapplied, the
+order is **migration → API → client**, and nothing deploys until the SQL has run.
+
+API-first 500s every write to the new column. Client-first is worse — the old server silently
+strips unknown fields, so on 2026-08-10 a €45 expense would have stored as £45 with no error.
+Task 6.12a hit the same hazard on 2026-08-08 (migration 014 vs the Subscriptions page).
+
+Give Alex the SQL and wait, or apply it via the Supabase connector if he approves. Confirm with a
+before/after row count that no existing row changed, then deploy.
+
 ## Steps
 
 1. **Get the work onto main.**
