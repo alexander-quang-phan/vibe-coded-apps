@@ -894,6 +894,25 @@ Two things worth not rediscovering:
 
 ---
 
+## Phase 13 — the finish pass (2026-08-11)
+
+Everything the two validation sweeps surfaced, plus the two follow-ups Alex asked for.
+
+- [x] **13.1** Local calendar day end-to-end; `clientToday` for the streak.
+- [x] **13.2** Phase 12b — change a transaction's currency after creating it.
+- [x] **13.3** FX submit gate — a foreign entry cannot save without a usable rate.
+- [x] **13.4** `invalidateMoney()` — one definition, replacing ten drifted hand-lists.
+- [x] **13.5** One `ZERO_DECIMAL`; `/api/dashboard` returns the Phase 12 columns.
+- [x] **13.6** Offline/failure states: paused-query guards, `getSession()` catch,
+      Settings no longer shows or saves factory defaults.
+- [x] **13.7** Dead ends and affordances: budget link, `aria-pressed` chips, month dropdown.
+
+**Still open, deliberately:** server-side month bucketing is UTC (needs a stored user timezone);
+amber-on-dark warning contrast in light mode; Ask Trim hides the conversation when history fails;
+budget edit dialog does not name the budget.
+
+---
+
 ## Deferred further (flagged in FEATURES.md, don't start without explicit ask)
 
 **Deferred during Phase 6 plan review (2026-05-08):**

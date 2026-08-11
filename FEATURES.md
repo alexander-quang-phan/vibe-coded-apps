@@ -62,6 +62,27 @@
 - **Special-expense groups (Phase 10 B1):** a collapsible "Special expenses" panel listing each group with its **lifetime** running total (a Paris trip is paid across months — a total that reset on the 1st would answer the wrong question), tapping through to `/transactions?specialGroup=<id>`. Rendered only when the special-expenses pref is on. A closing line states the month's special spend and notes the group totals are lifetime, so the two figures are never silently mistaken for each other.
 - **Special in/out toggle (Phase 10 A6):** a small "incl. special / excl. special" chip next to "Net this month" flips the hero's Out figure and net between counting special expenses and leaving them out, so Alex can see his month with and without the one-offs. Purely client-side — `/api/dashboard` already returns `expenses` *including* special plus `specialThisMonth`, so excluding is `expenses − specialThisMonth` exactly. Persisted in `localStorage` under `trim:heroIncludeSpecial`. Rendered only when the pref is on **and** `specialThisMonth > 0`; while excluding, the Special chip relabels to "Special (out)" so the difference is always explained.
 
+### Dates
+
+A calendar day belongs to the user, not the server. Every "today" in the client comes from
+`todayISO()` in `client/src/lib/format.js`, which is built from LOCAL date parts. It used to be
+`new Date().toISOString().slice(0,10)` — the UTC day — so anything logged between local midnight
+and UTC midnight was stamped yesterday and rendered as "Yesterday" the moment it was logged; on the
+1st of a month it landed in the previous month for the dashboard, budgets and the running average.
+A create also sends `clientToday` purely so the streak follows the user's day, kept separate from
+`date` so backfilling last month cannot count as logging today.
+
+**Known limit:** the server still buckets "this month" on its own UTC clock, so a log made in the
+local-vs-UTC window ON the 1st can land in the wrong month server-side. Fixing that needs a stored
+user timezone and every month-bounds computation reworked.
+
+### Cache invalidation
+
+Everything derived from money is refreshed through `invalidateMoney()` in
+`client/src/lib/invalidate.js`. Deliberately blunt — an unnecessary refetch costs far less than two
+screens disagreeing, which has happened here more than once. Do not hand-list keys in a mutation;
+they drift.
+
 ### Foreign-currency expenses (Phase 12)
 
 An expense can be entered in another currency and is converted at entry into **the user's own
@@ -79,7 +100,14 @@ alongside purely for display and audit; all three are NULL for an ordinary same-
 - **The server derives the stored amount** from original × rate and ignores whatever `amount` the
   client sent — one figure, one place. See `server/lib/fx.js`.
 - Rounding follows the *base* currency, so a VND-based user never ends up holding 38.50 dong.
-- Editing a transaction cannot change its currency; the row keeps what it was created with.
+- **Editing can change the currency** (Phase 12b). The edit dialog seeds from the row's own
+  currency and the rate it was created at, only re-fetching if you actually change currency —
+  opening a row must never silently re-rate it at today's price. Clearing back to your own
+  currency converts it to a plain row.
+- **A foreign entry cannot be saved without a usable rate.** The category chips and the simple-mode
+  Log button stay disabled until the rate is valid, with a helper line naming the pair. Without
+  that gate the amount field holds the FOREIGN number while the currency block is dropped, and the
+  server — which cannot know the entry currency — stored it verbatim as base currency.
 
 ### Quick-Add flow (critical)
 
