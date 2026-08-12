@@ -1,19 +1,18 @@
-# Chat Handoff — updated 2026-08-11
+# Chat Handoff — updated 2026-08-12
 
 ## DUAL-AGENT BATON  (both models: update this the MOMENT you finish work)
 - Current stage:  no loop active — Phases 11–14 were ordinary feature work, single-model by design
 - Model A is:     not yet set — Alex chooses at the next kickoff
-- Up next:        Alex's live click-through. All sweep findings are now closed.
-- Last actor did: Phases 11, 12, 12b, 13, 14 built + verified + deployed; migrations 016 and 017
-                  applied; 21 bugs fixed across two validation sweeps
-- Next must:      nothing blocking — everything is live and working as far as it can be checked
-                  without Alex's login
+- Up next:        Alex's live click-through. The third sweep is done and found nothing new.
+- Last actor did: third validation sweep (clean) + repo cleanup. NO code changed, nothing deployed.
+- Next must:      nothing blocking — the code is in the same state as 2026-08-11
 - Last verdict:   —
 - Handoff log:
   - 2026-07-23 Claude Code: baton added — Trim retrofitted into the dual-agent workflow
   - 2026-08-08 Claude Code: Phase 10 A1–A6 + B1 + B2, built, verified, deployed
   - 2026-08-10 Claude Code: Phase 11 + 12, migration 016, DEPLOYED
   - 2026-08-11 Claude Code: Phase 12b + 13 + 14, migration 017, DEPLOYED
+  - 2026-08-12 Claude Code: third validation sweep — CLEAN. Repo cleanup. No code change.
 
 ## Goal
 Alex uses Trim daily and wanted to know what he's been spending in an average month, plus to log
@@ -106,10 +105,43 @@ browser. See "Traps" for the harness technique.
    check it stores the converted figure with the original underneath; pick a group on a special
    expense and confirm the Dashboard panel updates; log something late evening and confirm it says
    "Today".
-2. **Re-run the validation sweep** — two passes have been run and everything they found is fixed,
-   so a third would be looking for what both missed. Worth it before any big new feature.
-3. Longer-standing: 9.5 encryption at rest (half-built and INERT, migration 012 NOT applied);
-   Phase 8 bank sync (blocked on Enable Banking); custom domain; Supabase leaked-password toggle.
+2. ~~Re-run the validation sweep~~ — **DONE 2026-08-12, and it came back clean.** See below for
+   exactly which lenses were covered and which were not, so a fourth pass doesn't repeat them.
+3. **Decide on the one open lead:** `server/routes/transactions.js:289-305` reads `user_stats`,
+   computes `applyLogEvent`, then writes the whole row back. Two concurrent POSTs (a fast
+   double-tap on Add) both read the same base, so the second write clobbers the first — XP/streak
+   counted once instead of twice. **Money is NOT affected**; the transactions rows are both correct.
+   A proper fix is a Postgres RPC doing an atomic increment, or a version column with a retry —
+   a migration plus a non-trivial change, so it deserves its own session. Low severity; Alex's call.
+4. Longer-standing: 9.5 encryption at rest (half-built and INERT, migration 012 NOT applied);
+   Phase 8 bank sync (blocked on Enable Banking); custom domain; Supabase leaked-password toggle
+   (still the ONLY security advisor lint on the live DB — confirmed 2026-08-12).
+
+## Third sweep (2026-08-12) — what was and was not checked
+
+Deliberately aimed at lenses the first two sweeps did NOT use. Done by direct inspection rather
+than a big agent fan-out, after a 16-agent workflow was killed mid-run by an interrupt.
+
+**Checked, clean:**
+- *Tenant isolation / IDOR* — all 15 route files. Every `.update()`, `.delete()` and `.upsert()`
+  is scoped by `.eq('user_id', req.user.id)`, not just the SELECTs. The one upsert that could have
+  trusted the client (`subscriptions.js:264`) sets `user_id: req.user.id` server-side and includes
+  it in `onConflict`. `cron.js` is the documented unscoped exception.
+- *Input validation vs SECURITY.md* — Zod on every mutating route that takes a body; UUID checks on
+  every `:id` route. The routes showing zero UUID checks have no id param; `cron` takes no body.
+- *devMock route parity* — every user-facing route has a mock counterpart. The only real routes the
+  mock lacks are `/api/cron/recurrences` GET+POST, which is correct (machine-invoked).
+- *FK / cascade integrity* — every foreign key in `server/migrations/*.sql` has an explicit
+  `ON DELETE` (13 cascade, 3 set null). No unguarded references.
+- *Live DB* — project `fqfzjcpypxvikdgmegzq` is ACTIVE_HEALTHY. Security advisors return exactly
+  one lint: the known leaked-password toggle. No RLS gaps flagged.
+- *Server-side division sites* — guarded (e.g. `subscriptions.js:178,204` check `minAmt <= 0` first).
+
+**NOT checked — genuinely open if a fourth pass is wanted:**
+- Ask Trim context/prompt limits (context size bound, history cap, mid-stream disconnect handling).
+- Client-side numeric edges — NaN/Infinity reaching progress bars, donut slices, pace lines.
+- What each page RENDERS after a cascade delete (the SQL is right; the UI path was not traced).
+- Field-level devMock parity (route-level parity was verified; field-by-field was not).
 
 ## Open questions for Alex
 - None blocking.
@@ -118,6 +150,18 @@ browser. See "Traps" for the harness technique.
 Start a session in this folder and say: "Read @CHAT_HANDOFF.md and continue with next step 2."
 
 ## Previous sessions
+- **2026-08-12 (third sweep + cleanup):** No code changed, nothing deployed — `main` still at
+  `a0b49c5`. The sweep found no new defects across six lenses (see the section above) and one
+  low-severity lead (the `user_stats` lost update). Repo cleanup: 8 stale worktrees, all fully
+  merged, removed — 6 of them; **2 could not be removed because the sandbox blocked the command**
+  (`.claude/worktrees/reverent-poitras-5090fb` and `…/stripe-payment-integration-d042da`) — Alex can
+  clear them with `git worktree remove --force <path>`. 14 merged branches deleted. Uncommitted
+  scratch state from every worktree was backed up first to
+  `~/.claude/backups/trim-worktrees-2026-08-12/` (116K) and can be deleted once Alex is happy.
+  Three branches were deliberately KEPT because they are NOT merged:
+  `claude/affectionate-shirley-83720f` and `claude/phase-10-batch-a` (both look superseded by work
+  already on main, but that was not verified) and `docs/task-6.12-spec-unbuilt` (explicitly a
+  preservation branch — do not delete).
 - **2026-08-11 (final pass):** the last four sweep leads, all four real. Weekly budgets were
   measured against a month of spend (GBP 50/week read ~430% used; weekly IS offered in the UI, so
   reachable — new `lib/budgetPeriod.js`, 4 tests, verified 28% vs the old 124%). The donut divided a
