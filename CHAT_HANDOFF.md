@@ -1,30 +1,29 @@
-# Chat Handoff — updated 2026-08-18 (Claude Code REVISE #2 done; Codex to re-verify)
+# Chat Handoff — updated 2026-08-18 (Codex RE-VERIFY #2 FAIL; Claude Code to revise)
 
 ## DUAL-AGENT BATON  (both models: update this the MOMENT you finish work)
-- Current stage:  **stage 5 REVISE #2 completed by Claude Code — back to Codex for RE-VERIFY #2**
+- Current stage:  **stage 5 RE-VERIFY #2 failed — back to Claude Code for REVISE #3**
 - Model A is:     Claude Code (build + revise). Model B / verifier: **Codex**
-- Up next:        **Codex** re-verifies `phase-9.5-encryption-hardening` at commit **793aa80**
-- Last actor did: Claude Code fixed all five RE-VERIFY findings. Both new false-PASS states now have
-                  regressions that reproduce Codex's exact probes. The gate no longer claims read
-                  passes prove quiescence: **migration 018a installs a DB-enforced write barrier**
-                  (statement triggers on all ten guarded tables + a `pg_stat` write-counter RPC) and
-                  the gate fails closed unless it was engaged for the whole run with zero counter
-                  movement. Digest now covers `user_id` with length-prefixed framing and pass two's
-                  failures reach the verdict. Prefix cap 24 -> **8**, symmetric on both sides, with
-                  exact server-side refinement above it. Migration 019 replaces `handle_new_user()`
-                  before dropping `categories.name`, and the route-side seeding is built
-                  (`lib/defaultCategories.js` + `lib/encryptionPhase.js`, called from `GET /api/me`).
-                  Server suite **161 -> 201**, client build PASS.
+- Up next:        **Claude Code** revises `phase-9.5-encryption-hardening` after Codex's review of
+                  implementation commit **793aa80** (HEAD had only baton commit `5b3af51` on top).
+- Last actor did: Codex re-ran the full evidence gates: server **201/201 PASS**, client production
+                  build **PASS**, and the two committed false-PASS regressions pass. The digest fix is
+                  sound, but the new barrier is not: a write admitted before engagement can remain
+                  uncommitted, stay invisible to the scans and lagging `pg_stat`, then commit after
+                  PASS because COMMIT does not re-run the statement trigger. `TRUNCATE` is also not
+                  guarded. Fresh migration replay remains broken (012 alters `recurrences` before
+                  014 creates it). Dual-mode trigger-created categories are not dual-written, and
+                  capped-prefix refinement still needs pagination before the 200-match limit.
                   **No DB touched, nothing deployed or merged, no migration applied.**
-- Next must:      Re-verify. Highest-value places to attack: (a) the write barrier — is it actually
-                  sufficient, does it cover every write path, can the gate be fooled about it;
-                  (b) whether `pg_stat` counters can miss a write or produce false FAILs on a live
-                  Supabase project; (c) the prefix cap of 8 — is the residual leak acceptable and is
-                  the read path still exact; (d) whether `ensureDefaultCategories` is correct in all
-                  three phases and race-safe; (e) anything still stale in SECURITY.md / BUILD_PLAN.
-- Last verdict:   **FAIL (Codex RE-VERIFY, at 8b4bbee)** — all five findings addressed in this
-                  revision. Still DO NOT merge, deploy, or apply migrations 012/018/018a/019 until
-                  Codex passes it.
+- Next must:      Fix the barrier first: make admitted writers hold a lock on the singleton flag so
+                  engagement drains them, add `TRUNCATE`, keep `pg_stat` only as defence-in-depth,
+                  and test the two-session transaction interleaving against real PostgreSQL semantics.
+                  Then fix 012-before-014 ordering; stop pre-019 signups creating plaintext-only
+                  categories; ensure `/api/categories` cannot beat `/api/me` seeding; page prefix
+                  candidates until 200 exact matches or exhaustion; and clean stale 013/current-route
+                  claims in BUILD_PLAN/CHAT. Re-run server tests + client build; Codex must re-verify.
+- Last verdict:   **FAIL (Codex RE-VERIFY #2, implementation 793aa80)** — Critical barrier false-PASS
+                  window plus unresolved migration ordering. DO NOT merge, deploy, or apply migrations
+                  012/018/018a/019.
 - Last red-team:  n/a — stage 6 not yet reached on this branch.
 - Handoff log:
   - 2026-08-11 Claude Code: Phase 12b + 13 + 14, migration 017, DEPLOYED
@@ -38,6 +37,58 @@
     seeding trigger remain. Baton-only handoff; no DB/migration/deploy/merge.
   - 2026-08-18 Claude Code: stage 5 REVISE #2 — all five fixed, enforced write barrier added,
     suite 161 -> 201, client build PASS. Nothing merged/deployed/applied. **Codex re-verifies.**
+  - 2026-08-18 Codex: stage 5 RE-VERIFY #2 **FAIL** at implementation `793aa80` — 201/201 + client
+    build pass, but the barrier does not drain pre-engagement transactions and omits TRUNCATE;
+    012-before-014 replay remains invalid; dual signup/category and bounded-prefix pagination gaps
+    remain. Baton-only change; no DB/migration/deploy/merge.
+
+## Codex RE-VERIFY #2 FAIL -> new evidence
+
+1. **Critical — the barrier can PASS while a pre-engagement write is still able to commit.**
+   `018a_encryption_write_barrier.sql` checks the flag with a plain `SELECT` in a BEFORE STATEMENT
+   trigger. Sequence: T1 executes a plaintext-only INSERT while `engaged=false` and stays open; T2
+   engages the flag; the gate cannot see T1's uncommitted row and cumulative stats omit in-progress
+   transactions; the gate returns PASS; T1 COMMITs (COMMIT does not fire the trigger again); 019 then
+   waits for T1's table lock and drops the newly committed plaintext. The regression fake increments
+   counters synchronously, unlike PostgreSQL, whose cumulative statistics explicitly lag. Make the
+   trigger acquire `SELECT ... FOR SHARE` on the singleton row so every admitted writer holds a lock
+   until transaction end and engagement drains them. Add a real two-session PostgreSQL test.
+
+2. **Critical companion — `TRUNCATE` is not guarded.** The generated triggers list only INSERT,
+   UPDATE and DELETE, while PostgreSQL has a separate TRUNCATE trigger event. The counter RPC sums
+   only tuple insert/update/delete counters, so it is not an independent TRUNCATE witness. Add
+   `OR TRUNCATE` to every statement trigger. Keep `pg_stat` as defence-in-depth, not the proof.
+
+3. **High — fresh filename-order migration replay is still invalid.** Static probe: 012 sorts before
+   014 and `012_encryption_columns.sql` alters `public.recurrences`; 014 is what creates that table.
+   The test added for ordering checks only that destructive 019 is last, so it misses this dependency.
+
+4. **High — signups during `ENCRYPTION_PHASE=dual` still write plaintext-only category names.**
+   The migration-001 trigger remains installed until 019 and inserts only `categories.name`.
+   `ensureDefaultCategories()` sees any existing category and returns without filling
+   `name_enc/name_hmac`; the local reproduction returned `{ seeded: 0, reason: 'already-present' }`.
+   The gate should fail closed, but the documented "every write writes both" invariant is false.
+
+5. **Medium — the proposed exact prefix refinement can lose true matches at the existing 200-row
+   database limit.** The test refines an unlimited in-memory candidate set. Probe with 200 false rows
+   sharing capped prefix `sainsbur` followed by three true `Sainsburys Local` rows produced
+   `{ candidates: 203, limitedThenRefined: 0, refinedThenLimited: 3 }`. The future route must page a
+   stable candidate order until 200 refined matches or exhaustion. The 8-character scheme still
+   exposes a bounded per-user prefix trie; SECURITY.md now substantially discloses that, but "not
+   which merchant" should acknowledge known-row/frequency labelling.
+
+6. **Medium — fresh-category visibility can race.** After 019, the client starts `/api/me` and
+   `/api/categories` independently and renders child routes immediately. `/api/categories` does not
+   seed, so it can return and cache `[]` before `/api/me` finishes. Seed before the category read (or
+   serialize/invalidate it). Current race handling for two `/api/me` seeders itself is sound.
+
+7. **Docs still contain current-looking stale 013 references.** In particular the CHAT handoff's
+   sole-authorisation warning/file list points at deleted migration 013, and BUILD_PLAN still has old
+   current-path wording. Historical discussion can remain, but operational instructions must say 019.
+
+Evidence: `cd server && npm test` -> **201/201 PASS**; `cd client && npm run build` -> **PASS**;
+focused category/migration and 203-candidate probes reproduced the states above. Review was read-only
+apart from this baton update: no Supabase connection, migration, deploy or merge.
 
 ## Codex RE-VERIFY FAIL -> new evidence
 
