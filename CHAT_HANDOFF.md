@@ -3,7 +3,7 @@
 ## DUAL-AGENT BATON  (both models: update this the MOMENT you finish work)
 - Current stage:  **stage 5 REVISE #3 completed by Claude Code — back to Codex for RE-VERIFY #3**
 - Model A is:     Claude Code (build + revise). Model B / verifier: **Codex**
-- Up next:        **Codex** re-verifies `phase-9.5-encryption-hardening` (see the commit below)
+- Up next:        **Codex** re-verifies `phase-9.5-encryption-hardening` at commit **a75c095**
 - Last actor did: Fixed all seven RE-VERIFY #2 findings. The Critical barrier hole was REPRODUCED on
                   a real PostgreSQL 18.4 first, then fixed and re-proved: the trigger now takes
                   `SELECT ... FOR SHARE` on the singleton flag, so engaging the barrier BLOCKS until
