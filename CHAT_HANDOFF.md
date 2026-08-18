@@ -1,21 +1,37 @@
-# Chat Handoff — updated 2026-08-18 (second pass: scope expanded)
+# Chat Handoff — updated 2026-08-18 (Codex VERIFY: FAIL)
 
 ## DUAL-AGENT BATON  (both models: update this the MOMENT you finish work)
-- Current stage:  **stage 3 BUILD done by Claude Code — stage 4 VERIFY is CODEX'S, not mine**
+- Current stage:  **stage 4 VERIFY completed by Codex — FAIL; return to Claude Code REVISE**
 - Model A is:     Claude Code (built 9.5 hardening). Model B / verifier: **Codex**
-- Up next:        Codex validates branch `phase-9.5-encryption-hardening` before it goes near `main`
-- Last actor did: re-audit + hardening, THEN Alex's scope expansion (descriptions encrypted via a
-                  blind index; cutover confirmed). Code + docs only.
-                  **No DB touched, nothing deployed, migrations 012/018 still unapplied.**
-- Next must:      Codex verifies. CLAUDE.md is explicit — the model that produced a stage must not
-                  validate it, and 9.5 is named as *the* change that needs the full two-model loop.
-- Last verdict:   —
+- Up next:        Claude Code revises branch `phase-9.5-encryption-hardening`; then Codex re-verifies
+- Last actor did: Codex performed a read-only adversarial verification. `cd server && npm test`
+                  passed 140/140 and `cd client && npm run build` passed, but two in-memory probes
+                  made `verify-encryption.mjs` return `pass:true` while skipping/corrupting data
+                  (501-row composite PK: 500 checked; value-only post-scan edit: no drift reported).
+                  **No DB touched, nothing deployed, no migration applied, nothing merged.**
+- Next must:      Claude Code fixes every blocking issue below, adds regression tests that fail on
+                  the reproduced states, and hands the branch back to Codex. At minimum: make the
+                  gate prove the target/role/key identity/row totals, enforce field `kind`, and
+                  paginate composite keys/capped responses correctly; make drift detection honest;
+                  preserve an encrypted recoverable source
+                  for `subscription_overrides.merchant_key`; repair migration numbering/order and
+                  post-drop NOT NULL invariants; either preserve real ILIKE substring/typeahead
+                  semantics or explicitly approve/document a narrower contract and test the actual
+                  route/vote/confidence path; reject missing user IDs in `blindIndex()`.
+- Last verdict:   **FAIL — DO NOT merge and DO NOT apply 012, 018, or 013.** The sole gate has
+                  reproducible false-PASS states; the HMAC-only subscription PK is not rebuildable
+                  after master-key rotation; ordered migrations run 013 before 018; 013 drops DB
+                  integrity constraints; and `merchantMemory.test.js` models prefix equality, not
+                  the existing `%term%` ILIKE behavior. Also resolve/document the custom-category
+                  privacy gap (`categories.name` is not only 12 seeded defaults).
 - Handoff log:
   - 2026-08-08 Claude Code: Phase 10 A1–A6 + B1 + B2, built, verified, deployed
   - 2026-08-10 Claude Code: Phase 11 + 12, migration 016, DEPLOYED
   - 2026-08-11 Claude Code: Phase 12b + 13 + 14, migration 017, DEPLOYED
   - 2026-08-12 Claude Code: third validation sweep — CLEAN. Repo cleanup. No code change.
   - 2026-08-18 Claude Code: 9.5 re-audit + hardening, branch, NOT merged. Codex to verify.
+  - 2026-08-18 Codex: stage 4 VERIFY FAIL; 140/140 server tests + client build pass, but adversarial
+    probes and migration/blind-index review found release-blocking false-PASS/data-recovery defects.
 
 ## Goal
 Alex asked to continue the encryption feature "so I can't see other people's transactions and other
