@@ -15,14 +15,13 @@
  * the backfill and the drop produces. It then "spot-checked" 50 unordered rows,
  * which cannot see a row it never fetched.
  *
- * The four questions it now asks, per encrypted column:
+ * The four questions it asks, per encrypted column:
  *
  *   1. plaintext present, ciphertext NULL   -> rows 019 would DESTROY.
  *   2. plaintext NULL, ciphertext present   -> stale ciphertext for a value the
  *                                              user has since CLEARED. After 019
  *                                              the cleared value silently comes
- *                                              back. The old gate's sample skipped
- *                                              this case by construction.
+ *                                              back.
  *   3. both present, they DISAGREE          -> stale ciphertext for a value the
  *                                              user has since EDITED. Cannot be
  *                                              expressed as a database filter
@@ -35,13 +34,32 @@
  * makes a PASS mean what it says. `--sample N` still exists for a large table,
  * but a sampled run prints INCOMPLETE and is NOT an authorisation.
  *
- * It also re-counts after the read pass. If anything changed while it ran, the
- * app was not actually paused and the PASS is void.
+ * WHAT PROVES THE DATABASE HELD STILL  [Codex stage-4 RE-VERIFY, 2026-08-18]
+ * ---------------------------------------------------------------------------
+ * Not this script. An earlier version claimed that reading everything twice and
+ * comparing a digest proved quiescence. Codex reproduced the counter-example:
+ * delete an already-scanned row and insert a plaintext-only row whose key sorts
+ * inside that same offset window, and both passes observe an identical row
+ * stream, an identical digest and an identical count — while the new row is read
+ * by neither. No number of independent offset-paged HTTP reads closes that,
+ * because every pair of reads has a gap a writer can use.
+ *
+ * So quiescence is ENFORCED, not inferred. Migration 018a installs a barrier that
+ * makes writes to the app's tables fail at the database, and this gate:
+ *
+ *   - refuses to run unless the barrier is engaged;
+ *   - re-reads it afterwards and fails if it was released or re-engaged mid-run;
+ *   - reads pg_stat's cumulative insert/update/delete counters before and after
+ *     and fails on ANY movement — which catches the delete-then-insert above
+ *     even though it moves neither the row count nor the digest.
+ *
+ * The two-pass digest is kept as a second, independent witness. It is defence in
+ * depth now, not the proof.
  *
  *   cd server && node scripts/verify-encryption.mjs
  *   cd server && node scripts/verify-encryption.mjs --sample 200   # NOT a gate
  *
- * Read-only: this script never writes.
+ * Read-only: this script never writes, so it never moves the counters it reads.
  */
 import 'dotenv/config';
 import { pathToFileURL } from 'node:url';
@@ -52,6 +70,10 @@ import { blindValueFor, blindValueEquals } from './encrypt-backfill.mjs';
 
 const PAGE = 500;
 
+/** The barrier installed by migration 018a. */
+export const BARRIER_TABLE = 'encryption_cutover';
+export const COUNTERS_RPC = 'encryption_write_counters';
+
 // Scope comes from the shared registry, NOT from encrypt-backfill.mjs. The gate
 // importing its scope from the script it audits meant a column dropped from that
 // script's list silently vanished from the gate too — it would then certify a
@@ -61,6 +83,49 @@ export const JOBS = fieldsByTable();
 const pkOf = (job) => job.pk ?? ['id'];
 const pkLabel = (job, row) => pkOf(job).map((k) => `${k}=${row[k]}`).join(' ');
 const isBlank = (v) => v === null || v === undefined;
+
+/**
+ * Length-prefixed framing, so no value can impersonate the delimiters around it.
+ *
+ * The previous digest joined fields with a `name=value` pattern, which a value
+ * containing those bytes could forge: two different rows could hash identically.
+ * These are text columns holding arbitrary user input, so that is reachable, not
+ * theoretical. "13:Tesco Express" cannot be confused with anything else.
+ * [Codex stage-4 RE-VERIFY finding 1, 2026-08-18]
+ */
+const framed = (v) => {
+  const s = String(v);
+  return `${Buffer.byteLength(s, 'utf8')}:${s}`;
+};
+/** Distinguishes SQL NULL from the four-character string "null". */
+const nullable = (v) => (isBlank(v) ? 'N;' : `S;${framed(v)}`);
+
+/**
+ * Everything about a row that the verification DEPENDS ON, canonically encoded.
+ *
+ * `user_id` is in here because it is a VALIDATION INPUT, not decoration: the
+ * decryption key is HKDF(master, `user:<id>`), so moving a row to another owner
+ * makes its ciphertext undecryptable while leaving every other byte identical.
+ * Omitting it meant that on any `id`-keyed table an ownership change produced a
+ * byte-identical digest, and the second pass's decryption failures — which did
+ * notice — were then thrown away by the caller. The gate returned
+ * `{"pass":true}` over rows whose ciphertext no longer decrypted at all.
+ * [Codex stage-4 RE-VERIFY finding 1, 2026-08-18]
+ */
+export function digestRow(job, row) {
+  const parts = [framed(job.table)];
+  for (const k of pkOf(job)) parts.push(framed(k), nullable(row[k]));
+  parts.push(framed('user_id'), nullable(row.user_id));
+  for (const f of job.fields) {
+    parts.push(framed(f.column), nullable(row[f.column]));
+    parts.push(framed(f.enc), nullable(row[f.enc]));
+  }
+  for (const b of job.blind ?? []) {
+    const v = row[b.column];
+    parts.push(framed(b.column), nullable(isBlank(v) ? null : JSON.stringify(v)));
+  }
+  return parts.join('');
+}
 
 /**
  * Exact count. Throws rather than defaulting when PostgREST returns no count:
@@ -87,6 +152,62 @@ const countCipherWithoutPlaintext = (supabase, job, f) =>
   exactCount(supabase, job.table, (q) => q.is(f.column, null).not(f.enc, 'is', null));
 
 /**
+ * Is the migration-018a barrier engaged? Fails CLOSED on anything unexpected —
+ * a missing table means 018a was never applied, which means writes are not
+ * blocked, which means this gate cannot speak for the window it is authorising.
+ */
+export async function readBarrier(supabase) {
+  try {
+    const { data, error } = await supabase.from(BARRIER_TABLE).select('engaged, engaged_at');
+    if (error) throw error;
+    const row = Array.isArray(data) ? data[0] : data;
+    if (!row) return { ok: false, reason: `${BARRIER_TABLE} has no row — migration 018a is not applied.` };
+    return { ok: true, engaged: row.engaged === true, engagedAt: row.engaged_at ?? null };
+  } catch (err) {
+    return {
+      ok: false,
+      reason:
+        `could not read ${BARRIER_TABLE} (${err.message}). Migration 018a installs it; ` +
+        `without it nothing stops the app writing during the drop.`,
+    };
+  }
+}
+
+/**
+ * Cumulative tuple insert/update/delete counters for every public table.
+ *
+ * This is the witness that catches what a re-read cannot: a delete plus an
+ * insert inside an already-scanned offset window leaves the row count and the
+ * digest identical, but it cannot leave these numbers identical.
+ */
+export async function readWriteCounters(supabase) {
+  try {
+    const { data, error } = await supabase.rpc(COUNTERS_RPC);
+    if (error) throw error;
+    if (!Array.isArray(data)) return { ok: false, reason: `${COUNTERS_RPC}() returned no rows.` };
+    const out = {};
+    for (const r of data) out[r.table_name] = Number(r.writes);
+    return { ok: true, counters: out };
+  } catch (err) {
+    return {
+      ok: false,
+      reason:
+        `could not call ${COUNTERS_RPC}() (${err.message}). Migration 018a creates it; ` +
+        `without it a write made inside an already-scanned page is undetectable.`,
+    };
+  }
+}
+
+/** Which tables moved between two counter snapshots. */
+export function countersMoved(before, after) {
+  const moved = [];
+  for (const t of new Set([...Object.keys(before), ...Object.keys(after)])) {
+    if (before[t] !== after[t]) moved.push(t);
+  }
+  return moved.sort();
+}
+
+/**
  * Fetch EVERY row and prove the stored ciphertext decrypts back to the plaintext
  * beside it.
  *
@@ -96,14 +217,13 @@ const countCipherWithoutPlaintext = (supabase, job, f) =>
  * After the first page `.gt('user_id', <same user>)` matched nothing, the scan
  * stopped, and row 501 of 501 was never verified — while the gate printed PASS.
  *
- * Now: ordered offset paging over ALL primary key columns. Offset paging is
- * correct here precisely because this script never writes — the old objection
- * (our own writes shrink the window) does not apply to a read-only gate. It is
- * also naturally safe against a server-side row cap, because the offset advances
- * by the number of rows actually returned rather than the number requested.
+ * Now: ordered offset paging over ALL primary key columns. The offset advances by
+ * the number of rows actually RETURNED, so a server-side row cap cannot step over
+ * the remainder.
  *
- * The real guarantee, though, is the caller's `checked === total` assertion. Any
- * paging bug at all, present or future, fails the gate instead of hiding a row.
+ * `checked === total` remains a useful invariant — it fails the gate on any
+ * paging bug, present or future. It is NOT a proof that the scan saw the final
+ * state of the table; only the enforced barrier is that. See the header.
  */
 async function verifyRows(supabase, job, { limit }) {
   const pk = pkOf(job);
@@ -113,10 +233,6 @@ async function verifyRows(supabase, job, { limit }) {
     ...(job.blind ?? []).flatMap((b) => [b.from, b.column]),
   ])].join(', ');
   const failures = [];
-  // A digest of everything read, so a second pass can prove nothing moved. A
-  // count cannot: editing an amount from 250 to 25 leaves every count identical,
-  // which is exactly how the previous drift check reported "no drift" while the
-  // ciphertext went stale. [Codex stage-4 VERIFY, 2026-08-18]
   const digest = createHash('sha256');
   let checked = 0;
   let offset = 0;
@@ -133,12 +249,11 @@ async function verifyRows(supabase, job, { limit }) {
 
     for (const row of data) {
       checked += 1;
-      digest.update(pk.map((k) => String(row[k])).join('\u0000'));
+      digest.update(digestRow(job, row));
 
       for (const f of job.fields) {
         const plain = isBlank(row[f.column]) ? null : String(row[f.column]);
         const cipher = row[f.enc];
-        digest.update(`\u0001${f.column}=${plain}\u0001${f.enc}=${cipher}`);
 
         if (isBlank(cipher)) {
           // Do NOT lean on countPlaintextWithoutCipher for this. That count runs
@@ -187,7 +302,6 @@ async function verifyRows(supabase, job, { limit }) {
       }
 
       for (const b of job.blind ?? []) {
-        digest.update(`\u0002${b.column}=${JSON.stringify(row[b.column])}`);
         const want = blindValueFor(job.table, b, row);
         if (!blindValueEquals(row[b.column], want)) {
           failures.push(
@@ -245,13 +359,13 @@ export async function verifyEncryption({
   const failures = [];
   const skipped = [];
   const digests = new Map();
+  const rowCounts = new Map();
 
   // --- preflight: what exactly are we authorising a destructive migration on?
   const target = describeTarget(env);
   log(`  target database : ${target.host}`);
   log(`  connecting as   : ${target.role}`);
   log(`  encryption key  : ${target.keyFingerprint ? `fingerprint ${target.keyFingerprint}` : 'NOT SET'}`);
-  log('');
   if (target.role !== 'service_role') {
     // Through the anon key, RLS hides other users' rows and every count reads as
     // a comforting zero — a PASS that describes almost none of the database.
@@ -263,6 +377,37 @@ export async function verifyEncryption({
   if (!target.keyFingerprint) {
     failures.push('DATA_ENCRYPTION_KEY is not set — nothing could have been decrypted to verify.');
   }
+
+  // --- the write barrier. Only a real gate run requires it; a --sample run is a
+  // diagnostic that cannot authorise anything anyway.
+  const gating = sample === null;
+  const barrierBefore = await readBarrier(supabase);
+  const countersBefore = await readWriteCounters(supabase);
+
+  if (gating) {
+    if (!barrierBefore.ok) {
+      failures.push(`write barrier: ${barrierBefore.reason}`);
+    } else if (!barrierBefore.engaged) {
+      failures.push(
+        `write barrier is NOT engaged. Nothing is stopping the app or the 03:00 cron writing during ` +
+          `this run and the drop that follows it, and no sequence of reads can detect every such write. ` +
+          `Engage it: update public.${BARRIER_TABLE} set engaged = true, engaged_at = now();`,
+      );
+    }
+    if (!countersBefore.ok) failures.push(`write counters: ${countersBefore.reason}`);
+    log(
+      `  write barrier   : ${
+        barrierBefore.ok
+          ? barrierBefore.engaged
+            ? `ENGAGED since ${barrierBefore.engagedAt}`
+            : 'NOT ENGAGED'
+          : 'UNREADABLE'
+      }`,
+    );
+  } else {
+    log('  write barrier   : not checked (--sample runs cannot authorise anything)');
+  }
+  log('');
 
   for (const job of jobs) {
     for (const f of job.fields) {
@@ -285,27 +430,65 @@ export async function verifyEncryption({
     checked += r.checked;
     failures.push(...r.failures);
     digests.set(job.table, r.digest);
+    rowCounts.set(job.table, r.checked);
 
-    // THE invariant. Any paging bug — the composite-key cursor that stopped after
-    // one page, a server row cap, a future refactor — fails the gate instead of
-    // silently leaving rows unverified. This is what Codex's 501-row probe broke.
-    if (sample === null && r.checked !== total) {
+    // Fails the gate on any paging bug — the composite-key cursor that stopped
+    // after one page, a server row cap, a future refactor. NOT a proof that the
+    // rows seen were the final ones; the barrier is what provides that.
+    if (gating && r.checked !== total) {
       skipped.push(`${job.table}: ${total} rows exist but only ${r.checked} were verified`);
     }
-    log(`  [${r.checked === total || sample !== null ? 'ok' : 'PROBLEM'}] ${job.table}: ${r.checked}/${total} rows verified`);
+    log(`  [${r.checked === total || !gating ? 'ok' : 'PROBLEM'}] ${job.table}: ${r.checked}/${total} rows verified`);
   }
 
-  // --- drift: re-read everything and compare digests.
-  // A COUNT cannot detect drift. Editing an amount from 250 to 25 leaves every
-  // count identical, which is precisely how the previous version reported "no
-  // drift" while the ciphertext went stale beneath it. A digest over each row's
-  // keys, plaintext, ciphertext and blind indexes detects an edit, an insert and
-  // a delete alike. [Codex stage-4 VERIFY, 2026-08-18]
+  // --- second witness: re-read everything and compare.
+  //
+  // The second pass DECRYPTS every row again, so its failures are real findings
+  // about the database as it stands now. They used to be discarded — only the
+  // digest was compared — so a row that had become undecryptable between the two
+  // passes was detected and then silently dropped on the floor.
+  // [Codex stage-4 RE-VERIFY finding 1, 2026-08-18]
   const drifted = [];
-  if (sample === null) {
+  if (gating) {
     for (const job of jobs) {
       const again = await verifyRows(supabase, job, { limit: null });
+      failures.push(...again.failures);
       if (again.digest !== digests.get(job.table)) drifted.push(job.table);
+      else if (again.checked !== rowCounts.get(job.table)) drifted.push(job.table);
+    }
+  }
+
+  // --- the barrier must have held for the WHOLE run, and nothing may have been
+  // written to any guarded table while it did.
+  if (gating) {
+    const barrierAfter = await readBarrier(supabase);
+    if (!barrierAfter.ok) {
+      failures.push(`write barrier (after): ${barrierAfter.reason}`);
+    } else if (!barrierAfter.engaged) {
+      failures.push('write barrier was RELEASED while this gate was running — the window is not sealed.');
+    } else if (barrierBefore.ok && barrierAfter.engagedAt !== barrierBefore.engagedAt) {
+      failures.push(
+        'write barrier was released and re-engaged while this gate was running — ' +
+          'there was a gap in which anything could have been written.',
+      );
+    }
+
+    const countersAfter = await readWriteCounters(supabase);
+    if (!countersAfter.ok) {
+      failures.push(`write counters (after): ${countersAfter.reason}`);
+    } else if (countersBefore.ok) {
+      const moved = countersMoved(countersBefore.counters, countersAfter.counters);
+      if (moved.length) {
+        // This is the check that sees a delete-then-insert inside a page the scan
+        // had already read — the state Codex reproduced, in which the row count
+        // and both digests stay identical while an unencrypted row slips in.
+        for (const t of moved) if (!drifted.includes(t)) drifted.push(t);
+        failures.push(
+          `rows were written during this run despite the barrier: ${moved.join(', ')}. ` +
+            `A write that lands inside an already-scanned page moves neither the row count nor the digest, ` +
+            `so this counter is the only thing that sees it.`,
+        );
+      }
     }
   }
 
@@ -325,8 +508,9 @@ export async function verifyEncryption({
     log('A gate that cannot account for every row cannot authorise dropping every row.');
   }
   if (drifted.length) {
-    log(`FAIL — the database CHANGED while this gate ran: ${drifted.join(', ')}.`);
-    log('The app is still writing. Pause it (and the 03:00 recurrences cron) and start again.');
+    log(`FAIL — the database CHANGED while this gate ran: ${[...new Set(drifted)].join(', ')}.`);
+    log('The barrier did not hold. Check migration 018a is applied and engaged, pause the app and the');
+    log('03:00 recurrences cron, and start again.');
   }
   if (!complete) {
     log(`INCOMPLETE — ran with --sample ${sample}, so ${checked} row(s) were checked and the rest were not.`);
@@ -335,8 +519,9 @@ export async function verifyEncryption({
   if (pass) {
     log(`PASS — every row verified (${checked}). No plaintext would be lost and no ciphertext is stale.`);
     log(`Target ${target.host}, key fingerprint ${target.keyFingerprint}.`);
-    log('Migration 019 may proceed IN THIS WINDOW, with the app paused and the cron disabled.');
-    log('Re-run this gate immediately before 019 as the final check.');
+    log(`The write barrier was engaged for the whole run (since ${barrierBefore.engagedAt}) and no guarded`);
+    log('table was written. Migration 019 may proceed WHILE THE BARRIER REMAINS ENGAGED.');
+    log('Re-run this gate immediately before 019 as the final check, and release the barrier only after.');
   } else if (!drifted.length && !skipped.length && complete) {
     log(
       `FAIL — ${missing} row(s) have plaintext with no ciphertext; ${stale} row(s) have ciphertext ` +

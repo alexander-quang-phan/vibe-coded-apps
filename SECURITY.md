@@ -127,9 +127,16 @@ helmet({
 
 ## Encryption at rest (Phase 9.5)
 
-**Status as of 2026-08-18: BUILT BUT NOT ENABLED.** Migration 012 is unapplied, no
-route reads or writes an `_enc` column, and `DATA_ENCRYPTION_KEY` is unset. Nothing
-in the live database is encrypted today.
+**Status as of 2026-08-18: BUILT BUT NOT ENABLED.** Migrations 012, 018, 018a and
+019 are all unapplied, `DATA_ENCRYPTION_KEY` is unset, and `ENCRYPTION_PHASE`
+defaults to `off`. Nothing in the live database is encrypted today.
+
+One route now imports the encryption code: `GET /api/me` calls
+`ensureDefaultCategories()`, which writes `name_enc`/`name_hmac` **only** when
+`ENCRYPTION_PHASE` is `dual` or `enc`. At the default `off` it writes exactly the
+columns it always did. It exists now because migration 019 drops
+`categories.name` while the signup trigger is still inserting it — see
+`server/lib/defaultCategories.js`.
 
 ### What it protects against, stated honestly
 
@@ -156,6 +163,22 @@ total, answer an Ask Trim question, or detect a subscription. So:
   backup cannot be correlated across users. Someone holding the master key could
   hash a guess ("tesco") and compare — but they could simply decrypt the
   description instead, so this is not a new weakness.
+- **Merchant memory leaks a little more than that, and here is exactly how much.**
+  It is a typeahead, so each transaction stores a hash of every prefix of the
+  normalised merchant from 2 up to **8** characters (`MAX_PREFIX` in
+  `server/lib/merchant.js`). Someone reading the table can therefore see which
+  rows share the same first 2–8 characters, and can read a merchant's exact
+  normalised length only when it is *shorter* than 8 ("kfc" stores 2 hashes,
+  "aldi" 3). At 8 characters or more every merchant stores the same number of
+  hashes, and two merchants that agree for the first 8 characters are
+  indistinguishable no matter how much further they agree.
+  **This was worse until 2026-08-18.** Prefixes ran to 24 characters, which does
+  not leak "which rows share a merchant" — it publishes a per-user prefix *trie*:
+  the exact longest common prefix of any two rows, the strict-prefix families
+  ("Tesco" inside "Tesco Express"), and every merchant's exact length. Codex found
+  it on re-verification. The cap is now 8 on both sides, and queries longer than
+  that stay exact by decrypting the candidates and re-testing them on the server
+  — so the feature is unchanged and only the leakage moved.
 - **Ask Trim still sends decrypted context to Anthropic** per question. Encryption
   at rest changes nothing about that.
 
@@ -175,21 +198,31 @@ reconstructable by one multiplication.
 
 **Free text:** `transactions.description`, `recurrences.description`,
 `ask_messages.content`, `savings_goals.name`, `savings_contributions.note`,
-`special_groups.name`, `subscription_overrides.display_name`.
+`special_groups.name`, `subscription_overrides.display_name`, `categories.name`,
+and `subscription_overrides.merchant_key` (which keeps an encrypted copy beside
+its hash, because a one-way hash alone could never be recomputed after a key
+rotation — and it is that table's primary key).
 
 **Blind indexes** (keyed hashes, not ciphertext — searchable but unreadable):
-`transactions.merchant_hmac` (first two normalised words) and `.merchant_hmac_1`
-(first word), both derived from the description, so Task 6.9's suggested-category
-chip keeps working. And `subscription_overrides.merchant_key_hmac`, which replaces
+`transactions.merchant_prefix_hmacs` — a `text[]` of one hash per prefix of the
+normalised merchant, 2 to 8 characters — derived from the description, so Task
+6.9's suggested-category typeahead keeps working. (It replaced two scalar hashes,
+`merchant_hmac` and `merchant_hmac_1`, which only ever matched a completed
+merchant name and would have made the chip look broken.) `categories.name_hmac`,
+for the exact `.eq('name', …)` keyword lookup. And
+`subscription_overrides.merchant_key_hmac`, which replaces
 the plaintext `merchant_key` — that column was the table's PRIMARY KEY and held
 either the merchant name ("netflix") or a synthetic key embedding an amount bucket
 ("auto:<category>:25:monthly"), so it leaked both merchants and roughly what they
 cost in a column no amount encryption touched. Migration 019 moves the primary key
 onto the hash.
 
-**Still plaintext on purpose:** `categories.name` is looked up with `.eq('name', …)`
-in the database and is only the 12 seeded defaults ("Groceries", "Transport"),
-which say nothing about one person's spending. `transactions.fx_rate` is a public
+`categories.name` is encrypted too, with a blind index for its keyword lookup.
+It was excluded as "only the 12 seeded defaults" until 2026-08-18; that was wrong.
+`POST /api/categories` accepts any name and `PATCH` renames one, so a category can
+be "Therapy" or "Divorce lawyer".
+
+**Still plaintext on purpose:** `transactions.fx_rate` is a public
 market rate that reveals only a currency pair and a date, and keeping it numeric
 keeps the `fx_rate > 0` CHECK enforceable in the database.
 
@@ -238,18 +271,32 @@ Each step is reversible until the last. Nothing may be skipped.
    — behaviour is identical to today, which is what makes the sweep provable in
    production before any encryption exists.
 2. Generate and back up the key (above). Set it in `server/.env` and Vercel.
-3. Apply migrations 012 **then 018** (both additive, re-runnable, no data touched).
+3. Apply migrations 012, **018 then 018a** (all additive, re-runnable, no data
+   touched; 018a installs the cutover write barrier, inert until engaged).
    The destructive one is numbered **019** so that applying migrations in filename
    order is safe — as 013 it sorted before 018 and would have dropped the
    plaintext before its replacement columns existed.
 4. Set `ENCRYPTION_PHASE=dual`. Every write now writes both columns.
 5. `node scripts/encrypt-backfill.mjs --dry-run`, then for real.
-6. Pause the app **and disable the 03:00 recurrences cron**.
+6. Disable the 03:00 recurrences cron, then **engage the write barrier**:
+   `update public.encryption_cutover set engaged = true, engaged_at = now();`
+   Trim now rejects every write at the database. That is deliberate: "pause the
+   app" used to be an instruction nobody could verify, and Codex proved on
+   re-verification that a write landing inside a page the gate had already read is
+   invisible to *any* number of read passes. Quiescence is enforced, not inferred.
 7. `node scripts/verify-encryption.mjs` with no `--sample`. Exit 0 is the only
    authorisation for the next step. A sampled run prints INCOMPLETE and is not one.
+   The gate refuses to pass unless the barrier was engaged for its whole run and
+   `pg_stat` shows not one row written to a guarded table while it ran.
 8. Take a fresh database backup.
-9. Re-run the gate. Then, and only then, migration 019.
-10. Set `ENCRYPTION_PHASE=enc` and redeploy. Re-enable the cron.
+9. Re-run the gate. Then, and only then, migration 019 — with the barrier still
+   engaged. (019 is DDL, which statement triggers do not block.)
+10. Release the barrier
+    (`update public.encryption_cutover set engaged = false, engaged_at = null;`),
+    set `ENCRYPTION_PHASE=enc`, redeploy, and re-enable the cron.
+
+If the gate FAILS, release the barrier before re-running the backfill — the
+backfill writes, so it is blocked too — and re-engage it before the next attempt.
 
 ## Deployment checklist (before any deploy)
 
@@ -259,6 +306,9 @@ Each step is reversible until the last. Nothing may be skipped.
 - [ ] `app.set('trust proxy', 1)` active (it is — don't remove).
 - [ ] RLS enabled on every user-data table (run `SELECT tablename, rowsecurity FROM pg_tables WHERE schemaname='public'` and confirm).
 - [ ] `001_init.sql` trigger `handle_new_user` is present (creates `user_stats` + 12 defaults on signup).
+      **After migration 019 it seeds `user_stats` only** — the database has no encryption key, so it
+      cannot write `categories.name_enc`. Default categories are then seeded by `GET /api/me`
+      (`server/lib/defaultCategories.js`), which is idempotent and already live.
 - [x] Email confirmation: **OFF everywhere** (decided 2026-07-14 — the built-in sender's ~2 emails/hour cap plus spam-foldering made signups look broken at friends scale). Revisit if Trim is ever shared beyond friends; the Signup page already handles the confirm-email flow if it's re-enabled.
 - [ ] Service-role key rotated if it ever appeared in logs or commits.
 - [ ] Production `CLIENT_URL` (e.g. `https://trim-client-production.up.railway.app`) set on the API service — see DEPLOY.md.

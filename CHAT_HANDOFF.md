@@ -1,30 +1,31 @@
-# Chat Handoff — updated 2026-08-18 (Codex RE-VERIFY: FAIL)
+# Chat Handoff — updated 2026-08-18 (Claude Code REVISE #2 done; Codex to re-verify)
 
 ## DUAL-AGENT BATON  (both models: update this the MOMENT you finish work)
-- Current stage:  **stage 4 RE-VERIFY completed by Codex — FAIL; return to Claude Code REVISE**
+- Current stage:  **stage 5 REVISE #2 completed by Claude Code — back to Codex for RE-VERIFY #2**
 - Model A is:     Claude Code (build + revise). Model B / verifier: **Codex**
-- Up next:        Claude Code revises `phase-9.5-encryption-hardening`; then Codex re-verifies again
-- Last actor did: Codex re-ran the revised suite (**161/161**) and client build (PASS). The two
-                  committed regressions now pass, but two new in-memory PostgREST probes still made
-                  `verify-encryption.mjs` return `pass:true` over unsafe final data: (1) changing
-                  `user_id` before pass two leaves the digest identical and its decrypt failures are
-                  discarded; (2) deleting an already-scanned row and inserting an unencrypted row
-                  into that offset window preserves `checked === total` and both observed digests.
-                  **No DB touched, nothing deployed/merged, and no migration applied.**
-- Next must:      Fix both new gate false-PASSes with regression tests. Digest every validation input
-                  (including `user_id`) with unambiguous framing, and never discard second-pass
-                  failures/counts. Do not claim independent REST scans prove quiescence: enforce a
-                  real write barrier/consistent snapshot for the irreversible window. Then resolve
-                  the prefix-trie leakage explicitly, cap the read query consistently at 24 or
-                  change the design, update all stale security/handoff/build-plan claims, and make
-                  migration 019 remove/replace the plaintext category-seeding trigger before it
-                  drops `categories.name`.
-- Last verdict:   **FAIL — DO NOT merge, deploy, or apply migrations 012/018/019.** Static paging and
-                  value-edit regressions are fixed, but the sole authorisation gate still has two
-                  reproduced false-PASS states; prefix arrays leak pairwise common-prefix structure
-                  beyond the documented claim; queries stop matching after 24 normalised chars;
-                  SECURITY.md still documents the deleted scalar indexes/plaintext category design;
-                  and 019 leaves `handle_new_user()` writing the column it drops.
+- Up next:        **Codex** re-verifies `phase-9.5-encryption-hardening` (commit after 8b4bbee)
+- Last actor did: Claude Code fixed all five RE-VERIFY findings. Both new false-PASS states now have
+                  regressions that reproduce Codex's exact probes. The gate no longer claims read
+                  passes prove quiescence: **migration 018a installs a DB-enforced write barrier**
+                  (statement triggers on all ten guarded tables + a `pg_stat` write-counter RPC) and
+                  the gate fails closed unless it was engaged for the whole run with zero counter
+                  movement. Digest now covers `user_id` with length-prefixed framing and pass two's
+                  failures reach the verdict. Prefix cap 24 -> **8**, symmetric on both sides, with
+                  exact server-side refinement above it. Migration 019 replaces `handle_new_user()`
+                  before dropping `categories.name`, and the route-side seeding is built
+                  (`lib/defaultCategories.js` + `lib/encryptionPhase.js`, called from `GET /api/me`).
+                  Server suite **161 -> 201**, client build PASS.
+                  **No DB touched, nothing deployed or merged, no migration applied.**
+- Next must:      Re-verify. Highest-value places to attack: (a) the write barrier — is it actually
+                  sufficient, does it cover every write path, can the gate be fooled about it;
+                  (b) whether `pg_stat` counters can miss a write or produce false FAILs on a live
+                  Supabase project; (c) the prefix cap of 8 — is the residual leak acceptable and is
+                  the read path still exact; (d) whether `ensureDefaultCategories` is correct in all
+                  three phases and race-safe; (e) anything still stale in SECURITY.md / BUILD_PLAN.
+- Last verdict:   **FAIL (Codex RE-VERIFY, at 8b4bbee)** — all five findings addressed in this
+                  revision. Still DO NOT merge, deploy, or apply migrations 012/018/018a/019 until
+                  Codex passes it.
+- Last red-team:  n/a — stage 6 not yet reached on this branch.
 - Handoff log:
   - 2026-08-11 Claude Code: Phase 12b + 13 + 14, migration 017, DEPLOYED
   - 2026-08-12 Claude Code: third validation sweep — CLEAN. Repo cleanup. No code change.
@@ -35,6 +36,8 @@
   - 2026-08-18 Codex: stage 4 RE-VERIFY **FAIL** — 161/161 + client build pass, but two new gate
     false-PASS probes, prefix-trie leakage/24-char regression, stale security docs, and the category
     seeding trigger remain. Baton-only handoff; no DB/migration/deploy/merge.
+  - 2026-08-18 Claude Code: stage 5 REVISE #2 — all five fixed, enforced write barrier added,
+    suite 161 -> 201, client build PASS. Nothing merged/deployed/applied. **Codex re-verifies.**
 
 ## Codex RE-VERIFY FAIL -> new evidence
 
@@ -71,6 +74,20 @@
    Migration 019 never replaces that function before dropping the column, despite the encryption
    spec and BUILD_PLAN.md explicitly requiring category seeding to move to `GET /api/me`. A later
    signup therefore fails (or the drop is blocked), and the route-side replacement is not built.
+
+## Codex RE-VERIFY FAIL -> response (every item)
+
+| # | Codex finding | Verdict | Fix |
+|---|---|---|---|
+| 1 | Digest omits `user_id`; pass two's failures discarded | **Reproduced** | `digestRow()` covers the table, every PK column, **`user_id`**, every plaintext/ciphertext pair and every blind index, with LENGTH-PREFIXED framing so no value can forge a delimiter (the old `name=value` join was forgeable from user text). Pass two's `failures` and `checked` now feed the verdict instead of only its digest. Tests: RE-VERIFY REGRESSION 1, 1b, 1c. |
+| 2 | `checked === total` does not prove the scan saw the final table | **Reproduced** | Conceded in full — no finite sequence of independent offset-paged reads can prove quiescence, and the script no longer claims it does. **`migrations/018a_encryption_write_barrier.sql`** adds a `encryption_cutover` flag + statement-level triggers that reject writes on all ten guarded tables, and an `encryption_write_counters()` RPC over `pg_stat`. The gate fails closed unless the barrier is engaged before it starts, still engaged at the same `engaged_at` when it ends, and not one counter moved. Tests: RE-VERIFY REGRESSION 2 (Codex's exact delete-then-insert probe) + six barrier tests. **Verified the probe is faithful:** with the counter witness removed the two-pass digest still returns `{"pass":true,"checked":600,"drifted":[]}` over a table holding a plaintext-only row. |
+| 3 | The prefix array discloses a same-user prefix trie | **Valid** | `MAX_PREFIX` 24 -> **8**, so the trie is bounded at 8 and array length saturates: two merchants of 21 and 13 normalised characters now store identically sized arrays, and two sharing 14 leading characters store IDENTICAL arrays. Residual leak (exact length *below* 8) is pinned by a test and stated in SECURITY.md in the same words. |
+| 4 | The 24-character bound is asymmetric | **Reproduced** | One cap, applied by one function per side: `merchantQueryPrefix()` is the read side and cannot drift from `merchantPrefixes()`. Above the cap the hash returns a superset and `merchantMatches()` re-tests candidates on the DECRYPTED text, so the contract stays exact at every length rather than becoming approximate. Regression sweeps every query length from 2 to 21. |
+| 5 | 019 drops `categories.name` but leaves the signup trigger inserting it | **Valid, severe** | 019 now `create or replace`s `handle_new_user()` — user_stats only — BEFORE the drop, with a test asserting that ordering and that the replacement contains no `insert into public.categories`. The route-side replacement the spec always required is built: `lib/defaultCategories.js` seeds from `GET /api/me`, idempotent, phase-aware via the new `lib/encryptionPhase.js` (`off` by default = today's behaviour exactly). Migration 018 adds a partial unique index on `(user_id, sort_order) where is_default` so two tabs cannot double-seed. |
+
+**Found while fixing, not on Codex's list:** the digest's `name=value` framing was forgeable from
+user-supplied description text — two different rows could hash identically. Fixed by length
+prefixes and pinned by RE-VERIFY REGRESSION 1c.
 
 ## Codex FAIL -> response (every item)
 
@@ -115,20 +132,31 @@ by tests.
 ## Current state
 
 **Branch `phase-9.5-encryption-hardening`. NOT merged, NOT deployed.**
-Server suite **86 → 140**, client builds clean, working tree clean.
-Nothing in the live database changed: migrations 012 and 018 are unapplied, no route imports
-`lib/crypto.js`, `DATA_ENCRYPTION_KEY` is still unset. The feature remains inert — deliberately.
+Server suite **86 → 201**, client builds clean, working tree clean.
+Nothing in the live database changed: migrations 012, 018, 018a and 019 are all unapplied and
+`DATA_ENCRYPTION_KEY` is still unset. The feature remains inert — deliberately.
+
+One nuance since the last handoff: `GET /api/me` now imports the encryption code, via
+`ensureDefaultCategories()`. It writes `name_enc`/`name_hmac` **only** when `ENCRYPTION_PHASE` is
+`dual` or `enc`; the default is `off`, where it writes exactly the columns it always did and is a
+single indexed `limit 1` that finds a row and returns. It had to exist before 019, because 019
+drops the column the signup trigger still writes.
 
 ### Scope expansion (second pass, after Alex's answer)
 Encrypted on top of the money: `transactions.description`, `recurrences.description`,
 `savings_goals.name`, `savings_contributions.note`, `special_groups.name`,
-`subscription_overrides.display_name`. `categories.name` stays plaintext — it is looked up with
-`.eq('name', …)` in the database and is only the 12 seeded defaults.
+`subscription_overrides.display_name`. **`categories.name` is encrypted too** (corrected after
+Codex's first VERIFY — "only the 12 seeded defaults" was false; `POST /api/categories` accepts any
+name and `PATCH` renames one), with `name_hmac` answering the exact `.eq('name', …)` lookup.
 
-- **`blindIndex()` in `lib/crypto.js`** — per-user keyed HMAC. `transactions.merchant_hmac` (first
-  two normalised words) + `.merchant_hmac_1` (first word, because the old `.ilike('%term%')` was a
-  SUBSTRING match and a one-word entry matched a two-word merchant). `test/merchantMemory.test.js`
-  proves the lookup reproduces the old behaviour case by case.
+- **`blindIndex()` in `lib/crypto.js`** — per-user keyed HMAC. The two scalar hashes this started
+  with (`merchant_hmac`, `merchant_hmac_1`) are GONE: merchant memory is a typeahead, and an
+  exact-match hash would have lit the category chip only once the merchant was typed in full. They
+  were replaced by `transactions.merchant_prefix_hmacs`, a `text[]` holding one hash per prefix of
+  the normalised merchant from 2 to **8** characters (capped at 8 since Codex's RE-VERIFY; 24
+  published a prefix trie). Queries longer than the cap match a superset in the database and are
+  then re-tested exactly against the decrypted description. `test/merchantMemory.test.js` proves the
+  typeahead, the vote counting, the confidence rule and both documented losses.
 - **`lib/merchant.js`** — the ONE normalisation. There were two, and they disagreed on apostrophes:
   `routes/categories.js` produced `"sainsbury s"` while `lib/subscriptions.js` produced
   `"sainsburys local"`, so **merchant memory has silently never matched an apostrophe merchant**.
@@ -230,7 +258,17 @@ build if the migrations, the backfill or the gate diverge from it.
 - `server/lib/merchant.js` — **NEW.** The one merchant normalisation. Both sides of every blind
   index must use it.
 - `server/migrations/018_encryption_text_columns.sql` — **NEW.** Free text + blind indexes + lookup
-  indexes. Apply with 012.
+  indexes, plus the partial unique index that makes route-side category seeding atomic. Apply with 012.
+- `server/migrations/018a_encryption_write_barrier.sql` — **NEW, and the answer to Codex's second
+  false-PASS.** The `encryption_cutover` flag, statement-level reject triggers on all ten guarded
+  tables, and the `encryption_write_counters()` RPC. Inert until engaged. Apply with 012/018.
+- `server/lib/defaultCategories.js` — **NEW.** The 12 defaults + idempotent seeding from
+  `GET /api/me`. This is what lets 019 stop the signup trigger writing `categories.name`.
+- `server/lib/encryptionPhase.js` — **NEW.** `ENCRYPTION_PHASE` (`off` | `dual` | `enc`), validated
+  at import so a typo stops the server instead of writing the wrong columns. 019's footer has told
+  the operator to set this since July; nothing read it until now.
+- `server/test/defaultCategories.test.js` — **NEW.** 16 tests, incl. the two migration-ordering
+  regressions for finding 5.
 - `server/test/merchantMemory.test.js` — **NEW.** Proves encrypting descriptions did not break the
   suggested-category chip.
 - `server/lib/crypto.js` — v2 envelope, AAD, redacted errors, `blindIndex()`. 34 tests.
@@ -246,8 +284,8 @@ build if the migrations, the backfill or the gate diverge from it.
 
 ## Next steps (in order)
 
-1. **Codex verifies this branch.** Not me — CLAUDE.md forbids the builder validating its own stage,
-   and names 9.5 as the change that needs the two-model loop.
+1. **Codex re-verifies this branch (RE-VERIFY #2).** Not me — CLAUDE.md forbids the builder
+   validating its own stage, and names 9.5 as the change that needs the two-model loop.
 2. ~~Alex decides the description question~~ — **ANSWERED 2026-08-18: encrypt them, via a blind
    index.** Done and tested; see "Scope expansion" above.
 3. **The route sweep — the whole remaining feature, ~111 DB call sites.** Not started. Recommended
@@ -256,7 +294,9 @@ build if the migrations, the backfill or the gate diverge from it.
    production *before* any key exists. Two routes need real thought rather than mechanical porting,
    and both now have a proven design to port TO:
    - `routes/categories.js` `/suggest` — swap `.ilike('description', …)` for an equality match on
-     `merchant_hmac` / `merchant_hmac_1`. The exact read-path logic is in
+     `merchant_prefix_hmacs` — hash `merchantQueryPrefix(typed)`, then re-test the candidates
+     with `merchantMatches()` against the decrypted description, because above the 8-character cap
+     the database can only narrow, not decide. The exact read-path logic is in
      `test/merchantMemory.test.js`.
    - `routes/subscriptions.js` — `.eq('merchant_key', …)` and `onConflict: 'user_id,merchant_key'`
      move to `merchant_key_hmac`.
@@ -270,6 +310,19 @@ build if the migrations, the backfill or the gate diverge from it.
 ## Open questions for Alex
 - **None blocking.** Both previous questions are answered: descriptions ARE encrypted (blind index),
   and dual-write/no-rename is confirmed.
+- **A judgement call I made for you, easy to overturn:** Codex offered two ways to resolve the
+  prefix-trie leak — "cap the read query consistently at 24, or change the design". I changed the
+  design: the cap is now **8 characters on both sides**, with exact server-side refinement above it.
+  Capping at 24 would have satisfied the letter of the finding while still publishing a 24-deep
+  prefix trie and every merchant's exact length. Cost of my choice: `/suggest` decrypts a slightly
+  larger candidate set per keystroke (irrelevant at five users). If you want the strictest option
+  instead — one hash of the whole merchant, which leaks only "these rows share a merchant" and
+  nothing else — say so; the typeahead would then need the server to scan and decrypt your recent
+  descriptions rather than letting the database narrow first.
+- **The write barrier makes Trim briefly unwritable** during the cutover window, on purpose. Engage
+  it, run the gate, run 019, release it. If a write is attempted meanwhile the app returns an error
+  rather than silently losing a row. That is the trade Codex's finding 2 forces, and I think it is
+  the right one for a five-user app.
 - Worth a look when convenient, not blocking: `subscription_overrides.merchant_key_hmac` uses the
   raw stored key as its hash input, so two users with the same merchant still hash differently
   (per-user key) but a re-run after any change to `normaliseMerchant` would need the index rebuilt.

@@ -20,8 +20,9 @@
 -- hashes the search term the same way and matches on equality.
 --
 -- What a blind index costs, stated honestly: it is deterministic, so anyone
--- reading the table can see which rows share a merchant and how many there are.
--- They cannot see WHICH merchant. The key is per-user, so the same shop under two
+-- reading the table can see which rows share a merchant and how many there are —
+-- for merchant_prefix_hmacs, which rows share their first 2-8 normalised
+-- characters. They cannot see WHICH merchant. The key is per-user, so the same shop under two
 -- users hashes differently and a leaked backup cannot be correlated across
 -- people. See blindIndex() in lib/crypto.js.
 --
@@ -49,8 +50,14 @@ alter table public.transactions
   -- words naturally. An exact-match hash would light the category chip only once
   -- the merchant was typed out in full, so this holds a hash of EVERY prefix of
   -- the normalised merchant and the read path hashes what has been typed so far.
-  -- The array LENGTH reveals how long the merchant name is, not what it is; see
-  -- merchantPrefixes() in lib/merchant.js.
+  --
+  -- Prefixes are CAPPED AT 8 CHARACTERS on both sides (MAX_PREFIX in
+  -- lib/merchant.js). At 24 this column published a per-user prefix TRIE: the
+  -- exact longest common prefix of any two rows, the strict-prefix families, and
+  -- every merchant's exact normalised length. At 8 the trie is bounded and the
+  -- length leak saturates — a query longer than the cap matches a superset here
+  -- and is then re-tested exactly against the decrypted description on the
+  -- server. [Codex stage-4 RE-VERIFY findings 3 and 4, 2026-08-18]
   add column if not exists merchant_prefix_hmacs text[];
 
 -- The nightly cron (lib/runRecurrences.js) copies this into a real transaction,
@@ -86,7 +93,7 @@ alter table public.subscription_overrides
   -- ("netflix") or a synthetic key embedding an amount bucket
   -- ("auto:<category>:25:monthly") — so it leaks both the merchant AND roughly
   -- what it costs, in a column no amount encryption ever touched. This is its
-  -- blind-index replacement; migration 013 moves the primary key onto it.
+  -- blind-index replacement; migration 019 moves the primary key onto it.
   add column if not exists merchant_key_hmac text;
 
 -- --- indexes for the blind-index lookups ------------------------------------
@@ -101,7 +108,7 @@ create index if not exists transactions_merchant_prefix_hmacs_idx
 create index if not exists transactions_user_idx
   on public.transactions (user_id);
 
--- Uniqueness is what lets migration 013 promote this to the primary key. If this
+-- Uniqueness is what lets migration 019 promote this to the primary key. If this
 -- CREATE fails with a duplicate-key error, two different merchant keys hashed to
 -- the same value for one user — stop and investigate before going further.
 create unique index if not exists subscription_overrides_user_key_hmac_idx
@@ -109,3 +116,23 @@ create unique index if not exists subscription_overrides_user_key_hmac_idx
 
 create index if not exists categories_user_name_hmac_idx
   on public.categories (user_id, name_hmac);
+
+-- Makes the default-category seeding atomic once it moves out of the signup
+-- trigger. Migration 019 must replace handle_new_user() before it drops
+-- categories.name (the database has no encryption key and cannot write
+-- name_enc), so seeding moves to GET /api/me — and a route can be called twice
+-- at once, where an AFTER INSERT trigger could not. Without this index, two tabs
+-- opening a brand-new account race and produce 24 default categories.
+-- lib/defaultCategories.js catches the resulting 23505 and treats it as
+-- "already seeded", which is what the trigger's atomicity gave for free.
+--
+-- PARTIAL, on purpose: user-created categories are `is_default = false` and all
+-- carry sort_order 0 (001_init line 49), so a non-partial index would forbid a
+-- user having more than one custom category.
+--
+-- If this CREATE fails with a duplicate-key error, some user already has two
+-- default categories in the same slot — stop and clean that up first.
+-- [Codex stage-4 RE-VERIFY finding 5, 2026-08-18]
+create unique index if not exists categories_user_default_slot_idx
+  on public.categories (user_id, sort_order)
+  where is_default;

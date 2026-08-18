@@ -15,12 +15,13 @@ import assert from 'node:assert/strict';
 
 process.env.DATA_ENCRYPTION_KEY ||= Buffer.alloc(32, 7).toString('base64');
 
-const { verifyEncryption, parseArgs } = await import('../scripts/verify-encryption.mjs');
+const { verifyEncryption, parseArgs, digestRow, countersMoved } = await import('../scripts/verify-encryption.mjs');
 const { encryptField, blindIndexMany } = await import('../lib/crypto.js');
 const { merchantPrefixes } = await import('../lib/merchant.js');
 const IDX = 'transactions.merchant_prefix_hmacs';
 
 const U = '00000000-0000-4000-8000-000000000001';
+const U2 = '00000000-0000-4000-8000-000000000002';
 const enc = (v, field = 'transactions.amount') => encryptField(field, U, String(v));
 const JOB = [{
   table: 'transactions',
@@ -29,13 +30,6 @@ const JOB = [{
 }];
 const silent = () => {};
 
-/**
- * Fake PostgREST. Models exactly what the gate uses: head counts with
- * is/not-is-null filters, and keyset-paginated selects.
- * `faults.nullCount` makes a count come back absent — the fail-open case.
- * `faults.onCount` fires after the first counting pass, to simulate the app
- * writing while the gate runs.
- */
 /** A service_role-shaped JWT, so preflight passes and tests exercise the real path. */
 const SERVICE_JWT = `x.${Buffer.from(JSON.stringify({ role: 'service_role' })).toString('base64')}.y`;
 const ENV = {
@@ -44,11 +38,52 @@ const ENV = {
   DATA_ENCRYPTION_KEY: process.env.DATA_ENCRYPTION_KEY,
 };
 
+const ENGAGED_AT = '2026-08-18T02:00:00.000Z';
+
+/**
+ * Fake PostgREST. Models exactly what the gate uses: head counts with
+ * is/not-is-null filters, ordered offset selects, the migration-018a barrier
+ * table, and the write-counter RPC.
+ *
+ * `faults.nullCount` makes a count come back absent — the fail-open case.
+ * `faults.onCount` fires after a counting pass, `faults.onRead` after a read
+ * pass has already been served, to simulate a concurrent writer.
+ * `faults.barrier` overrides the barrier row (null = 018a not applied).
+ * `faults.noCounters` makes the counter RPC missing.
+ *
+ * Barrier and counters default to "engaged, nothing written", so every test that
+ * is not ABOUT the barrier exercises the same path it always did.
+ */
 function makeFake(rows, faults = {}) {
-  let countCalls = 0;
-  let readCalls = 0;
-  return {
-    from() {
+  const state = {
+    barrier: faults.barrier === undefined ? { engaged: true, engaged_at: ENGAGED_AT } : faults.barrier,
+    counters: { ...(faults.counters ?? {}) },
+    countCalls: 0,
+    readCalls: 0,
+  };
+
+  const api = {
+    _state: state,
+    rpc(name) {
+      if (faults.noCounters || name !== 'encryption_write_counters') {
+        return Promise.resolve({ data: null, error: { message: `function public.${name}() does not exist` } });
+      }
+      return Promise.resolve({
+        data: Object.entries(state.counters).map(([table_name, writes]) => ({ table_name, writes })),
+        error: null,
+      });
+    },
+    from(table) {
+      if (table === 'encryption_cutover') {
+        return {
+          select: () =>
+            Promise.resolve(
+              faults.barrierUnreadable
+                ? { data: null, error: { message: 'relation "encryption_cutover" does not exist' } }
+                : { data: state.barrier ? [{ ...state.barrier }] : [], error: null },
+            ),
+        };
+      }
       const q = {
         _head: false, _isNull: [], _notNull: [], _order: [], _limit: null, _range: null,
         select(_cols, opts) { q._head = Boolean(opts && opts.head); return q; },
@@ -63,13 +98,12 @@ function makeFake(rows, faults = {}) {
             (r) => q._isNull.every((c) => r[c] == null) && q._notNull.every((c) => r[c] != null),
           );
           if (q._head) {
-            countCalls += 1;
-            if (faults.onCount) faults.onCount(countCalls, rows);
+            state.countCalls += 1;
+            if (faults.onCount) faults.onCount(state.countCalls, rows, state);
             const count = faults.nullCount ? null : out.length;
             return Promise.resolve({ count, error: null }).then(resolve, reject);
           }
-          readCalls += 1;
-          if (faults.onRead) faults.onRead(readCalls, rows);
+          state.readCalls += 1;
           if (faults.hideLastFromReads) out = out.slice(0, -1);
           // Order by every column the caller asked for — what Postgres does.
           const key = (r) => q._order.map((c) => String(r[c])).join('\u0000');
@@ -83,12 +117,17 @@ function makeFake(rows, faults = {}) {
             out = out.slice(from, end);
           }
           if (q._limit) out = out.slice(0, q._limit);
-          return Promise.resolve({ data: out.map((r) => ({ ...r })), error: null }).then(resolve, reject);
+          const page = out.map((r) => ({ ...r }));
+          // Fires AFTER this page has been materialised, so a mutation here lands
+          // between two reads — which is exactly where the interesting races are.
+          if (faults.onRead) faults.onRead(state.readCalls, rows, state);
+          return Promise.resolve({ data: page, error: null }).then(resolve, reject);
         },
       };
       return q;
     },
   };
+  return api;
 }
 
 test('PASS on a fully and correctly encrypted table', async () => {
@@ -117,8 +156,7 @@ test('CRITICAL REGRESSION: FAIL on stale ciphertext when both columns are presen
   const rows = [{ id: 'a', user_id: U, amount: 25, amount_enc: enc(250) }];
   const r = await verifyEncryption({ supabase: makeFake(rows), jobs: JOB, log: silent, env: ENV });
   assert.equal(r.pass, false, 'a stale ciphertext must never pass the gate');
-  assert.equal(r.failures.length, 1);
-  assert.match(r.failures[0], /STALE/);
+  assert.ok(r.failures.some((f) => /STALE/.test(f)));
 });
 
 test('CRITICAL REGRESSION: FAIL when a cleared value still has ciphertext', async () => {
@@ -175,7 +213,7 @@ test('FAIL when the cron inserts a plaintext row BETWEEN the two read passes', a
   let done = false;
   const fake = makeFake(rows, {
     onRead: (n) => {
-      if (n === 3 && !done) { done = true; rows.push({ id: 'b', user_id: U, amount: 99, amount_enc: null }); }
+      if (n === 2 && !done) { done = true; rows.push({ id: 'b', user_id: U, amount: 99, amount_enc: null }); }
     },
   });
   const r = await verifyEncryption({ supabase: fake, jobs: JOB, log: silent, env: ENV });
@@ -198,7 +236,7 @@ test('every row is checked across pagination, so a stale row on page 2 is still 
   const r = await verifyEncryption({ supabase: makeFake(rows), jobs: JOB, log: silent, env: ENV });
   assert.equal(r.checked, 600);
   assert.equal(r.pass, false);
-  assert.match(r.failures[0], /STALE/);
+  assert.ok(r.failures.some((f) => /STALE/.test(f)));
 });
 
 test('parseArgs is strict about flags', () => {
@@ -264,7 +302,7 @@ test('FAIL when a description is encrypted but its index was never written', asy
   assert.match(r.failures[0], /blind index does not match/);
 });
 
-// --- regressions for the two false-PASS states Codex reproduced --------------
+// --- regressions for the two false-PASS states Codex reproduced (stage-4 VERIFY)
 
 test('REGRESSION (Codex): 501 rows under a composite PK are all verified, not 500', async () => {
   // The gate keyset-paged on pkOf(job)[0] alone. On subscription_overrides that
@@ -345,8 +383,8 @@ test('REGRESSION (Codex): a value-only edit after the read pass is detected as d
   let done = false;
   const fake = makeFake(rows, {
     onRead: (n) => {
-      // Reads 1-2 are the first verify pass; the re-read pass follows.
-      if (n === 3 && !done) {
+      // Read 1 is the first verify pass; the re-read pass follows.
+      if (n === 2 && !done) {
         done = true;
         rows[0].amount = 25;
         rows[0].amount_enc = encryptField('transactions.amount', U, '25');
@@ -357,6 +395,237 @@ test('REGRESSION (Codex): a value-only edit after the read pass is detected as d
   assert.equal(r.failures.length, 0, 'the write was correct — nothing should be stale');
   assert.deepEqual(r.drifted, ['transactions'], 'but the database moved, so the PASS must be void');
   assert.equal(r.pass, false);
+});
+
+// --- regressions for the two false-PASS states Codex reproduced on RE-VERIFY --
+//
+// Both of these returned {"pass":true} at commit 8b4bbee over data migration 019
+// would then have destroyed.
+
+test('RE-VERIFY REGRESSION 1: changing only user_id before the second pass is NOT a PASS', async () => {
+  // Codex's probe. `verifyRows` selected user_id but hashed only the PK, the
+  // field values and the indexes, so on an `id`-keyed table a change of OWNER
+  // left the digest byte-identical. The ciphertext stops decrypting under the new
+  // owner's derived key — the second pass noticed and pushed failures — but the
+  // caller compared digests only and threw `again.failures` away.
+  // Reproduced result was {"pass":true,"drifted":[],"failures":0}.
+  const job = [{
+    table: 'transactions', pk: ['id'],
+    fields: [{ table: 'transactions', column: 'amount', enc: 'amount_enc', kind: 'amount' }],
+    blind: [],
+  }];
+  const rows = [{ id: 'a', user_id: U, amount: 250, amount_enc: encryptField('transactions.amount', U, '250') }];
+  let done = false;
+  const fake = makeFake(rows, {
+    onRead: (n, all) => {
+      if (n === 2 && !done) { done = true; all[0].user_id = U2; }
+    },
+  });
+  const r = await verifyEncryption({ supabase: fake, jobs: job, log: silent, env: ENV });
+
+  assert.equal(r.pass, false, 'a row whose owner changed must never pass the gate');
+  assert.deepEqual(r.drifted, ['transactions'], 'user_id is part of what the digest must cover');
+  assert.ok(
+    r.failures.some((f) => /will not decrypt/.test(f)),
+    "the second pass's decryption failures must be reported, not discarded",
+  );
+});
+
+test('RE-VERIFY REGRESSION 1b: the second pass is a real check, not just a digest source', async () => {
+  // Narrower version of the same defect: the row is fine on pass one and becomes
+  // undecryptable on pass two. Even if a digest somehow matched, the failures the
+  // second pass found must reach the verdict.
+  const job = [{
+    table: 'transactions', pk: ['id'],
+    fields: [{ table: 'transactions', column: 'amount', enc: 'amount_enc', kind: 'amount' }],
+    blind: [],
+  }];
+  const rows = [{ id: 'a', user_id: U, amount: 10, amount_enc: encryptField('transactions.amount', U, '10') }];
+  let done = false;
+  const fake = makeFake(rows, {
+    onRead: (n, all) => {
+      if (n === 2 && !done) { done = true; all[0].amount_enc = 'v2:zz:zz:zz'; }
+    },
+  });
+  const r = await verifyEncryption({ supabase: fake, jobs: job, log: silent, env: ENV });
+  assert.equal(r.pass, false);
+  assert.ok(r.failures.some((f) => /will not decrypt/.test(f)));
+});
+
+test('RE-VERIFY REGRESSION 1c: the digest framing is unambiguous', () => {
+  // The old digest concatenated `name=value` pairs, so a value holding those
+  // delimiter bytes could make two different rows hash identically. Length
+  // prefixes remove the ambiguity. These two rows differ ONLY in where the
+  // boundary between the two columns falls.
+  const job = {
+    table: 'transactions', pk: ['id'],
+    fields: [{ table: 'transactions', column: 'description', enc: 'description_enc', kind: 'text' }],
+    blind: [],
+  };
+  const a = { id: 'x', user_id: U, description: 'ab', description_enc: 'c' };
+  const b = { id: 'x', user_id: U, description: 'a', description_enc: 'bc' };
+  assert.notEqual(digestRow(job, a), digestRow(job, b));
+
+  // And a NULL must never collide with the literal text "null".
+  const nul = { id: 'x', user_id: U, description: null, description_enc: 'c' };
+  const lit = { id: 'x', user_id: U, description: 'null', description_enc: 'c' };
+  assert.notEqual(digestRow(job, nul), digestRow(job, lit));
+
+  // The whole point of finding 1: user_id must change the digest.
+  const owned = { id: 'x', user_id: U, description: 'ab', description_enc: 'c' };
+  const stolen = { id: 'x', user_id: U2, description: 'ab', description_enc: 'c' };
+  assert.notEqual(digestRow(job, owned), digestRow(job, stolen));
+});
+
+test('RE-VERIFY REGRESSION 2: a delete-then-insert inside an already-scanned page is NOT a PASS', async () => {
+  // Codex's second probe, reproduced exactly. 600 valid rows. The second pass
+  // reads page 1, and only THEN does a writer delete an already-read row and
+  // insert a plaintext-only row whose primary key sorts inside that same page.
+  // Page 2 is untouched, so:
+  //   - the row stream and digest of pass two match pass one exactly;
+  //   - the count stays at 600, so `checked === total` still holds;
+  //   - the new, unencrypted row is read by NEITHER pass.
+  // Reported {"pass":true,"checked":600,"drifted":[],"badFinalRows":["00000-new"]}.
+  //
+  // No third pass fixes this. What fixes it is that writes are supposed to be
+  // impossible here, and pg_stat's counters see the ones that happen anyway.
+  const job = [{
+    table: 'transactions', pk: ['id'],
+    fields: [{ table: 'transactions', column: 'amount', enc: 'amount_enc', kind: 'amount' }],
+    blind: [],
+  }];
+  const rows = Array.from({ length: 600 }, (_, i) => ({
+    id: String(i).padStart(4, '0'), user_id: U, amount: i + 1,
+    amount_enc: encryptField('transactions.amount', U, String(i + 1)),
+  }));
+
+  let done = false;
+  const fake = makeFake(rows, {
+    counters: { transactions: 100 },
+    onRead: (n, all, state) => {
+      // Reads 1-3 are pass one (500, 100, empty). Read 4 is pass two's page 1.
+      if (n === 4 && !done) {
+        done = true;
+        all.splice(10, 1); // delete a row page 1 has already been served
+        all.push({ id: '0005x', user_id: U, amount: 99, amount_enc: null }); // sorts inside page 1
+        state.counters.transactions += 2; // the writes the barrier should have refused
+      }
+    },
+  });
+
+  const r = await verifyEncryption({ supabase: fake, jobs: job, log: silent, env: ENV });
+
+  assert.equal(r.checked, 600, 'the count invariant is satisfied — which is why it cannot be the proof');
+  assert.equal(r.pass, false, 'an unencrypted row slipped in unseen; this must never authorise 019');
+  assert.ok(
+    r.failures.some((f) => /written during this run/.test(f)),
+    'the write counters are the only witness to a write inside an already-scanned page',
+  );
+  assert.ok(r.drifted.includes('transactions'));
+  assert.ok(
+    rows.some((x) => x.id === '0005x' && x.amount_enc === null),
+    'sanity: the probe really did leave a plaintext-only row behind',
+  );
+});
+
+// --- the enforced write barrier (migration 018a) ------------------------------
+
+test('the gate REFUSES to run when the write barrier is not engaged', async () => {
+  // Everything else is perfect. It still must not pass: with writes allowed,
+  // nothing this script can read proves the rows it verified are the rows 019
+  // will drop.
+  const rows = [{ id: 'a', user_id: U, amount: 12.5, amount_enc: enc(12.5) }];
+  const r = await verifyEncryption({
+    supabase: makeFake(rows, { barrier: { engaged: false, engaged_at: null } }),
+    jobs: JOB, log: silent, env: ENV,
+  });
+  assert.equal(r.pass, false);
+  assert.ok(r.failures.some((f) => /barrier is NOT engaged/.test(f)));
+});
+
+test('the gate fails closed when migration 018a was never applied', async () => {
+  const rows = [{ id: 'a', user_id: U, amount: 12.5, amount_enc: enc(12.5) }];
+  const r = await verifyEncryption({
+    supabase: makeFake(rows, { barrierUnreadable: true }), jobs: JOB, log: silent, env: ENV,
+  });
+  assert.equal(r.pass, false);
+  assert.ok(r.failures.some((f) => /could not read encryption_cutover/.test(f)));
+});
+
+test('the gate fails closed when the write-counter RPC is missing', async () => {
+  const rows = [{ id: 'a', user_id: U, amount: 12.5, amount_enc: enc(12.5) }];
+  const r = await verifyEncryption({
+    supabase: makeFake(rows, { noCounters: true }), jobs: JOB, log: silent, env: ENV,
+  });
+  assert.equal(r.pass, false);
+  assert.ok(r.failures.some((f) => /encryption_write_counters/.test(f)));
+});
+
+test('FAIL when the barrier is released while the gate is running', async () => {
+  const rows = [{ id: 'a', user_id: U, amount: 12.5, amount_enc: enc(12.5) }];
+  const fake = makeFake(rows);
+  const original = fake._state.barrier;
+  fake._state.barrier = { ...original };
+  const r = await verifyEncryption({
+    supabase: {
+      ...fake,
+      from(table) {
+        if (table === 'encryption_cutover') {
+          // Engaged on the first read, released by the last one.
+          const snapshot = { ...fake._state.barrier };
+          fake._state.barrier = { engaged: false, engaged_at: null };
+          return { select: () => Promise.resolve({ data: [snapshot], error: null }) };
+        }
+        return fake.from(table);
+      },
+    },
+    jobs: JOB, log: silent, env: ENV,
+  });
+  assert.equal(r.pass, false);
+  assert.ok(r.failures.some((f) => /RELEASED while this gate was running/.test(f)));
+});
+
+test('FAIL when the barrier is released and re-engaged mid-run', async () => {
+  // Same engaged=true at both ends, but a different engaged_at means there was a
+  // gap, and anything could have been written in it.
+  const rows = [{ id: 'a', user_id: U, amount: 12.5, amount_enc: enc(12.5) }];
+  const fake = makeFake(rows);
+  let reads = 0;
+  const r = await verifyEncryption({
+    supabase: {
+      ...fake,
+      from(table) {
+        if (table === 'encryption_cutover') {
+          reads += 1;
+          const at = reads === 1 ? ENGAGED_AT : '2026-08-18T02:30:00.000Z';
+          return { select: () => Promise.resolve({ data: [{ engaged: true, engaged_at: at }], error: null }) };
+        }
+        return fake.from(table);
+      },
+    },
+    jobs: JOB, log: silent, env: ENV,
+  });
+  assert.equal(r.pass, false);
+  assert.ok(r.failures.some((f) => /released and re-engaged/.test(f)));
+});
+
+test('a --sample run does not require the barrier, and still cannot authorise anything', async () => {
+  // The sampled path is a development diagnostic. Requiring a production-only
+  // barrier for it would just push people towards not running it.
+  const rows = [{ id: 'a', user_id: U, amount: 12.5, amount_enc: enc(12.5) }];
+  const r = await verifyEncryption({
+    supabase: makeFake(rows, { barrier: { engaged: false, engaged_at: null } }),
+    jobs: JOB, sample: 5, log: silent, env: ENV,
+  });
+  assert.equal(r.failures.length, 0, 'no barrier complaints in sampled mode');
+  assert.equal(r.pass, false, 'but INCOMPLETE is still not PASS');
+});
+
+test('countersMoved reports exactly the tables that were written', () => {
+  assert.deepEqual(countersMoved({ a: 1, b: 2 }, { a: 1, b: 2 }), []);
+  assert.deepEqual(countersMoved({ a: 1, b: 2 }, { a: 1, b: 3 }), ['b']);
+  // A table that appears or disappears from the stats view counts as movement.
+  assert.deepEqual(countersMoved({ a: 1 }, { a: 1, c: 0 }), ['c']);
 });
 
 // --- preflight: what exactly is being authorised ----------------------------
@@ -374,7 +643,7 @@ test('the gate refuses to speak for a database it is reading through the anon ke
   assert.ok(r.failures.some((f) => /service_role/.test(f)));
 });
 
-test('the gate reports which database and which key, without printing the key', async () => {
+test('the gate reports which database, which key and whether the barrier is up', async () => {
   const rows = [{ id: 'a', user_id: U, amount: 1, amount_enc: encryptField('transactions.amount', U, '1') }];
   const lines = [];
   const r = await verifyEncryption({ supabase: makeFake(rows), jobs: JOB, log: (m) => lines.push(m), env: ENV });
@@ -382,6 +651,7 @@ test('the gate reports which database and which key, without printing the key', 
   assert.match(out, /test\.supabase\.co/);
   assert.match(out, /service_role/);
   assert.match(out, /fingerprint [0-9a-f]{12}/);
+  assert.match(out, /write barrier\s+: ENGAGED since/);
   assert.ok(!out.includes(ENV.DATA_ENCRYPTION_KEY), 'the key itself must never be printed');
   assert.equal(r.target.host, 'test.supabase.co');
 });

@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { supabase } from '../lib/supabase.js';
 import { titleForLevel, levelProgress } from '../lib/gamification.js';
+import { ensureDefaultCategories } from '../lib/defaultCategories.js';
 
 const router = Router();
 
@@ -43,6 +44,16 @@ router.get('/', async (req, res, next) => {
       if (insertErr) throw insertErr;
       stats = inserted;
     }
+
+    // Seed the 12 default categories if this user has none.
+    //
+    // Today the migration-001 signup trigger has already done it, so this is a
+    // single indexed `limit 1` that finds a row and returns. Migration 019 has to
+    // REPLACE that trigger — the database cannot write `name_enc`, having no key
+    // — and from that point this is the only thing that seeds a new account.
+    // Idempotent, so both worlds work and there is no flag day.
+    // [Codex stage-4 RE-VERIFY finding 5, 2026-08-18]
+    await ensureDefaultCategories(supabase, req.user.id);
 
     const progress = levelProgress(stats.xp_points);
 

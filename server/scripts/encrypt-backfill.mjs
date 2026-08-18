@@ -81,28 +81,21 @@ export function blindValueEquals(a, b) {
 export const PAGE_SIZE = 500;
 
 /**
- * SCOPE (re-decided 2026-08-09, before this script had ever been run):
- * encrypt the MONEY, leave the searchable text in plaintext.
+ * SCOPE: lib/encryptedFields.js, and nothing else. Do not re-describe it here.
  *
- * Every amount column, plus `ask_messages.content` (free text that could
- * contain anything and that nothing queries). Deliberately NOT encrypted:
+ * This comment block used to carry its own copy of the scope — "encrypt the
+ * MONEY, leave the searchable text in plaintext", with a list of columns that
+ * were deliberately NOT encrypted. Alex expanded the scope on 2026-08-18 to
+ * include descriptions and every free-text label, and `categories.name` followed
+ * after Codex's first VERIFY. The list here was not updated, so this file spent a
+ * session confidently documenting the opposite of what it does — the exact
+ * hand-maintained-list drift that produced both of the data-destroying defects
+ * this phase had to fix. Deleted rather than corrected, because a second copy of
+ * the scope is the bug.
  *
- *   transactions.description  — routes/categories.js:89 runs `.ilike()` on it
- *                               in the DATABASE for merchant memory (Task 6.9).
- *                               You cannot ILIKE a ciphertext, and decrypting
- *                               after fetch does not help. Encrypting it would
- *                               silently break that feature forever.
- *   categories.name           — lib/categoryKeywords.js matches on it by name.
- *   savings_goals.name,
- *   savings_contributions.note,
- *   subscription_overrides.display_name
- *                             — labels, not amounts. Nothing queries them, so
- *                               they could be added cheaply later if wanted.
- *
- * This is the bulk of the privacy benefit (how much you have and move) at a
- * fraction of the risk: no feature coupling, and roughly half the route sweep.
- * `transactions.description` can be added later behind a blind index (an HMAC
- * of the normalised merchant, searched instead of the ciphertext).
+ * What IS still deliberately plaintext is recorded once, in the registry:
+ * `transactions.fx_rate` (a public market rate, and keeping it numeric keeps the
+ * `fx_rate > 0` CHECK enforceable).
  */
 /**
  * Derived from lib/encryptedFields.js — the ONE list. This used to be a literal

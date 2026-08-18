@@ -18,6 +18,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync, readdirSync } from 'node:fs';
 import { ENCRYPTED_FIELDS, BLIND_INDEXES, fieldsByTable } from '../lib/encryptedFields.js';
+import { BARRIER_TABLE, COUNTERS_RPC } from '../scripts/verify-encryption.mjs';
 
 /**
  * Strip `--` comments before parsing. Both migrations DISCUSS columns and even
@@ -219,4 +220,57 @@ test('custom category names are encrypted', () => {
   assert.ok(ENCRYPTED_FIELDS.some((f) => f.table === 'categories' && f.column === 'name'));
   assert.ok(BLIND_INDEXES.some((b) => b.table === 'categories' && b.from === 'name'),
     'the keyword lookup does .eq(name, …) in the database and needs an index');
+});
+
+
+// --- the enforced write barrier (Codex stage-4 RE-VERIFY finding 2) ----------
+
+const M018A = sql('018a_encryption_write_barrier.sql');
+
+test('the write barrier guards every table that has an encrypted column', () => {
+  // A table left unguarded is a table the app can still write during the window
+  // migration 019 runs in — and a write that lands inside an already-scanned page
+  // moves neither the row count nor the digest, so nothing else would see it.
+  // Read the declared list itself, not any quoted word in the file — a test that
+  // passes because it scanned the prose is not a test.
+  const block = M018A.match(/guarded\s+text\[\]\s*:=\s*array\[([\s\S]*?)\]/i);
+  assert.ok(block, 'the migration must declare its guarded tables as one array');
+  const guarded = new Set([...block[1].matchAll(/'(\w+)'/g)].map((m) => m[1]));
+  assert.ok(guarded.size >= 10, `only parsed ${guarded.size} guarded tables`);
+  const missing = fieldsByTable().map((j) => j.table).filter((t) => !guarded.has(t));
+  assert.deepEqual(missing, [], `no write barrier on: ${missing.join(', ')}`);
+});
+
+test('the barrier migration sorts between the additive ones and the drop', () => {
+  const names = readdirSync(new URL('../migrations/', import.meta.url)).filter((f) => f.endsWith('.sql')).sort();
+  const barrier = names.find((n) => /encryption_write_barrier/.test(n));
+  const text = names.find((n) => /encryption_text_columns/.test(n));
+  const destructive = names.find((n) => /encryption_drop_plaintext/.test(n));
+  assert.ok(barrier, 'the write barrier migration must exist');
+  assert.ok(text < barrier, `${text} must sort before ${barrier}`);
+  assert.ok(barrier < destructive, `${barrier} must sort before ${destructive}`);
+});
+
+test('the gate looks for the exact barrier objects the migration creates', () => {
+  // Same class of drift as the registry: the gate reading a table name the
+  // migration never created would fail closed forever, and reading one it renamed
+  // would fail OPEN if the read were ever made lenient.
+  assert.match(M018A, new RegExp(`create table if not exists public\\.${BARRIER_TABLE}\\b`, 'i'));
+  assert.match(M018A, new RegExp(`create or replace function public\\.${COUNTERS_RPC}\\b`, 'i'));
+});
+
+test('the barrier blocks writes at statement level and can always be released', () => {
+  // Row-level would cost a lookup per row on every write forever. And the flag
+  // table itself must carry no trigger, or engaging the barrier would lock in the
+  // ability to release it.
+  assert.match(M018A, /for each statement execute function public\.reject_writes_during_cutover/i);
+  assert.ok(
+    !/create trigger[^;]*on public\.encryption_cutover/i.test(M018A),
+    'the flag table must not guard itself',
+  );
+});
+
+test('the counter RPC is not exposed to anon or authenticated', () => {
+  assert.match(M018A, /revoke execute on function public\.encryption_write_counters\(\) from anon, authenticated, public/i);
+  assert.match(M018A, /grant execute on function public\.encryption_write_counters\(\) to service_role/i);
 });

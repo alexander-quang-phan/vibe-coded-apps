@@ -3,8 +3,8 @@
  *
  * Everything downstream derives from this file: lib/crypto.js validates every
  * encrypt/decrypt call against it, scripts/encrypt-backfill.mjs builds its JOBS
- * from it, scripts/verify-encryption.mjs gates migration 013 on it, and
- * migrations 012/018/013 must match it column for column.
+ * from it, scripts/verify-encryption.mjs gates migration 019 on it, and
+ * migrations 012/018/019 must match it column for column.
  *
  * Why a registry rather than a list inside the backfill: the 2026-08-18 audit
  * found that verify-encryption.mjs imported JOBS from the script it was meant to
@@ -143,7 +143,7 @@ export const BLIND_INDEXES = [
   // bucket ("auto:<cat>:25:monthly") — so it leaks both merchants AND roughly
   // what they cost, in a column no encryption touched. Hashing it keeps the
   // equality lookup and the upsert conflict target working while making it
-  // opaque. Migration 013 moves the primary key onto this column.
+  // opaque. Migration 019 moves the primary key onto this column.
   {
     table: 'subscription_overrides',
     column: 'merchant_key_hmac',

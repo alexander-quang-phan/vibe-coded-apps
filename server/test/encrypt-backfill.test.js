@@ -129,7 +129,7 @@ test('a row whose plaintext is NULL terminates instead of looping forever', asyn
 test('REGRESSION: a row that fails verification is rolled back so a re-run repairs it', async () => {
   // This is the defect that survived adversarial audit. Run 1 must NOT leave a
   // committed-but-unverified row, because the idempotency filter would then
-  // hide it from run 2 forever and migration 013 would drop its plaintext.
+  // hide it from run 2 forever and migration 019 would drop its plaintext.
   const tables = { transactions: [{ id: 'a', user_id: 'u1', amount: 12.5, amount_enc: null }] };
   const fake = makeFake(tables, { corruptColumn: 'amount_enc' });
 
@@ -223,7 +223,7 @@ test('JOBS scope: money and free text are encrypted', () => {
 test('REGRESSION: a row edited mid-run is rolled back, not "verified" as the old value', async () => {
   // The backfill SELECTs, then encrypts what it read, then writes. If a user
   // edits the row in between, the old code compared the stored ciphertext
-  // against its own stale snapshot and passed — so migration 013 would drop the
+  // against its own stale snapshot and passed — so migration 019 would drop the
   // only correct copy and the transaction would be the OLD amount forever.
   // Verification now compares against the database's CURRENT plaintext.
   const tables = { transactions: [{ id: 'a', user_id: 'u1', amount: 250, amount_enc: null }] };
