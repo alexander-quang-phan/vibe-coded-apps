@@ -739,7 +739,8 @@ older than the 200-row window load. Verify by tapping into an old month in the r
 >   `subscription_overrides.display_name` — all removed from scope on 2026-08-09, so their `_enc`
 >   twins were never created. Each `drop column` succeeds and the following `rename` fails on a
 >   column that does not exist. The draft has been REMOVED from the plan and replaced by a real
->   `server/migrations/013_encryption_drop_plaintext.sql`.
+>   `server/migrations/019_encryption_drop_plaintext.sql` (written as 013 at the time; renumbered
+>   to 019 during Codex's first VERIFY so that filename order is also a safe apply order).
 > - **Encrypting `amount` never hid foreign-currency amounts.** Migration 016 added
 >   `original_amount` and `fx_rate` as plaintext numerics a month after 012 froze its column list,
 >   and `amount = original_amount * fx_rate`. Every EUR expense was recoverable by one
@@ -747,7 +748,7 @@ older than the 200-row window load. Verify by tapping into an old month in the r
 >   (a public rate, and it keeps the `fx_rate > 0` CHECK enforceable).
 >
 > Landed 2026-08-18:
-> - **`server/lib/encryptedFields.js`** — the ONE list. Migrations 012/013, the backfill and the
+> - **`server/lib/encryptedFields.js`** — the ONE list. Migrations 012/018/018a/019, the backfill and the
 >   gate all derive from it, and `test/encryptionScope.test.js` fails the build if they drift.
 >   This is the fix for the whole class of bug above: both data-destroying findings were drift
 >   between four hand-maintained lists.
@@ -842,6 +843,31 @@ older than the 200-row window load. Verify by tapping into an old month in the r
 >    called from `GET /api/me`, idempotent, phase-aware via the new
 >    **`server/lib/encryptionPhase.js`** (`off` default = today's behaviour exactly). Migration 018
 >    adds a partial unique index so two tabs on a new account cannot double-seed.
+
+> **Codex stage-5 RE-VERIFY #2: FAIL (2026-08-18).** 201/201 and the client build passed, and the
+> digest fix was accepted, but the new write barrier had a Critical hole plus four more defects. All
+> seven fixed; suite **201 -> 220**:
+>
+> 1. **The barrier did not drain writers admitted before it was engaged.** Reproduced on real
+>    PostgreSQL 18.4: a transaction that inserted a plaintext-only row and stayed open was invisible
+>    to the gate's scans AND to `pg_stat` (cumulative stats exclude in-progress transactions), the
+>    gate returned PASS, and the row then committed — because COMMIT re-fires no statement trigger.
+>    The trigger now takes `SELECT ... FOR SHARE` on the singleton flag, so engaging the barrier
+>    blocks until every admitted writer finishes. **`server/test/writeBarrier.pg.test.js`** runs the
+>    real migration against a throwaway embedded PostgreSQL and RED-fails against the old SQL.
+> 2. **`TRUNCATE` was not guarded** — a separate trigger event, and not counted by `pg_stat`'s tuple
+>    counters either, so it went through both defences. Added to every statement trigger.
+> 3. **Fresh migration replay was still invalid:** 012 altered `public.recurrences`, which 014
+>    creates. `recurrences.amount_enc` moved to 018, plus a general test that no migration alters a
+>    table an earlier statement has not created.
+> 4. **Dual-phase signups wrote plaintext-only category names.** The `handle_new_user()` replacement
+>    moved from 019 forward into 018a, and `ensureDefaultCategories()` now repairs missing
+>    `name_enc`/`name_hmac` during the dual window instead of returning "already present".
+> 5. **The 200-row history cap could discard every true match.** The read path pages candidates in a
+>    stable order until 200 rows pass the exact test or the candidates run out.
+> 6. **`GET /api/categories` could cache an empty list** for a brand-new account; it now seeds before
+>    it reads, like `GET /api/me`.
+> 7. Stale operational references to the deleted migration 013 corrected throughout.
 
 **Chat prompt:**
 ```

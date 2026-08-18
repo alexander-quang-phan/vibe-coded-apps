@@ -62,8 +62,14 @@ alter table public.transactions
 
 -- The nightly cron (lib/runRecurrences.js) copies this into a real transaction,
 -- so leaving it readable would leak every recurring merchant anyway.
+--
+-- `amount_enc` is here rather than in 012 because `public.recurrences` is created
+-- by 014, which sorts AFTER 012 — so creating it there broke a fresh replay of
+-- the migrations in filename order. This file sorts after 014, so both columns
+-- can be created together. [Codex stage-5 RE-VERIFY #2 finding 3, 2026-08-18]
 alter table public.recurrences
-  add column if not exists description_enc text;
+  add column if not exists description_enc text,
+  add column if not exists amount_enc text;
 
 -- Labels. Verified 2026-08-18 that NOTHING queries these in the database —
 -- goals and special groups are ordered by created_at, never by name.

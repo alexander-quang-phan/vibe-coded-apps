@@ -274,3 +274,58 @@ test('the counter RPC is not exposed to anon or authenticated', () => {
   assert.match(M018A, /revoke execute on function public\.encryption_write_counters\(\) from anon, authenticated, public/i);
   assert.match(M018A, /grant execute on function public\.encryption_write_counters\(\) to service_role/i);
 });
+
+
+// --- migration replay ordering (Codex stage-5 RE-VERIFY #2 finding 3) --------
+
+test('CRITICAL REGRESSION: no migration alters a table an earlier one has not created', () => {
+  // 012_encryption_columns.sql used to `alter table public.recurrences`, which
+  // 014_recurrences.sql creates. On the live database that was invisible — 014
+  // had been applied for weeks before anyone tried to apply 012 — but a fresh
+  // replay in filename order, which is the documented and obvious way to rebuild,
+  // failed on a table that did not exist yet.
+  //
+  // The previous ordering test only asserted that the destructive migration sorts
+  // last, so it could not see this. This checks the whole dependency graph.
+  const dir = new URL('../migrations/', import.meta.url);
+  const names = readdirSync(dir).filter((f) => f.endsWith('.sql')).sort();
+
+  const created = new Map(); // table -> migration that creates it
+  const problems = [];
+
+  for (const name of names) {
+    const text = stripComments(readFileSync(new URL(name, dir), 'utf8'));
+
+    // Walk CREATEs and ALTERs in the order they actually appear. Doing all the
+    // ALTERs first would flag every migration that creates a table and then
+    // alters it lower down — which 001, 004, 007, 014, 015 and 018a all do.
+    const events = [
+      ...[...text.matchAll(/create\s+table\s+(?:if\s+not\s+exists\s+)?public\.(\w+)/gi)]
+        .map((m) => ({ at: m.index, kind: 'create', table: m[1] })),
+      ...[...text.matchAll(/alter\s+table\s+(?:if\s+exists\s+)?public\.(\w+)/gi)]
+        .map((m) => ({ at: m.index, kind: 'alter', table: m[1] })),
+    ].sort((a, b) => a.at - b.at);
+
+    for (const e of events) {
+      if (e.kind === 'create') {
+        if (!created.has(e.table)) created.set(e.table, name);
+      } else if (!created.has(e.table)) {
+        problems.push(`${name} alters public.${e.table}, which no earlier statement creates`);
+      }
+    }
+  }
+
+  assert.deepEqual(problems, [], problems.join('\n'));
+});
+
+test('recurrences.amount_enc is created by a migration that sorts after 014', () => {
+  // The specific case above, pinned by name so the fix cannot be quietly undone.
+  const names = readdirSync(new URL('../migrations/', import.meta.url)).filter((f) => f.endsWith('.sql')).sort();
+  const creates014 = names.find((n) => /014_recurrences/.test(n));
+  const owner = names.find((n) => /add\s+column\s+if\s+not\s+exists\s+amount_enc/i.test(
+    stripComments(readFileSync(new URL(`../migrations/${n}`, import.meta.url), 'utf8'))
+      .split(/alter\s+table\s+public\.recurrences/i)[1] ?? '',
+  ));
+  assert.ok(owner, 'some migration must create recurrences.amount_enc');
+  assert.ok(owner > creates014, `${owner} must sort after ${creates014}`);
+});

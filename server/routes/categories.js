@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { supabase } from '../lib/supabase.js';
 import { suggestCategoryName } from '../lib/categoryKeywords.js';
+import { ensureDefaultCategories } from '../lib/defaultCategories.js';
 import { isSingleEmoji } from '../lib/emoji.js';
 
 const router = Router();
@@ -43,6 +44,13 @@ const PROTECTED_DEFAULT_NAMES = new Set(['Other', 'Other Income']);
 
 router.get('/', async (req, res, next) => {
   try {
+    // Seed BEFORE reading. The client fires this and GET /api/me independently
+    // and renders as soon as they resolve, so for a brand-new account this could
+    // otherwise return — and cache — an empty list while /api/me was still
+    // seeding. Idempotent, so whichever request gets here first does the work.
+    // [Codex stage-5 RE-VERIFY #2 finding 6, 2026-08-18]
+    await ensureDefaultCategories(supabase, req.user.id);
+
     const { data, error } = await supabase
       .from('categories')
       .select('id, name, icon, color, type, is_default, sort_order')

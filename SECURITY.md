@@ -158,7 +158,11 @@ total, answer an Ask Trim question, or detect a subscription. So:
   subscription display names are all ciphertext.
 - **A blind index leaks the SHAPE of your spending, not its content.** Because the
   hash is deterministic, anyone reading the table can see that a set of rows share
-  a merchant, and how many there are — but not which merchant. The index key is
+  a merchant, and how many there are. It does not name the merchant — but "not
+  which merchant" is weaker than it sounds: anyone who knows what ONE row is (a
+  receipt, a shared expense, a screenshot) has labelled every row sharing its
+  hash, and the biggest cluster in a typical month is a fair guess at a weekly
+  supermarket even without that. It hides the name, not the pattern. The index key is
   per-user, so the same shop under two people hashes differently and one leaked
   backup cannot be correlated across users. Someone holding the master key could
   hash a guess ("tesco") and compare — but they could simply decrypt the
@@ -280,6 +284,11 @@ Each step is reversible until the last. Nothing may be skipped.
 5. `node scripts/encrypt-backfill.mjs --dry-run`, then for real.
 6. Disable the 03:00 recurrences cron, then **engage the write barrier**:
    `update public.encryption_cutover set engaged = true, engaged_at = now();`
+   **Wait for that statement to RETURN.** It blocks until every transaction that
+   was already writing has finished — that draining is the point, and it is what
+   stops a write admitted a moment earlier from committing after the gate has
+   passed. If it hangs, something is still writing; find it with
+   `select pid, state, xact_start, query from pg_stat_activity where state <> 'idle';`
    Trim now rejects every write at the database. That is deliberate: "pause the
    app" used to be an instruction nobody could verify, and Codex proved on
    re-verification that a write landing inside a page the gate had already read is

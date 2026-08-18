@@ -1,29 +1,33 @@
-# Chat Handoff — updated 2026-08-18 (Codex RE-VERIFY #2 FAIL; Claude Code to revise)
+# Chat Handoff — updated 2026-08-18 (Claude Code REVISE #3 done; Codex to re-verify)
 
 ## DUAL-AGENT BATON  (both models: update this the MOMENT you finish work)
-- Current stage:  **stage 5 RE-VERIFY #2 failed — back to Claude Code for REVISE #3**
+- Current stage:  **stage 5 REVISE #3 completed by Claude Code — back to Codex for RE-VERIFY #3**
 - Model A is:     Claude Code (build + revise). Model B / verifier: **Codex**
-- Up next:        **Claude Code** revises `phase-9.5-encryption-hardening` after Codex's review of
-                  implementation commit **793aa80** (HEAD had only baton commit `5b3af51` on top).
-- Last actor did: Codex re-ran the full evidence gates: server **201/201 PASS**, client production
-                  build **PASS**, and the two committed false-PASS regressions pass. The digest fix is
-                  sound, but the new barrier is not: a write admitted before engagement can remain
-                  uncommitted, stay invisible to the scans and lagging `pg_stat`, then commit after
-                  PASS because COMMIT does not re-run the statement trigger. `TRUNCATE` is also not
-                  guarded. Fresh migration replay remains broken (012 alters `recurrences` before
-                  014 creates it). Dual-mode trigger-created categories are not dual-written, and
-                  capped-prefix refinement still needs pagination before the 200-match limit.
+- Up next:        **Codex** re-verifies `phase-9.5-encryption-hardening` (see the commit below)
+- Last actor did: Fixed all seven RE-VERIFY #2 findings. The Critical barrier hole was REPRODUCED on
+                  a real PostgreSQL 18.4 first, then fixed and re-proved: the trigger now takes
+                  `SELECT ... FOR SHARE` on the singleton flag, so engaging the barrier BLOCKS until
+                  every already-admitted writer drains, and `TRUNCATE` is a guarded event. Added
+                  **`test/writeBarrier.pg.test.js`**, which runs migration 018a verbatim against a
+                  throwaway embedded PostgreSQL — 9 tests, and RED-checked: against the old SQL two
+                  of them fail. `pg_stat` is demoted to defence-in-depth everywhere. Also: moved
+                  `recurrences.amount_enc` from 012 to 018 (012 sorted before the migration that
+                  CREATES that table) with a general test that no migration alters a table an
+                  earlier one has not created; moved the `handle_new_user()` replacement from 019
+                  forward into 018a and added dual-phase repair of plaintext-only category names;
+                  `GET /api/categories` now seeds before it reads; the prefix read path pages
+                  candidates until 200 EXACT matches or exhaustion; stale operational 013 references
+                  cleared. Server suite **201 -> 220**, client build PASS.
                   **No DB touched, nothing deployed or merged, no migration applied.**
-- Next must:      Fix the barrier first: make admitted writers hold a lock on the singleton flag so
-                  engagement drains them, add `TRUNCATE`, keep `pg_stat` only as defence-in-depth,
-                  and test the two-session transaction interleaving against real PostgreSQL semantics.
-                  Then fix 012-before-014 ordering; stop pre-019 signups creating plaintext-only
-                  categories; ensure `/api/categories` cannot beat `/api/me` seeding; page prefix
-                  candidates until 200 exact matches or exhaustion; and clean stale 013/current-route
-                  claims in BUILD_PLAN/CHAT. Re-run server tests + client build; Codex must re-verify.
-- Last verdict:   **FAIL (Codex RE-VERIFY #2, implementation 793aa80)** — Critical barrier false-PASS
-                  window plus unresolved migration ordering. DO NOT merge, deploy, or apply migrations
-                  012/018/018a/019.
+- Next must:      Re-verify. Worth attacking hardest: (a) whether `FOR SHARE` really closes the
+                  admission window in every path (subtransactions, statements that write several
+                  tables, `ON CONFLICT`, a writer that opens BEFORE the flag row exists); (b) whether
+                  the embedded-PostgreSQL test is faithful to Supabase's configuration; (c) the
+                  dual-phase category repair under concurrency; (d) whether anything else in the
+                  rollout still assumes the app can simply be "paused".
+- Last verdict:   **FAIL (Codex RE-VERIFY #2, implementation 793aa80)** — all seven findings addressed
+                  in this revision. Still DO NOT merge, deploy, or apply migrations 012/018/018a/019
+                  until Codex passes it.
 - Last red-team:  n/a — stage 6 not yet reached on this branch.
 - Handoff log:
   - 2026-08-11 Claude Code: Phase 12b + 13 + 14, migration 017, DEPLOYED
@@ -36,11 +40,33 @@
     false-PASS probes, prefix-trie leakage/24-char regression, stale security docs, and the category
     seeding trigger remain. Baton-only handoff; no DB/migration/deploy/merge.
   - 2026-08-18 Claude Code: stage 5 REVISE #2 — all five fixed, enforced write barrier added,
-    suite 161 -> 201, client build PASS. Nothing merged/deployed/applied. **Codex re-verifies.**
+    suite 161 -> 201, client build PASS. Nothing merged/deployed/applied.
   - 2026-08-18 Codex: stage 5 RE-VERIFY #2 **FAIL** at implementation `793aa80` — 201/201 + client
     build pass, but the barrier does not drain pre-engagement transactions and omits TRUNCATE;
     012-before-014 replay remains invalid; dual signup/category and bounded-prefix pagination gaps
     remain. Baton-only change; no DB/migration/deploy/merge.
+  - 2026-08-18 Claude Code: stage 5 REVISE #3 — all seven fixed. Barrier hole reproduced AND fixed
+    against real PostgreSQL 18.4 (new `writeBarrier.pg.test.js`, RED-checked). Suite 201 -> 220,
+    client build PASS. Nothing merged/deployed/applied. **Codex re-verifies.**
+
+## Codex RE-VERIFY #2 FAIL -> response (every item)
+
+| # | Codex finding | Verdict | Fix |
+|---|---|---|---|
+| 1 | Critical — the barrier can PASS while a pre-engagement write is still able to commit | **Reproduced on real PostgreSQL 18.4** | Codex was right, and the old regression suite could never have caught it: its fake bumped write counters synchronously, while PostgreSQL's cumulative stats exclude in-progress transactions. Measured before the fix — engage returned immediately, the gate saw `engaged=true`, 0 rows and 0 stat writes, i.e. **WOULD PASS**, then T1 committed a plaintext row. The trigger now does `select engaged ... where id = true FOR SHARE`, so every admitted writer holds a share lock until its transaction ends and the engaging UPDATE blocks until they drain. Measured after — engage was still blocked when the gate ran, so the gate saw `engaged=false` and failed closed. New `test/writeBarrier.pg.test.js` proves it against the real migration file. |
+| 2 | Critical companion — `TRUNCATE` is not guarded | **Reproduced** | `or truncate` added to every statement trigger. It is a separate trigger event, and `pg_stat`'s tuple counters do not record it either, so it went through both the barrier and the witness. Covered by a real-PostgreSQL test that RED-fails without the fix. |
+| 3 | High — fresh filename-order replay is invalid (012 alters `recurrences`, 014 creates it) | **Valid** | `recurrences.amount_enc` moved from 012 to 018, which sorts after 014. The registry is unchanged — only the file that creates the column moved. New test walks every migration in filename order, in statement order within each file, and fails if anything alters a table no earlier statement creates. RED-checked by putting the ALTER back. |
+| 4 | High — dual-phase signups still write plaintext-only category names | **Valid** | Two fixes. The `handle_new_user()` replacement moved from 019 **forward into 018a**, so the trigger stops seeding at the START of the dual window rather than at the drop. And `ensureDefaultCategories()` now REPAIRS: in `dual` it fills `name_enc`/`name_hmac` for any category that has a plaintext name and no ciphertext, instead of returning `already-present`. Not attempted in `off` (columns may not exist) or `enc` (no plaintext left to derive from). |
+| 5 | Medium — exact refinement can lose true matches at the 200-row limit | **Valid** | The read path now pages candidates in a stable primary-key order, refining each page, until 200 rows have PASSED the exact test or the candidates are exhausted. Regression reproduces Codex's 203-candidate probe and asserts both that paging finds the three true rows and that cap-then-refine finds zero. SECURITY.md's "not which merchant" is also softened to admit known-row and frequency labelling. |
+| 6 | Medium — fresh-category visibility can race | **Valid** | `GET /api/categories` now seeds before it reads, so whichever of it and `GET /api/me` arrives first does the work and neither can cache an empty list. Test asserts the seeding call precedes the read in the source. |
+| 7 | Docs still contain current-looking stale 013 references | **Valid** | The sole-authorisation trap, the cron trap, the dual-write decision, the subscription-PK note, the file list and BUILD_PLAN's registry line all say 019 now. Genuinely historical mentions are kept and marked as history. |
+
+**Note on a new devDependency:** `test/writeBarrier.pg.test.js` needs a real database, so `pg` and
+`embedded-postgres` are now devDependencies. `embedded-postgres` downloads a PostgreSQL binary on
+`npm install` in `server/` (~1s here, cached afterwards) and the test boots and discards a cluster in
+about 2.5s. If that cost is unwelcome, the test skips loudly when the packages are absent and can be
+pointed at any database with `TEST_DATABASE_URL` instead — but then nobody runs it by default, and
+this is the only evidence that the Critical fix works.
 
 ## Codex RE-VERIFY #2 FAIL -> new evidence
 
@@ -177,15 +203,21 @@ bank sync.
 **Alex answered both open questions on 2026-08-18:** encrypt descriptions too, via a blind index; and
 the dual-write/no-rename cutover is confirmed. Descriptions are now in scope, so the dashboard hides
 *what* was bought as well as *how much* — at the cost that a deterministic index makes it visible
-which rows share a merchant (not which merchant). That trade is documented in SECURITY.md and pinned
+which rows share a merchant — not its name, though a single known row labels every row that shares
+its hash. That trade is documented in SECURITY.md and pinned
 by tests.
 
 ## Current state
 
 **Branch `phase-9.5-encryption-hardening`. NOT merged, NOT deployed.**
-Server suite **86 → 201**, client builds clean, working tree clean.
+Server suite **86 → 220**, client builds clean, working tree clean.
 Nothing in the live database changed: migrations 012, 018, 018a and 019 are all unapplied and
 `DATA_ENCRYPTION_KEY` is still unset. The feature remains inert — deliberately.
+
+Nine of those 220 tests now run against a REAL PostgreSQL (embedded, booted and discarded per run),
+because the barrier's correctness is a question about transaction visibility and no in-memory fake
+can answer it. That is what caught Codex's Critical finding: the previous fake incremented write
+counters synchronously, modelling a database that cannot exist.
 
 One nuance since the last handoff: `GET /api/me` now imports the encryption code, via
 `ensureDefaultCategories()`. It writes `name_enc`/`name_hmac` **only** when `ENCRYPTION_PHASE` is
@@ -216,7 +248,7 @@ name and `PATCH` renames one), with `name_hmac` answering the exact `.eq('name',
 - **`subscription_overrides.merchant_key`** was the PRIMARY KEY holding the merchant name, or a
   synthetic key embedding an amount bucket (`auto:<cat>:25:monthly`) — leaking merchants AND roughly
   their cost in a column no amount encryption touched. Replaced by `merchant_key_hmac`; migration
-  013 moves the primary key onto it.
+  019 moves the primary key onto it.
 - **Composite-PK paging restored** in the backfill, with tests. I had deleted it earlier the same
   session as unreachable dead code — correct then, wrong once `subscription_overrides` entered scope.
 - **Migration 018** adds every new column plus the lookup indexes. Additive, re-runnable, applied in
@@ -230,7 +262,8 @@ in full in `docs/2026-08-18-encryption-reaudit.md` as *leads, not defects*. This
 this project has lost audit findings to a session limit; the difference is they are written down now.
 
 ### The two that would have destroyed data — both fixed
-1. **The draft migration 013 in the plan document.** Written in July against the original scope; the
+1. **The draft plaintext-drop migration in the plan document** (numbered 013 then, 019 now). Written
+   in July against the original scope; the
    2026-08-09 re-scope removed five columns from migration 012, so their `_enc` twins were never
    created — but the draft still dropped `transactions.description`, `categories.name`,
    `savings_goals.name`, `savings_contributions.note` and `subscription_overrides.display_name`.
@@ -269,7 +302,7 @@ build if the migrations, the backfill or the gate diverge from it.
 
 ## Key decisions (and why)
 
-- **Dual-write, NO rename.** Migration 013 drops plaintext and renames nothing; `_enc` suffixes stay
+- **Dual-write, NO rename.** Migration 019 drops plaintext and renames nothing; `_enc` suffixes stay
   forever. The spec's drop-and-rename had no safe deploy ordering — a rename turns a `numeric` column
   into `text`, so any still-running old instance or the 03:00 cron writes a bare number into the
   column the new code reads as ciphertext, and that row never decrypts again. Ugly column names are
@@ -296,9 +329,12 @@ build if the migrations, the backfill or the gate diverge from it.
 2. **The AAD envelope can only change before the first row is encrypted.** After the backfill, any
    change to the wire format means re-encrypting every row under a new key derivation.
 3. **`server/scripts/verify-encryption.mjs` exit 0 is the ONLY thing that may authorise migration
-   013.** Not the backfill's exit code, not a UI click-through.
-4. **Disable the 03:00 recurrences cron** for the whole window from the gate passing to 013
-   finishing. `lib/runRecurrences.js` INSERTs transactions and cannot write `_enc`.
+   019.** Not the backfill's exit code, not a UI click-through. And its exit 0 now MEANS something
+   only because migration 018a's write barrier was engaged for the whole run — the gate refuses to
+   pass otherwise.
+4. **Engage the write barrier and disable the 03:00 recurrences cron** for the whole window from the
+   gate passing to 019 finishing. `lib/runRecurrences.js` INSERTs transactions and cannot write
+   `_enc`. Engaging BLOCKS until in-flight writers drain; that wait is the mechanism, not a hang.
 5. Everything from previous sessions still applies: `invalidateMoney()`, `server/lib/month.js` for
    period boundaries, mirror route changes in `devMock.js`, `position: fixed` vs `animate-fade-up`,
    and a passing `npm run build` is not working code.
@@ -318,6 +354,9 @@ build if the migrations, the backfill or the gate diverge from it.
 - `server/lib/encryptionPhase.js` — **NEW.** `ENCRYPTION_PHASE` (`off` | `dual` | `enc`), validated
   at import so a typo stops the server instead of writing the wrong columns. 019's footer has told
   the operator to set this since July; nothing read it until now.
+- `server/migrations/018a_encryption_write_barrier.sql` — read the `FOR SHARE` section of its header
+  before touching it. A plain `SELECT` there is a Critical bug, not a style choice, and the reason is
+  written out with the measurements.
 - `server/test/defaultCategories.test.js` — **NEW.** 16 tests, incl. the two migration-ordering
   regressions for finding 5.
 - `server/test/merchantMemory.test.js` — **NEW.** Proves encrypting descriptions did not break the
@@ -325,11 +364,15 @@ build if the migrations, the backfill or the gate diverge from it.
 - `server/lib/crypto.js` — v2 envelope, AAD, redacted errors, `blindIndex()`. 34 tests.
 - `server/migrations/012_encryption_columns.sql` — additive, never applied, now includes
   `original_amount_enc`.
-- `server/migrations/013_encryption_drop_plaintext.sql` — **NEW.** Irreversible; preconditions in
-  its own header. Replaces the draft removed from the plan doc.
+- `server/migrations/019_encryption_drop_plaintext.sql` — **NEW.** Irreversible; preconditions in
+  its own header. Replaces the draft removed from the plan doc. (Written as 013, renumbered to 019
+  so filename order is a safe apply order — there is no 013 in this repo.)
 - `server/scripts/verify-encryption.mjs` — the gate. Rewritten. 11 tests.
 - `server/scripts/encrypt-backfill.mjs` — 14 tests.
-- `server/test/encryptionScope.test.js` — **NEW.** Fails the build if the registry, 012 and 013 drift.
+- `server/test/encryptionScope.test.js` — **NEW.** Fails the build if the registry, 012, 018, 018a
+  and 019 drift — including if any migration alters a table an earlier one has not created.
+- `server/test/writeBarrier.pg.test.js` — **NEW.** Runs migration 018a against a REAL PostgreSQL
+  (embedded, thrown away afterwards) and proves the barrier drains in-flight writers.
 - `docs/2026-08-18-encryption-reaudit.md` — all 36 findings + verdicts, incl. the 12 unverified.
 - `SECURITY.md` — "Encryption at rest" section + key custody + the 10-step rollout order.
 

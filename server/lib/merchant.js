@@ -144,6 +144,20 @@ export function merchantQueryPrefix(typed) {
  * applies this test — which is the original `startsWith` contract at every
  * length. Callers that skip it get approximate results above the cap; the
  * suggested-category route must not.
+ *
+ * ORDER OF OPERATIONS MATTERS, and getting it wrong loses real matches:
+ *
+ *   WRONG   .limit(200) in the query, then refine what came back.
+ *   RIGHT   page the candidates in a stable primary-key order, refining each
+ *           page, until 200 rows have PASSED this test or the candidates run out.
+ *
+ * `/suggest` caps its history read at 200 rows. With 200 "Sainsburys Superstore"
+ * rows sharing the capped prefix `sainsbur` ahead of three "Sainsburys Local"
+ * ones, capping first returned 200 candidates that all then failed this test —
+ * zero matches, from a user who shops there weekly. Measured:
+ * `{ candidates: 203, limitedThenRefined: 0, refinedThenLimited: 3 }`. The paged
+ * read path is modelled end to end in test/merchantMemory.test.js.
+ * [Codex stage-5 RE-VERIFY #2 finding 5, 2026-08-18]
  */
 export function merchantMatches(description, typed) {
   const want = normaliseMerchant(typed);

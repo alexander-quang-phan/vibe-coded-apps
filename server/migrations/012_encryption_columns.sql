@@ -64,6 +64,13 @@ alter table public.user_stats
 alter table public.ask_messages
   add column if not exists content_enc text;
 
--- Task 6.12's recurring schedules carry the same financial data as transactions.
-alter table public.recurrences
-  add column if not exists amount_enc text;
+-- `recurrences.amount_enc` DELIBERATELY LIVES IN 018, NOT HERE.
+-- `public.recurrences` is created by 014_recurrences.sql, which sorts AFTER this
+-- file. Altering it here made a fresh filename-order replay of the migrations
+-- fail on a table that does not exist yet — invisible on the live database,
+-- which had 014 applied long before anyone tried to apply 012, but fatal for
+-- anybody rebuilding from scratch. The column is registered in
+-- lib/encryptedFields.js exactly as before; only the file it is created in moved.
+-- test/encryptionScope.test.js now fails the build if ANY migration alters a
+-- table an earlier-sorting migration has not created.
+-- [Codex stage-5 RE-VERIFY #2 finding 3, 2026-08-18]

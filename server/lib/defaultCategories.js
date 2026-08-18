@@ -16,10 +16,19 @@
  * API before the drop, because the database has no encryption key and therefore
  * cannot write `name_enc`. It had not been built. This is it.
  *
- * Seeding happens on `GET /api/me`, which the client calls on every load, and it
- * is IDEMPOTENT: if the user already has any category it does nothing. So while
- * the trigger is still installed (today) this is a no-op for everyone, and it
- * takes over the moment 019 replaces the trigger. No flag day.
+ * Seeding happens on `GET /api/me` AND `GET /api/categories`, and it is
+ * IDEMPOTENT. Both, because the client starts those two requests independently
+ * and renders as soon as they resolve: if only `/api/me` seeded, `/api/categories`
+ * could return and cache an empty list for a brand-new account before the seeding
+ * had finished. Whichever arrives first does the work.
+ * [Codex stage-5 RE-VERIFY #2 finding 6, 2026-08-18]
+ *
+ * It also REPAIRS. During the `dual` window the migration-001 trigger may still
+ * have seeded plaintext-only names (any account created before migration 018a is
+ * applied), and "already has categories, so do nothing" would leave them without
+ * `name_enc`/`name_hmac` forever — silently falsifying the dual-write invariant
+ * the whole cutover rests on, and blocking the gate.
+ * [Codex stage-5 RE-VERIFY #2 finding 4, 2026-08-18]
  */
 import { encryptRegistered, blindIndex } from './crypto.js';
 import { CURRENT_PHASE, writesPlaintext, writesCiphertext } from './encryptionPhase.js';
@@ -70,8 +79,48 @@ export function defaultCategoryRow(userId, def, phase = CURRENT_PHASE) {
 }
 
 /**
- * Give a user their default categories if they have none. Safe to call on every
- * request; it costs one indexed `limit 1` for anybody who already has them.
+ * Fill in `name_enc`/`name_hmac` for any category that has a plaintext name but
+ * no ciphertext yet.
+ *
+ * ONLY meaningful in the `dual` phase: in `off` the `_enc` columns may not exist,
+ * and in `enc` the plaintext is gone so there is nothing left to derive them from
+ * (nor anything to repair — by then the trigger has long stopped seeding).
+ *
+ * Its job is the window between "migration 001's trigger last seeded somebody"
+ * and "migration 018a replaced it". Any account created in that window has twelve
+ * plaintext-only category names, which the gate correctly refuses to certify.
+ */
+async function repairMissingCiphertext(supabase, userId) {
+  const { data, error } = await supabase
+    .from('categories')
+    .select('id, name')
+    .eq('user_id', userId)
+    .is('name_enc', null);
+  if (error) throw error;
+  if (!data || data.length === 0) return 0;
+
+  let repaired = 0;
+  for (const row of data) {
+    if (row.name === null || row.name === undefined) continue; // nothing to derive from
+    const { error: updateErr } = await supabase
+      .from('categories')
+      .update({
+        name_enc: encryptRegistered('categories.name', userId, row.name),
+        name_hmac: blindIndex('categories.name_hmac', userId, row.name),
+      })
+      .eq('id', row.id);
+    if (updateErr) throw updateErr;
+    repaired += 1;
+  }
+  return repaired;
+}
+
+/**
+ * Give a user their default categories if they have none, and — during the dual
+ * window — repair any that the database trigger seeded without ciphertext.
+ *
+ * Safe to call on every request; it costs one indexed `limit 1` for anybody who
+ * already has them, plus one filtered read while `phase === 'dual'`.
  *
  * The race — two tabs loading a brand-new account at once — is closed in the
  * database by the partial unique index on (user_id, sort_order) where is_default,
@@ -88,14 +137,22 @@ export async function ensureDefaultCategories(supabase, userId, { phase = CURREN
     .eq('user_id', userId)
     .limit(1);
   if (error) throw error;
-  if (data && data.length > 0) return { seeded: 0, reason: 'already-present' };
+
+  if (data && data.length > 0) {
+    // Present, but not necessarily dual-written. See repairMissingCiphertext.
+    if (phase === 'dual') {
+      const repaired = await repairMissingCiphertext(supabase, userId);
+      if (repaired > 0) return { seeded: 0, repaired, reason: 'repaired' };
+    }
+    return { seeded: 0, repaired: 0, reason: 'already-present' };
+  }
 
   const rows = DEFAULT_CATEGORIES.map((d) => defaultCategoryRow(userId, d, phase));
   const { error: insertErr } = await supabase.from('categories').insert(rows);
   if (insertErr) {
     // 23505 = unique_violation: another request seeded them a moment ago.
-    if (insertErr.code === '23505') return { seeded: 0, reason: 'raced' };
+    if (insertErr.code === '23505') return { seeded: 0, repaired: 0, reason: 'raced' };
     throw insertErr;
   }
-  return { seeded: rows.length, reason: 'seeded' };
+  return { seeded: rows.length, repaired: 0, reason: 'seeded' };
 }

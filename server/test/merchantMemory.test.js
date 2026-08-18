@@ -35,11 +35,18 @@ const U = '00000000-0000-4000-8000-000000000001';
 const IDX = 'transactions.merchant_prefix_hmacs';
 
 /** The write path: what the backfill/routes store on each row. */
+let nextId = 0;
 const store = (description, category_id) => ({
+  // A stable ordering key. The read path pages, and paging without a stable order
+  // can show a row twice and never show another.
+  id: String(nextId++).padStart(6, '0'),
   description,
   category_id,
   merchant_prefix_hmacs: blindIndexMany(IDX, U, merchantPrefixes(description)),
 });
+
+/** The route's cap on how many history rows it will weigh. */
+const MATCH_LIMIT = 200;
 
 const NONE = { categoryId: null, confidence: 'none', source: 'none' };
 
@@ -55,27 +62,56 @@ const NONE = { categoryId: null, confidence: 'none', source: 'none' };
  *   2. the SERVER decrypts each candidate and applies the exact prefix test.
  * Skipping step 2 would make long queries approximate. The route must not.
  */
-function suggest(rows, typed, { userId = U } = {}) {
+function runSuggest(rows, typed, { userId = U, pageSize = MATCH_LIMIT, limit = MATCH_LIMIT } = {}) {
   const desc = String(typed ?? '').trim();
-  if (desc.length < 2) return NONE;
+  if (desc.length < 2) return { result: NONE, candidates: 0, pagesRead: 0 };
 
   const prefix = merchantQueryPrefix(desc);
-  if (!prefix) return NONE;
+  if (!prefix) return { result: NONE, candidates: 0, pagesRead: 0 };
 
   const want = blindIndex(IDX, userId, prefix);
-  const candidates = rows.filter((r) => (r.merchant_prefix_hmacs ?? []).includes(want));
-  // `r.description` stands in for decrypt(description_enc) — the server holds the
-  // key, so this is available to it and to nothing else.
-  const matches = candidates.filter((r) => merchantMatches(r.description, desc));
+
+  // What the DATABASE can answer: a GIN containment scan on the hash, in a stable
+  // primary-key order so paging is well defined.
+  const candidates = rows
+    .filter((r) => (r.merchant_prefix_hmacs ?? []).includes(want))
+    .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+
+  // What the SERVER must then do: page through those candidates, decrypting and
+  // applying the exact test, until it has `limit` real matches or has run out.
+  //
+  // Doing it the other way round — `.limit(200)` in the query, then refine what
+  // came back — silently loses true matches whenever 200 rows share the capped
+  // prefix ahead of them. [Codex stage-5 RE-VERIFY #2 finding 5, 2026-08-18]
+  const matches = [];
+  let offset = 0;
+  let pagesRead = 0;
+  while (offset < candidates.length && matches.length < limit) {
+    const page = candidates.slice(offset, offset + pageSize);
+    pagesRead += 1;
+    offset += page.length;
+    // `r.description` stands in for decrypt(description_enc) — the server holds
+    // the key, so this is available to it and to nothing else.
+    for (const r of page) {
+      if (merchantMatches(r.description, desc)) matches.push(r);
+      if (matches.length >= limit) break;
+    }
+  }
 
   if (matches.length > 0) {
     const counts = new Map();
     for (const m of matches) counts.set(m.category_id, (counts.get(m.category_id) ?? 0) + 1);
     const [categoryId, count] = [...counts.entries()].sort((a, b) => b[1] - a[1])[0];
-    return { categoryId, confidence: count >= 3 ? 'high' : 'medium', source: 'history' };
+    return {
+      result: { categoryId, confidence: count >= 3 ? 'high' : 'medium', source: 'history' },
+      candidates: candidates.length,
+      pagesRead,
+    };
   }
-  return NONE;
+  return { result: NONE, candidates: candidates.length, pagesRead };
 }
+
+const suggest = (rows, typed, opts) => runSuggest(rows, typed, opts).result;
 
 const GROCERIES = 'cat-groceries';
 const HEALTH = 'cat-health';
@@ -260,4 +296,55 @@ test('short merchants still reveal their length — stated, not hidden', () => {
   // shorter than the cap stores fewer hashes, and that count is its length.
   assert.equal(merchantPrefixes('KFC').length, 2);   // 'kf', 'kfc'
   assert.equal(merchantPrefixes('Aldi').length, 3);  // 'al', 'ald', 'aldi'
+});
+
+
+// --- Codex stage-5 RE-VERIFY #2 finding 5: the 200-row candidate limit -------
+
+test('RE-VERIFY REGRESSION: true matches survive 200 rows sharing the capped prefix', () => {
+  // Codex's probe, reproduced. 200 rows whose normalised merchant is
+  // "sainsburys superstore" and three that are "sainsburys local" — all 203 share
+  // the capped prefix "sainsbur", so the database cannot tell them apart and the
+  // three real ones sort last.
+  //
+  // Measured then: { candidates: 203, limitedThenRefined: 0, refinedThenLimited: 3 }.
+  const noise = Array.from({ length: 200 }, (_, i) => store(`Sainsburys Superstore ${i}`, HEALTH));
+  const truth = [
+    store('Sainsburys Local Camden', GROCERIES),
+    store('Sainsburys Local Holborn', GROCERIES),
+    store('Sainsburys Local Euston', GROCERIES),
+  ];
+  const table = [...noise, ...truth];
+
+  const { result, candidates, pagesRead } = runSuggest(table, 'Sainsburys Local');
+  assert.equal(candidates, 203, 'all 203 share the capped prefix — that is the point');
+  assert.ok(pagesRead > 1, 'the route must keep reading past the first page');
+  assert.equal(result.categoryId, GROCERIES, 'the three true matches must not be lost');
+  assert.equal(result.confidence, 'high', 'three matches is high confidence');
+
+  // And the naive order — cap first, refine after — is exactly what loses them.
+  const stable = table
+    .filter((r) => (r.merchant_prefix_hmacs ?? []).includes(blindIndex(IDX, U, merchantQueryPrefix('Sainsburys Local'))))
+    .sort((a, b) => (a.id < b.id ? -1 : 1));
+  const limitedThenRefined = stable
+    .slice(0, MATCH_LIMIT)
+    .filter((r) => merchantMatches(r.description, 'Sainsburys Local'));
+  assert.equal(limitedThenRefined.length, 0, 'this is the defect: refining after the limit finds nothing');
+});
+
+test('paging stops once the match limit is reached, not after reading everything', () => {
+  // The cap still has to cap: a merchant with thousands of rows must not read the
+  // whole table on every keystroke.
+  const many = Array.from({ length: 500 }, () => store('Tesco Express', GROCERIES));
+  const { result, pagesRead } = runSuggest(many, 'Tesco', { pageSize: 50, limit: 100 });
+  assert.equal(result.confidence, 'high');
+  assert.equal(pagesRead, 2, 'two 50-row pages reach the 100-match limit and stop');
+});
+
+test('paging uses a stable order, so no candidate is read twice or skipped', () => {
+  const rows = Array.from({ length: 25 }, (_, i) => store(`Boots ${i}`, HEALTH));
+  const { result, candidates } = runSuggest(rows, 'Boots', { pageSize: 4 });
+  assert.equal(candidates, 25);
+  assert.equal(result.categoryId, HEALTH);
+  assert.equal(result.confidence, 'high');
 });

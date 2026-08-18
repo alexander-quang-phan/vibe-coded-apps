@@ -33,19 +33,34 @@ const M019 = sqlOf('019_encryption_drop_plaintext.sql');
  * Minimal PostgREST double: `.select().eq().limit()` for the existence probe and
  * `.insert()` for the seeding.
  */
-function fakeDb({ existing = [], insertError = null } = {}) {
+function fakeDb({ existing = [], insertError = null, missingCiphertext = [] } = {}) {
   const inserted = [];
+  const updates = [];
   return {
     inserted,
+    updates,
     from() {
       const q = {
+        _isNull: null,
+        _patch: null,
         select() { return q; },
         eq() { return q; },
+        is(col) { q._isNull = col; return q; },
         limit() { return Promise.resolve({ data: existing, error: null }); },
         insert(rows) {
           if (insertError) return Promise.resolve({ error: insertError });
           inserted.push(...rows);
           return Promise.resolve({ error: null });
+        },
+        update(patch) { q._patch = patch; return q; },
+        // `.select().eq().is()` (the repair read) resolves to the un-encrypted rows;
+        // `.update().eq()` resolves to an ack. Distinguished by which was called.
+        then(resolve, reject) {
+          if (q._patch) {
+            updates.push(q._patch);
+            return Promise.resolve({ error: null }).then(resolve, reject);
+          }
+          return Promise.resolve({ data: missingCiphertext, error: null }).then(resolve, reject);
         },
       };
       return q;
@@ -137,6 +152,46 @@ test('refuses to run without a user id', async () => {
   await assert.rejects(() => ensureDefaultCategories(fakeDb(), null, { phase: 'off' }), /without a userId/);
 });
 
+// --- Codex stage-5 RE-VERIFY #2 finding 4: dual-write must actually be dual ---
+
+test('CRITICAL REGRESSION: dual phase REPAIRS trigger-seeded plaintext-only names', async () => {
+  // Migration 001's trigger seeds `name` only, and it runs inside the auth.users
+  // INSERT where no API code can reach. Returning 'already-present' here left
+  // those twelve rows without name_enc/name_hmac forever, so the documented
+  // "every write writes both" invariant was false and the gate could never pass.
+  const db = fakeDb({
+    existing: [{ id: 'c1' }],
+    missingCiphertext: [{ id: 'c1', name: 'Food' }, { id: 'c2', name: 'Rent' }],
+  });
+  const r = await ensureDefaultCategories(db, U, { phase: 'dual' });
+
+  assert.equal(r.reason, 'repaired');
+  assert.equal(r.repaired, 2);
+  assert.equal(db.updates.length, 2);
+  assert.equal(decryptRegistered('categories.name', U, db.updates[0].name_enc), 'Food');
+  assert.equal(db.updates[0].name_hmac, blindIndex('categories.name_hmac', U, 'Food'));
+  assert.equal(decryptRegistered('categories.name', U, db.updates[1].name_enc), 'Rent');
+});
+
+test('dual phase does nothing when every category is already dual-written', async () => {
+  const db = fakeDb({ existing: [{ id: 'c1' }], missingCiphertext: [] });
+  const r = await ensureDefaultCategories(db, U, { phase: 'dual' });
+  assert.equal(r.reason, 'already-present');
+  assert.equal(r.repaired, 0);
+  assert.equal(db.updates.length, 0);
+});
+
+test('off and enc phases never attempt the repair', async () => {
+  // `off`: the _enc columns may not exist yet, so querying them would error.
+  // `enc`: the plaintext is gone, so there is nothing to derive them from.
+  for (const phase of ['off', 'enc']) {
+    const db = fakeDb({ existing: [{ id: 'c1' }], missingCiphertext: [{ id: 'c1', name: 'Food' }] });
+    const r = await ensureDefaultCategories(db, U, { phase });
+    assert.equal(r.reason, 'already-present', phase);
+    assert.equal(db.updates.length, 0, phase);
+  }
+});
+
 // --- the phase flag ----------------------------------------------------------
 
 test('ENCRYPTION_PHASE defaults to off and fails closed on anything unknown', () => {
@@ -188,11 +243,36 @@ test('the route-side seeding is race-safe because 018 adds the unique slot index
   );
 });
 
-test('GET /api/me actually calls the seeder — it is the only thing that does', () => {
+test('GET /api/me actually calls the seeder', () => {
   // The #1 failure mode on this project is a feature that exists but is not
   // reachable. After 019 the trigger no longer seeds, so if this call is ever
   // removed a new account silently gets zero categories.
   const me = readFileSync(new URL('../routes/me.js', import.meta.url), 'utf8');
-  assert.match(me, /ensureDefaultCategories/);
   assert.match(me, /await\s+ensureDefaultCategories\(\s*supabase,\s*req\.user\.id\s*\)/);
+});
+
+test('CRITICAL REGRESSION: GET /api/categories seeds BEFORE it reads', () => {
+  // The client fires /api/me and /api/categories independently and renders as
+  // soon as they resolve. If only /api/me seeded, /api/categories could return
+  // and cache an empty list for a brand-new account.
+  // [Codex stage-5 RE-VERIFY #2 finding 6, 2026-08-18]
+  const cats = readFileSync(new URL('../routes/categories.js', import.meta.url), 'utf8');
+  assert.match(cats, /await\s+ensureDefaultCategories\(\s*supabase,\s*req\.user\.id\s*\)/);
+  const seedAt = cats.search(/await\s+ensureDefaultCategories/);
+  const readAt = cats.search(/\.from\('categories'\)/);
+  assert.ok(seedAt >= 0 && readAt >= 0);
+  assert.ok(seedAt < readAt, 'seeding must happen before the list is read, not after');
+});
+
+test('the signup trigger stops seeding categories in 018a, not 019', () => {
+  // It has to stop at the START of the dual window, not at the drop: otherwise
+  // every account created during the window carries plaintext-only names.
+  // [Codex stage-5 RE-VERIFY #2 finding 4, 2026-08-18]
+  const M018A = sqlOf('018a_encryption_write_barrier.sql');
+  const at = M018A.search(/create\s+or\s+replace\s+function\s+public\.handle_new_user/i);
+  assert.ok(at >= 0, 'migration 018a must replace the signup trigger function');
+  const fn = M018A.slice(at);
+  const body = fn.slice(0, fn.indexOf('$$;') + 3).replace(/--[^\n]*/g, '');
+  assert.ok(!/insert\s+into\s+public\.categories/i.test(body));
+  assert.match(body, /insert\s+into\s+public\.user_stats/i);
 });
