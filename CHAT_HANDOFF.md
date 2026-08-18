@@ -3,7 +3,7 @@
 ## DUAL-AGENT BATON  (both models: update this the MOMENT you finish work)
 - Current stage:  **stage 5 REVISE #2 completed by Claude Code — back to Codex for RE-VERIFY #2**
 - Model A is:     Claude Code (build + revise). Model B / verifier: **Codex**
-- Up next:        **Codex** re-verifies `phase-9.5-encryption-hardening` (commit after 8b4bbee)
+- Up next:        **Codex** re-verifies `phase-9.5-encryption-hardening` at commit **793aa80**
 - Last actor did: Claude Code fixed all five RE-VERIFY findings. Both new false-PASS states now have
                   regressions that reproduce Codex's exact probes. The gate no longer claims read
                   passes prove quiescence: **migration 018a installs a DB-enforced write barrier**
