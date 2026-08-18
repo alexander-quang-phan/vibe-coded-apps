@@ -726,26 +726,59 @@ older than the 200-row window load. Verify by tapping into an old month in the r
 
 ### ▢ Task 9.5 — Encryption at rest (LAST — destructive migration at the end)
 
-> **Re-scoped and de-risked 2026-08-09.** An adversarial audit (report:
-> `docs/2026-08-09-encryption-readiness-audit.md`) confirmed defects 1 and 3 from the July review
-> are genuinely fixed, but found the verification GATE unsound. Landed since:
-> - **Scope decision (Alex):** encrypt the MONEY, leave searchable text in plaintext.
->   `transactions.description` is `.ilike()`d in the database by merchant memory — encrypting it
->   would break that feature permanently. Migration 012 re-scoped accordingly (never applied, so
->   edited in place) and `recurrences.amount` added — that table postdates the original plan.
-> - **Backfill rollback:** a verification failure (or a transient read blip) used to leave a row
->   committed-but-unverified, which the idempotency filter then hid from every re-run while the
->   script printed "Backfill complete". Now rolled back to NULL so a re-run repairs it.
-> - **`--dry-run` typo guard:** unknown flags are refused instead of performing a live run.
-> - **`scripts/verify-encryption.mjs`:** the completeness gate 013 must depend on — queries the
->   database for plaintext-without-ciphertext and spot-checks that stored bytes decrypt. Exit 0
->   is the only thing that authorises 013, replacing a manual click-through.
-> - **First tests the backfill has ever had** (9), including two regression tests proven to fail
->   when the rollback is removed.
+> **Re-audited and hardened 2026-08-18.** A six-lens adversarial re-audit (report:
+> `docs/2026-08-18-encryption-reaudit.md`) re-derived the 18 findings the August run lost when its
+> verification pass died on a session limit. 36 findings, 24 verified (15 survived, 9 refuted),
+> **12 still unverified** — the operational and test-quality skeptics died on a session limit too,
+> so those 12 are leads, not defects, and are recorded in full so they cannot be lost again.
 >
-> **Still outstanding before this can run:** 18 audit findings never got verified (the run died on
-> a session limit); Alex must generate + back up `DATA_ENCRYPTION_KEY`; the ~7-route sweep and
-> migration 013 are unwritten.
+> Two findings were data-destroying and are now fixed:
+> - **The draft migration 013 in the plan document would have destroyed five columns.** It was
+>   written in July against the original scope and still dropped `transactions.description`,
+>   `categories.name`, `savings_goals.name`, `savings_contributions.note` and
+>   `subscription_overrides.display_name` — all removed from scope on 2026-08-09, so their `_enc`
+>   twins were never created. Each `drop column` succeeds and the following `rename` fails on a
+>   column that does not exist. The draft has been REMOVED from the plan and replaced by a real
+>   `server/migrations/013_encryption_drop_plaintext.sql`.
+> - **Encrypting `amount` never hid foreign-currency amounts.** Migration 016 added
+>   `original_amount` and `fx_rate` as plaintext numerics a month after 012 froze its column list,
+>   and `amount = original_amount * fx_rate`. Every EUR expense was recoverable by one
+>   multiplication. `original_amount` is now encrypted; `fx_rate` stays plaintext deliberately
+>   (a public rate, and it keeps the `fx_rate > 0` CHECK enforceable).
+>
+> Landed 2026-08-18:
+> - **`server/lib/encryptedFields.js`** — the ONE list. Migrations 012/013, the backfill and the
+>   gate all derive from it, and `test/encryptionScope.test.js` fails the build if they drift.
+>   This is the fix for the whole class of bug above: both data-destroying findings were drift
+>   between four hand-maintained lists.
+> - **Envelope v2 with AAD.** `table.column` is now GCM additional authenticated data, so a
+>   ciphertext moved to another column or table no longer decrypts. Proven RED/GREEN: under v1 a
+>   `savings_goals.target_amount` value decrypted cleanly as `current_amount`. This could ONLY be
+>   added before the first row is encrypted — afterwards it means re-encrypting everything.
+> - **Errors no longer echo user data.** `decryptField` used to interpolate everything before the
+>   first colon into its message, and `index.js:120` logs `err.message` — so bare plaintext in an
+>   `_enc` column would have been copied into Vercel's logs.
+> - **The gate was rewritten.** It could return PASS on a database it would then destroy: it asked
+>   only "plaintext present, ciphertext NULL?" and was blind to a row where both were present and
+>   DISAGREED — what every missed UPDATE path produces. It now checks all four states, reads
+>   EVERY row (five users; sampling bought nothing but false confidence), fails closed on an
+>   absent count, and re-counts afterwards to detect writes during its own run. **First 11 tests
+>   it has ever had.**
+> - **Backfill:** verification now compares against the database's CURRENT plaintext rather than
+>   its own stale snapshot (a row edited mid-run was being "verified" as the old value); an empty
+>   table is reported as suspicious rather than as success; a dashless `dry-run` typo no longer
+>   performs a live write pass; unreachable composite-PK dead code removed.
+> - **SECURITY.md** finally documents encryption at all — including `DATA_ENCRYPTION_KEY` custody,
+>   which appeared in no operational document despite two scripts pointing readers there.
+>
+> Suite 86 -> **116**, client builds clean.
+>
+> **Still outstanding:** the ~111-site route sweep is UNWRITTEN and is the whole remaining feature —
+> no route imports `lib/crypto.js`, so nothing is encrypted in the running app. Alex must generate
+> and back up `DATA_ENCRYPTION_KEY`. **One open product decision blocks the sweep's shape:**
+> `transactions.description` stays plaintext, so the dashboard still shows *what* was bought, only
+> not *how much*. Encrypting it needs a blind index (HMAC of the normalised merchant) because
+> `routes/categories.js:89` `.ilike()`s it in the database.
 
 **Chat prompt:**
 ```

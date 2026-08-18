@@ -571,32 +571,40 @@ Run: `cd server && node scripts/encrypt-backfill.mjs` -> per-table counts, no er
 
 - [ ] **Step 8: Migration 013 (destructive — only after Step 7 passes and Alex confirms)**
 
-```sql
--- server/migrations/013_encryption_drop_plaintext.sql
--- Phase 9.5 step 3 of 3. IRREVERSIBLE. Run only after backfill verification
--- AND a full click-through of the app reading _enc columns.
-alter table public.transactions
-  drop column amount, drop column description;
-alter table public.transactions rename column amount_enc to amount;
-alter table public.transactions rename column description_enc to description;
-alter table public.budgets drop column amount_limit;
-alter table public.budgets rename column amount_limit_enc to amount_limit;
-alter table public.categories drop column name;
-alter table public.categories rename column name_enc to name;
-alter table public.savings_goals drop column name, drop column target_amount, drop column current_amount;
-alter table public.savings_goals rename column name_enc to name;
-alter table public.savings_goals rename column target_amount_enc to target_amount;
-alter table public.savings_goals rename column current_amount_enc to current_amount;
-alter table public.savings_contributions drop column amount, drop column note;
-alter table public.savings_contributions rename column amount_enc to amount;
-alter table public.savings_contributions rename column note_enc to note;
-alter table public.subscription_overrides drop column display_name;
-alter table public.subscription_overrides rename column display_name_enc to display_name;
-alter table public.user_stats drop column monthly_limit;
-alter table public.user_stats rename column monthly_limit_enc to monthly_limit;
-alter table public.ask_messages drop column content;
-alter table public.ask_messages rename column content_enc to content;
-```
+> **THE SQL THAT WAS HERE HAS BEEN REMOVED — 2026-08-18. DO NOT RECOVER IT FROM GIT.**
+>
+> It was written in July against the ORIGINAL scope. The 2026-08-09 re-scope
+> ("encrypt the money, leave searchable text alone") removed five columns from
+> migration 012, so their `_enc` twins were never created — but this draft still
+> dropped them:
+>
+> | dropped by the draft | its `_enc` twin |
+> |---|---|
+> | `transactions.description` | never created |
+> | `categories.name` | never created |
+> | `savings_goals.name` | never created |
+> | `savings_contributions.note` | never created |
+> | `subscription_overrides.display_name` | never created |
+>
+> Pasted into the Supabase SQL editor, each `drop column` succeeds and the
+> matching `rename column <x>_enc to <x>` then fails on a column that does not
+> exist. Depending on whether the editor wraps the batch in a transaction, that
+> is the permanent loss of every transaction description, category name, goal
+> name, contribution note and subscription label in the database — for a feature
+> whose entire purpose is to protect that data.
+>
+> It also renamed `<col>_enc` over the dropped plaintext column, which is what
+> made the cutover unsafe: a rename turns a `numeric` column into `text`, so any
+> still-running old server instance (or the 03:00 recurrences cron) writes a bare
+> number into the column the new code reads as ciphertext, and that row never
+> decrypts again.
+>
+> **The real migration is `server/migrations/013_encryption_drop_plaintext.sql`.**
+> It drops only columns that have a real ciphertext twin, renames nothing, and
+> carries its preconditions in its own header.
+> `server/test/encryptionScope.test.js` now fails the build if either property is
+> ever broken again — it re-derives the drop list from `lib/encryptedFields.js`
+> rather than trusting any prose.
 
 Before applying: **`categories` name had a uniqueness/seed dependency? Check migration 001 for constraints on dropped columns (e.g. `name` unique per user, `amount` CHECK constraints) and recreate none that reference plaintext values — ciphertext uniqueness is meaningless; drop such constraints in this migration.** After applying: remove the dual-writes and the `_enc` suffixes from route code (columns now carry the original names with encrypted content), delete plaintext fallbacks. Re-run Step 7's click-through.
 

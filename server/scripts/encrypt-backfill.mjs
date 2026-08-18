@@ -48,6 +48,7 @@
 import 'dotenv/config';
 import { pathToFileURL } from 'node:url';
 import { encryptField, decryptField } from '../lib/crypto.js';
+import { fieldsByTable, fieldKey } from '../lib/encryptedFields.js';
 
 export const PAGE_SIZE = 500;
 
@@ -75,18 +76,14 @@ export const PAGE_SIZE = 500;
  * `transactions.description` can be added later behind a blind index (an HMAC
  * of the normalised merchant, searched instead of the ciphertext).
  */
-export const JOBS = [
-  { table: 'transactions', fields: [['amount', 'amount_enc']] },
-  { table: 'budgets', fields: [['amount_limit', 'amount_limit_enc']] },
-  { table: 'savings_goals', fields: [['target_amount', 'target_amount_enc'], ['current_amount', 'current_amount_enc']] },
-  { table: 'savings_contributions', fields: [['amount', 'amount_enc']] },
-  { table: 'user_stats', fields: [['monthly_limit', 'monthly_limit_enc']], pk: ['user_id'] },
-  { table: 'ask_messages', fields: [['content', 'content_enc']] },
-  // Added 2026-08-09: `recurrences` did not exist when this script was written
-  // (migration 014, Phase 10). Without it the nightly cron would keep writing
-  // plaintext amounts into a table the rest of the app treats as encrypted.
-  { table: 'recurrences', fields: [['amount', 'amount_enc']] },
-];
+/**
+ * Derived from lib/encryptedFields.js — the ONE list. This used to be a literal
+ * array here, which is how `transactions.original_amount` (migration 016) ended
+ * up encrypted by nothing: a money column added a month later that no list knew
+ * about. verify-encryption.mjs also used to import THIS constant, so the gate's
+ * scope was defined by the script it was auditing; both now read the registry.
+ */
+export const JOBS = fieldsByTable();
 
 const uniq = (xs) => xs.filter((v, i, a) => a.indexOf(v) === i);
 const pkOf = (job) => job.pk ?? ['id'];
@@ -103,11 +100,11 @@ async function processRow(supabase, job, row, { dryRun }) {
   const pk = pkOf(job);
   const patch = {};
   let hasPlaintext = false;
-  for (const [plain, enc] of job.fields) {
-    if (isBlank(row[plain])) {
-      patch[enc] = null;
+  for (const f of job.fields) {
+    if (isBlank(row[f.column])) {
+      patch[f.enc] = null;
     } else {
-      patch[enc] = encryptField(row.user_id, String(row[plain]));
+      patch[f.enc] = encryptField(fieldKey(job.table, f.column), row.user_id, String(row[f.column]));
       hasPlaintext = true;
     }
   }
@@ -119,10 +116,10 @@ async function processRow(supabase, job, row, { dryRun }) {
   if (!hasPlaintext) return 'nothing-to-encrypt';
 
   // 1. In-memory check. Cheap, and catches a broken key before we touch the DB.
-  for (const [plain, enc] of job.fields) {
-    if (isBlank(row[plain])) continue;
-    if (decryptField(row.user_id, patch[enc]) !== String(row[plain])) {
-      throw new Error(`VERIFY FAILED (in-memory round-trip) ${job.table} ${pkLabel(job, row)} column=${enc}`);
+  for (const f of job.fields) {
+    if (isBlank(row[f.column])) continue;
+    if (decryptField(fieldKey(job.table, f.column), row.user_id, patch[f.enc]) !== String(row[f.column])) {
+      throw new Error(`VERIFY FAILED (in-memory round-trip) ${job.table} ${pkLabel(job, row)} column=${f.enc}`);
     }
   }
 
@@ -138,10 +135,16 @@ async function processRow(supabase, job, row, { dryRun }) {
   // leaves a row that is committed but UNVERIFIED, so it must be rolled back —
   // see rollbackEnc below for why that is not optional.
   try {
-    // 3. Re-SELECT what Postgres actually stored. This is the step that can
-    //    catch a truncating column, an encoding mangle, or a write that
-    //    silently did not land — none of which an in-memory comparison sees.
-    let select = supabase.from(job.table).select(job.fields.map(([, e]) => e).join(', '));
+    // 3. Re-SELECT what Postgres actually stored — BOTH columns. Re-reading the
+    //    plaintext as well is what makes step 4 honest: comparing the stored
+    //    ciphertext against our in-memory snapshot only proves we wrote what we
+    //    meant to, and says nothing about whether the row still holds that value.
+    //    The live app is up during the backfill (that is the whole point of
+    //    dual-write), so a user editing 250 -> 25 between our SELECT and our
+    //    UPDATE would otherwise be "verified" as 250 and then have its only
+    //    correct copy dropped by migration 013.  [audit 2026-08-18, High]
+    const cols = uniq([...job.fields.map((f) => f.column), ...job.fields.map((f) => f.enc)]).join(', ');
+    let select = supabase.from(job.table).select(cols);
     for (const k of pk) select = select.eq(k, row[k]);
     const { data: stored, error: selErr } = await select.maybeSingle();
     if (selErr) throw selErr;
@@ -149,22 +152,23 @@ async function processRow(supabase, job, row, { dryRun }) {
       throw new Error(`VERIFY FAILED (row not found on re-read after write) ${job.table} ${pkLabel(job, row)}`);
     }
 
-    // 4. Decrypt the DATABASE's bytes and compare to the original plaintext.
-    for (const [plain, enc] of job.fields) {
-      const expected = isBlank(row[plain]) ? null : String(row[plain]);
+    // 4. Decrypt the DATABASE's bytes and compare to the DATABASE's plaintext.
+    for (const f of job.fields) {
+      const expected = isBlank(stored[f.column]) ? null : String(stored[f.column]);
       let got;
       try {
-        got = decryptField(row.user_id, stored[enc]);
+        got = decryptField(fieldKey(job.table, f.column), row.user_id, stored[f.enc]);
       } catch {
         // The underlying message is deliberately withheld: it can echo the
         // stored value, and this script must never print user data.
         throw new Error(
-          `VERIFY FAILED (stored value will not decrypt) ${job.table} ${pkLabel(job, row)} column=${enc}`,
+          `VERIFY FAILED (stored value will not decrypt) ${job.table} ${pkLabel(job, row)} column=${f.enc}`,
         );
       }
       if (got !== expected) {
         throw new Error(
-          `VERIFY FAILED (database round-trip mismatch) ${job.table} ${pkLabel(job, row)} column=${enc}`,
+          `VERIFY FAILED (database round-trip mismatch — the row may have been edited mid-run; ` +
+            `re-run to repair) ${job.table} ${pkLabel(job, row)} column=${f.enc}`,
         );
       }
     }
@@ -195,7 +199,7 @@ async function processRow(supabase, job, row, { dryRun }) {
  */
 async function rollbackEnc(supabase, job, row, cause) {
   const patch = {};
-  for (const [, enc] of job.fields) patch[enc] = null;
+  for (const f of job.fields) patch[f.enc] = null;
   try {
     let undo = supabase.from(job.table).update(patch);
     for (const k of pkOf(job)) undo = undo.eq(k, row[k]);
@@ -205,7 +209,7 @@ async function rollbackEnc(supabase, job, row, cause) {
     cause.message +=
       `\n  !! ROLLBACK ALSO FAILED for ${job.table} ${pkLabel(job, row)}.` +
       `\n  !! This row is committed with UNVERIFIED ciphertext and a re-run will SKIP it.` +
-      `\n  !! Set its ${job.fields.map(([, e]) => e).join(', ')} back to NULL by hand before re-running,` +
+      `\n  !! Set its ${job.fields.map((f) => f.enc).join(', ')} back to NULL by hand before re-running,` +
       `\n  !! and do NOT run migration 013 until you have.`;
   }
 }
@@ -220,8 +224,8 @@ async function rollbackEnc(supabase, job, row, cause) {
  */
 async function keysetScan(supabase, job, onRow) {
   const cursorCol = pkOf(job)[0];
-  const cols = uniq([...pkOf(job), 'user_id', ...job.fields.map(([p]) => p)]).join(', ');
-  const firstEnc = job.fields[0][1];
+  const cols = uniq([...pkOf(job), 'user_id', ...job.fields.map((f) => f.column)]).join(', ');
+  const firstEnc = job.fields[0].enc;
   let cursor = null;
 
   for (;;) {
@@ -247,50 +251,33 @@ async function keysetScan(supabase, job, onRow) {
 }
 
 /**
- * Composite PK (subscription_overrides: user_id + merchant_key): ordered offset.
- * Termination: `offset` grows by rows.length >= 1 every iteration over a finite
- * table, and we stop on an empty or short page.
- * Note the `is null` filter is deliberately NOT applied here — a positional
- * window over a set that our own writes shrink would skip rows. We scan the
- * table in PK order and skip already-encrypted rows client-side instead.
+ * NOTE: there was an `offsetScan` here for composite primary keys, used only by
+ * `subscription_overrides`. That table left the encryption scope in the
+ * 2026-08-09 re-scope (its `display_name` is a label, not an amount), so every
+ * registered table now has a single-column PK and the branch was unreachable —
+ * dead code with zero tests sitting in the middle of an irreversible data
+ * migration, plus a `counts.alreadyEncrypted` that could therefore never be
+ * anything but 0. Removed 2026-08-18. If a composite-PK table is ever encrypted,
+ * write it back WITH tests: a positional window over a set our own writes shrink
+ * skips rows, which is why it could not simply reuse the keyset path.
  */
-async function offsetScan(supabase, job, onRow, counts) {
-  const pk = pkOf(job);
-  const firstEnc = job.fields[0][1];
-  const cols = uniq([...pk, 'user_id', ...job.fields.map(([p]) => p), firstEnc]).join(', ');
-  let offset = 0;
-
-  for (;;) {
-    let q = supabase.from(job.table).select(cols);
-    for (const k of pk) q = q.order(k, { ascending: true });
-
-    const { data: rows, error } = await q.range(offset, offset + PAGE_SIZE - 1);
-    if (error) throw error;
-    if (!rows.length) break;
-
-    for (const row of rows) {
-      if (!isBlank(row[firstEnc])) {
-        counts.alreadyEncrypted += 1;
-        continue;
-      }
-      await onRow(row);
-    }
-
-    offset += rows.length;
-    if (rows.length < PAGE_SIZE) break;
-  }
-}
 
 async function runJob(supabase, job, { dryRun, log }) {
-  const counts = { encrypted: 0, nothingToEncrypt: 0, alreadyEncrypted: 0 };
+  const counts = { encrypted: 0, nothingToEncrypt: 0, alreadyEncrypted: 0, scanned: 0 };
   const onRow = async (row) => {
+    counts.scanned += 1;
     const outcome = await processRow(supabase, job, row, { dryRun });
     if (outcome === 'encrypted') counts.encrypted += 1;
     else counts.nothingToEncrypt += 1;
   };
 
-  if (pkOf(job).length === 1) await keysetScan(supabase, job, onRow);
-  else await offsetScan(supabase, job, onRow, counts);
+  if (pkOf(job).length !== 1) {
+    throw new Error(
+      `${job.table}: composite primary key (${pkOf(job).join(', ')}) — the composite scan was removed ` +
+        `as unreachable dead code. See the note above keysetScan before encrypting this table.`,
+    );
+  }
+  await keysetScan(supabase, job, onRow);
 
   const suffix = dryRun ? 'would be encrypted (dry run — nothing written)' : 'encrypted + verified against the database';
   const extras = [
@@ -298,21 +285,37 @@ async function runJob(supabase, job, { dryRun, log }) {
     counts.alreadyEncrypted ? `${counts.alreadyEncrypted} already encrypted` : null,
   ].filter(Boolean);
   log(`${job.table}: ${counts.encrypted} rows ${suffix}${extras.length ? `, ${extras.join(', ')}` : ''}`);
+  // "0 rows encrypted" is the SAME output for "already done" and for "pointed at
+  // the wrong database / the table is empty / the filter matched nothing". Say
+  // which. [audit 2026-08-18, High — vacuous success]
+  if (counts.scanned === 0) {
+    log(`  ^ NOTE: ${job.table} returned NO ROWS AT ALL. Either every row is already`);
+    log(`    encrypted, or this is the wrong database. Confirm before trusting a PASS.`);
+  }
   return counts;
 }
 
 export async function runBackfill({ supabase, jobs = JOBS, dryRun = false, log = console.log } = {}) {
   if (dryRun) log('DRY RUN — encrypting and verifying in memory, writing nothing.\n');
-  const totals = { encrypted: 0, nothingToEncrypt: 0, alreadyEncrypted: 0 };
+  const totals = { encrypted: 0, nothingToEncrypt: 0, alreadyEncrypted: 0, scanned: 0 };
   for (const job of jobs) {
     const counts = await runJob(supabase, job, { dryRun, log });
     for (const k of Object.keys(totals)) totals[k] += counts[k];
   }
   log(
     dryRun
-      ? `\nDry run complete — ${totals.encrypted} rows would be encrypted. Re-run without --dry-run to write.`
-      : `\nBackfill complete — ${totals.encrypted} rows encrypted and verified against the database.`,
+      ? `\nDry run complete — ${totals.encrypted} rows would be encrypted (${totals.scanned} scanned). ` +
+          `Re-run without --dry-run to write.`
+      : `\nBackfill complete — ${totals.encrypted} rows encrypted and verified against the database ` +
+          `(${totals.scanned} scanned across ${jobs.length} tables).`,
   );
+  if (totals.scanned === 0) {
+    log(
+      '\nWARNING: not a single row was scanned in ANY table. This is what an empty or\n' +
+        'wrong database looks like, and it is NOT evidence that encryption is complete.\n' +
+        'Do NOT treat this run as authorising migration 013.',
+    );
+  }
   return totals;
 }
 
@@ -325,11 +328,15 @@ export const KNOWN_FLAGS = new Set(['--dry-run']);
  * to start is the only safe reading of an unrecognised flag.
  */
 export function parseArgs(argv) {
-  const unknown = argv.filter((a) => a.startsWith('-') && !KNOWN_FLAGS.has(a));
+  // NOT `a.startsWith('-') && ...`. That let a DASHLESS typo through: `node
+  // encrypt-backfill.mjs dry-run` parsed as "no flags" and performed a LIVE
+  // write pass against real user data — the exact outcome the guard exists to
+  // prevent, reached by the likeliest typo of all. [audit 2026-08-18]
+  const unknown = argv.filter((a) => !KNOWN_FLAGS.has(a));
   if (unknown.length) {
     throw new Error(
       `Unknown option(s): ${unknown.join(' ')}\n` +
-        `Did you mean --dry-run? Refusing to run: an unrecognised flag would otherwise ` +
+        `Did you mean --dry-run? Refusing to run: an unrecognised argument would otherwise ` +
         `perform a LIVE run against real data.`,
     );
   }
