@@ -413,6 +413,21 @@ build if the migrations, the backfill or the gate diverge from it.
   instead — one hash of the whole merchant, which leaks only "these rows share a merchant" and
   nothing else — say so; the typeahead would then need the server to scan and decrypt your recent
   descriptions rather than letting the database narrow first.
+- **DEFERRED, not decided: split the phase at the irreversible line.** Raised 2026-08-18 after the
+  third verification round. Observation: rounds 2 and 3 both found Criticals in machinery that
+  existed only to authorise ONE destructive step (migration 019), and round 3's Critical was in the
+  barrier written to fix round 2's. Meanwhile the actual feature — the ~111-site route sweep — has
+  not been started and nothing in the live database has changed.
+  Proposal was to split the work: **Part A** (apply 012/018/018a, generate the key, build the
+  dual-write route sweep, run the backfill) contains NO irreversible step and therefore needs
+  neither the gate nor the barrier; **Part B** (migration 019, dropping the plaintext) is the only
+  destructive step and can wait months. And for Part B, a verified-restorable backup covers every
+  failure mode the gate tries to prove away — including the concurrency ones — because a bad drop is
+  then simply restored and retried. That would make the gate a pre-flight sanity check rather than
+  the sole authorisation.
+  **Alex's call, 2026-08-18: verify this round with Codex first — it is a safety feature, so the
+  independent check comes before the shortcut.** The split stays on the table for afterwards.
+
 - **The write barrier makes Trim briefly unwritable** during the cutover window, on purpose. Engage
   it, run the gate, run 019, release it. If a write is attempted meanwhile the app returns an error
   rather than silently losing a row. That is the trade Codex's finding 2 forces, and I think it is
