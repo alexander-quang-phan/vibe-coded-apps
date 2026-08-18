@@ -40,14 +40,51 @@ export function normaliseMerchant(description) {
 }
 
 /**
- * First word only. Merchant memory's old `.ilike('%term%')` was a SUBSTRING
- * match, so a one-word entry ("Tesco") matched a two-word stored description
- * ("Tesco Express 1234"). A hash only matches exactly, so that case needs its
- * own index or the suggestion silently stops working for partial entries.
+ * First word only. Kept for callers that want it; the blind index uses
+ * merchantPrefixes() instead.
  */
 export function normaliseMerchantFirstWord(description) {
   const two = normaliseMerchant(description);
   return two ? two.split(' ')[0] : null;
+}
+
+/** Shortest prefix the client will ever send — QuickAddDialog requires 2 chars. */
+export const MIN_PREFIX = 2;
+/** Longest prefix worth storing. Bounds the array; nobody types past this. */
+export const MAX_PREFIX = 24;
+
+/**
+ * Every prefix of the normalised merchant, from MIN_PREFIX characters up.
+ *
+ * Merchant memory is a TYPEAHEAD: QuickAddDialog.jsx:154-167 fires
+ * GET /api/categories/suggest on every keystroke (250ms debounce) from the second
+ * character. The old `.ilike('description', '%term%')` matched a partial word
+ * naturally, so the category chip lit up while the user was still typing "Tes".
+ *
+ * A hash matches only what it hashed, so an exact-match index would light the
+ * chip only once the merchant was typed out in full — the feature would look
+ * broken rather than helpful. Storing the prefixes keeps the typeahead working:
+ * the read path hashes what the user has typed so far and asks whether any row
+ * carries that hash.
+ *
+ * WHAT THIS COSTS, stated plainly: the array length reveals how long the merchant
+ * name is (not what it is). That is a real, if small, addition to what a blind
+ * index already leaks — which rows share a merchant. Both are documented in
+ * SECURITY.md.
+ *
+ * WHAT IS STILL LOST vs the old ILIKE, deliberately:
+ *   - infix matching. Typing "esco" used to find "Tesco"; now it does not.
+ *   - second-word-only matching. Typing "Express" used to find "Tesco Express".
+ * Both are unreachable without hashing every substring, which would leak far more
+ * and bloat every row. Accepted as a narrower contract.
+ */
+export function merchantPrefixes(description) {
+  const full = normaliseMerchant(description);
+  if (!full) return null;
+  const capped = full.slice(0, MAX_PREFIX);
+  const out = [];
+  for (let i = MIN_PREFIX; i <= capped.length; i += 1) out.push(capped.slice(0, i));
+  return out.length ? out : null;
 }
 
 export function prettifyMerchant(description, fallbackKey) {

@@ -23,13 +23,13 @@
  *   never landed. Per row we now: encrypt -> verify in memory -> write ->
  *   re-SELECT that row's `_enc` columns -> decrypt what Postgres actually
  *   returned -> compare to the original plaintext. Only then is it counted.
- *   Migration 013 drops plaintext irreversibly on the strength of this check.
+ *   Migration 019 drops plaintext irreversibly on the strength of this check.
  *
  * - Aborts loudly, and logs ONLY primary keys. Any mismatch throws. Failure
  *   messages never include amounts, descriptions or notes.
  *
  * - Does NOT touch plaintext columns. This script only ever writes to the
- *   `_enc` columns; migration 013 (dropping plaintext) is a separate,
+ *   `_enc` columns; migration 019 (dropping plaintext) is a separate,
  *   explicitly-gated step.
  *
  * Usage:
@@ -47,14 +47,15 @@
  */
 import 'dotenv/config';
 import { pathToFileURL } from 'node:url';
-import { encryptField, decryptField, blindIndex } from '../lib/crypto.js';
+import { encryptField, decryptField, decryptRegistered, blindIndex, blindIndexMany } from '../lib/crypto.js';
 import { fieldsByTable, fieldKey } from '../lib/encryptedFields.js';
-import { normaliseMerchant, normaliseMerchantFirstWord } from '../lib/merchant.js';
+import { normaliseMerchant, normaliseMerchantFirstWord, merchantPrefixes } from '../lib/merchant.js';
 
 /** Must match the read path exactly — see lib/merchant.js. */
 export const NORMALISERS = {
   merchant: normaliseMerchant,
   merchantFirstWord: normaliseMerchantFirstWord,
+  merchantPrefixes,
   identity: (v) => (v === null || v === undefined ? null : String(v)),
 };
 
@@ -62,7 +63,19 @@ export const NORMALISERS = {
 export function blindValueFor(table, b, row) {
   const normalise = NORMALISERS[b.normalise];
   if (!normalise) throw new Error(`Unknown normaliser '${b.normalise}' for ${table}.${b.column}`);
-  return blindIndex(fieldKey(table, b.column), row.user_id, normalise(row[b.from]));
+  const value = normalise(row[b.from]);
+  return b.multi
+    ? blindIndexMany(fieldKey(table, b.column), row.user_id, value)
+    : blindIndex(fieldKey(table, b.column), row.user_id, value);
+}
+
+/** Array-aware equality, since a multi index is a text[] column. */
+export function blindValueEquals(a, b) {
+  if (Array.isArray(a) || Array.isArray(b)) {
+    if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return false;
+    return a.every((v, i) => v === b[i]);
+  }
+  return a === b;
 }
 
 export const PAGE_SIZE = 500;
@@ -140,10 +153,21 @@ async function processRow(supabase, job, row, { dryRun }) {
   if (!hasPlaintext) return 'nothing-to-encrypt';
 
   // 1. In-memory check. Cheap, and catches a broken key before we touch the DB.
+  //    Compare RAW text — routing an amount through decryptAmount would turn a
+  //    stored "12.50" into 12.5 and mismatch every two-decimal amount.
   for (const f of job.fields) {
     if (isBlank(row[f.column])) continue;
     if (decryptField(fieldKey(job.table, f.column), row.user_id, patch[f.enc]) !== String(row[f.column])) {
       throw new Error(`VERIFY FAILED (in-memory round-trip) ${job.table} ${pkLabel(job, row)} column=${f.enc}`);
+    }
+    // Separately enforce the registered kind, so an amount that would become 0 or
+    // NaN in the app is refused BEFORE it is written and certified.
+    try {
+      decryptRegistered(fieldKey(job.table, f.column), row.user_id, patch[f.enc]);
+    } catch (err) {
+      throw new Error(
+        `VERIFY FAILED (not a valid ${f.kind}) ${job.table} ${pkLabel(job, row)} column=${f.enc}`,
+      );
     }
   }
 
@@ -166,7 +190,7 @@ async function processRow(supabase, job, row, { dryRun }) {
     //    The live app is up during the backfill (that is the whole point of
     //    dual-write), so a user editing 250 -> 25 between our SELECT and our
     //    UPDATE would otherwise be "verified" as 250 and then have its only
-    //    correct copy dropped by migration 013.  [audit 2026-08-18, High]
+    //    correct copy dropped by migration 019.  [audit 2026-08-18, High]
     const cols = uniq([
       'user_id',
       ...job.fields.map((f) => f.column),
@@ -208,7 +232,7 @@ async function processRow(supabase, job, row, { dryRun }) {
     // suggesting, forever, with no error to notice.
     for (const b of job.blind ?? []) {
       const want = blindValueFor(job.table, b, { ...stored, user_id: row.user_id });
-      if (stored[b.column] !== want) {
+      if (!blindValueEquals(stored[b.column], want)) {
         throw new Error(
           `VERIFY FAILED (blind index does not match its plaintext) ` +
             `${job.table} ${pkLabel(job, row)} column=${b.column}`,
@@ -233,7 +257,7 @@ async function processRow(supabase, job, row, { dryRun }) {
  * NON-NULL `_enc`. The idempotency filter in keysetScan is `.is(<enc>, null)`,
  * so on the re-run this script's own header invites, that row is now INVISIBLE.
  * It is never re-encrypted and never re-verified, the run prints "Backfill
- * complete", and migration 013 drops its plaintext on the strength of a check
+ * complete", and migration 019 drops its plaintext on the strength of a check
  * that never actually passed for it.
  *
  * NULLing the columns puts the row back in the filter's sights so a re-run
@@ -256,7 +280,7 @@ async function rollbackEnc(supabase, job, row, cause) {
       `\n  !! ROLLBACK ALSO FAILED for ${job.table} ${pkLabel(job, row)}.` +
       `\n  !! This row is committed with UNVERIFIED ciphertext and a re-run will SKIP it.` +
       `\n  !! Set its ${job.fields.map((f) => f.enc).join(', ')} back to NULL by hand before re-running,` +
-      `\n  !! and do NOT run migration 013 until you have.`;
+      `\n  !! and do NOT run migration 019 until you have.`;
   }
 }
 
@@ -395,7 +419,7 @@ export async function runBackfill({ supabase, jobs = JOBS, dryRun = false, log =
     log(
       '\nWARNING: not a single row was scanned in ANY table. This is what an empty or\n' +
         'wrong database looks like, and it is NOT evidence that encryption is complete.\n' +
-        'Do NOT treat this run as authorising migration 013.',
+        'Do NOT treat this run as authorising migration 019.',
     );
   }
   return totals;

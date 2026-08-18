@@ -228,7 +228,7 @@ test('encryptAmount refuses empty string and NaN, but keeps null/undefined and z
 // DATABASE, and you cannot ILIKE a ciphertext. These tests pin the trade-offs
 // that choice makes, so nobody has to rediscover them from the code.
 
-const MERCHANT_IDX = 'transactions.merchant_hmac';
+const MERCHANT_IDX = 'transactions.merchant_prefix_hmacs';
 
 test('a blind index is deterministic — that is the whole point, and the whole cost', () => {
   assert.equal(blindIndex(MERCHANT_IDX, USER_A, 'tesco'), blindIndex(MERCHANT_IDX, USER_A, 'tesco'));
@@ -250,8 +250,8 @@ test('indexes from different columns are not comparable', () => {
   // The field name is mixed into the hash, so you cannot line up one column's
   // index against another's to learn that two values are equal.
   assert.notEqual(
-    blindIndex('transactions.merchant_hmac', USER_A, 'netflix'),
-    blindIndex('transactions.merchant_hmac_1', USER_A, 'netflix'),
+    blindIndex('transactions.merchant_prefix_hmacs', USER_A, 'netflix'),
+    blindIndex('subscription_overrides.merchant_key_hmac', USER_A, 'netflix'),
   );
 });
 
@@ -265,6 +265,15 @@ test('an empty or missing value has no index rather than a shared one', () => {
 
 test('an unregistered blind index is a loud error', () => {
   assert.throws(() => blindIndex('transactions.merchant_hash', USER_A, 'x'), /Unknown blind index/);
+});
+
+test('a blind index without a userId throws instead of sharing one key', () => {
+  // "blind:undefined" would be ONE key shared by every row that hit the bug,
+  // making those rows comparable ACROSS users — the exact property the per-user
+  // key exists to prevent. [Codex stage-4 VERIFY]
+  assert.throws(() => blindIndex(MERCHANT_IDX, undefined, 'tesco'), /without a userId/);
+  assert.throws(() => blindIndex(MERCHANT_IDX, null, 'tesco'), /without a userId/);
+  assert.throws(() => blindIndex(MERCHANT_IDX, '', 'tesco'), /without a userId/);
 });
 
 test('the index key is derived separately from the encryption key', () => {

@@ -22,12 +22,6 @@
  * came with it, since nothing queries them.
  *
  * Deliberately NOT here (and why — do not "fix" these without reading it):
- *   categories.name            routes/categories.js:112 looks a category up by
- *                              `.eq('name', keywordName)` in the DATABASE, and
- *                              lib/categoryKeywords.js matches on it by name.
- *                              It is also just the 12 seeded defaults
- *                              ("Groceries", "Transport"), which reveal nothing
- *                              about a particular person's spending.
  *   transactions.fx_rate       A PUBLIC market rate. On its own it reveals only
  *                              which currency pair was used on which day, never
  *                              how much. Leaving it plaintext keeps the
@@ -38,10 +32,19 @@
 
 /**
  * `kind: 'amount'` routes through encryptAmount/decryptAmount, which refuse '' and
- * NaN. `kind: 'text'` is free-form and only round-trips.
+ * NaN. `kind: 'text'` is free-form and only round-trips. Use encryptRegistered /
+ * decryptRegistered in lib/crypto.js so the kind is actually applied — calling
+ * the raw pair skips the amount checks, which is how the gate ended up certifying
+ * amounts under weaker rules than the runtime enforces.
+ *
+ * `notNull: true` records that the ORIGINAL plaintext column was NOT NULL.
+ * Dropping it moves the data into a column that migration 019 created as
+ * nullable, so the invariant has to be re-applied there or the database silently
+ * stops guaranteeing that every transaction has an amount.
+ * [Codex stage-4 VERIFY, 2026-08-18]
  */
 export const ENCRYPTED_FIELDS = [
-  { table: 'transactions', column: 'amount', enc: 'amount_enc', kind: 'amount' },
+  { table: 'transactions', column: 'amount', enc: 'amount_enc', kind: 'amount', notNull: true },
 
   // Added 2026-08-18. Migration 016 (Phase 12, foreign currency) postdates
   // migration 012 by a month, so this column was in NO list — not 012, not the
@@ -52,18 +55,18 @@ export const ENCRYPTED_FIELDS = [
   // original_amount closes the reconstruction; fx_rate can stay public (above).
   { table: 'transactions', column: 'original_amount', enc: 'original_amount_enc', kind: 'amount' },
 
-  { table: 'budgets', column: 'amount_limit', enc: 'amount_limit_enc', kind: 'amount' },
-  { table: 'savings_goals', column: 'target_amount', enc: 'target_amount_enc', kind: 'amount' },
-  { table: 'savings_goals', column: 'current_amount', enc: 'current_amount_enc', kind: 'amount' },
-  { table: 'savings_contributions', column: 'amount', enc: 'amount_enc', kind: 'amount' },
+  { table: 'budgets', column: 'amount_limit', enc: 'amount_limit_enc', kind: 'amount', notNull: true },
+  { table: 'savings_goals', column: 'target_amount', enc: 'target_amount_enc', kind: 'amount', notNull: true },
+  { table: 'savings_goals', column: 'current_amount', enc: 'current_amount_enc', kind: 'amount', notNull: true },
+  { table: 'savings_contributions', column: 'amount', enc: 'amount_enc', kind: 'amount', notNull: true },
   { table: 'user_stats', column: 'monthly_limit', enc: 'monthly_limit_enc', kind: 'amount', pk: ['user_id'] },
 
   // Free-form chat: could contain anything, and nothing queries it.
-  { table: 'ask_messages', column: 'content', enc: 'content_enc', kind: 'text' },
+  { table: 'ask_messages', column: 'content', enc: 'content_enc', kind: 'text', notNull: true },
 
   // Task 6.12's recurring schedules carry the same financial data as transactions,
   // and lib/runRecurrences.js inserts a real transaction from them every night.
-  { table: 'recurrences', column: 'amount', enc: 'amount_enc', kind: 'amount' },
+  { table: 'recurrences', column: 'amount', enc: 'amount_enc', kind: 'amount', notNull: true },
 
   // --- free text, added 2026-08-18 ------------------------------------------
 
@@ -77,9 +80,9 @@ export const ENCRYPTED_FIELDS = [
   // Labels. Nothing queries any of these in the database (verified 2026-08-18:
   // goals and special groups are ordered by created_at, never by name), so they
   // cost nothing but a column each.
-  { table: 'savings_goals', column: 'name', enc: 'name_enc', kind: 'text' },
+  { table: 'savings_goals', column: 'name', enc: 'name_enc', kind: 'text', notNull: true },
   { table: 'savings_contributions', column: 'note', enc: 'note_enc', kind: 'text' },
-  { table: 'special_groups', column: 'name', enc: 'name_enc', kind: 'text' },
+  { table: 'special_groups', column: 'name', enc: 'name_enc', kind: 'text', notNull: true },
 
   // The display name of a detected subscription — "Netflix", "PureGym". Its
   // table has a COMPOSITE primary key, which is why the backfill keeps an
@@ -91,6 +94,22 @@ export const ENCRYPTED_FIELDS = [
     kind: 'text',
     pk: ['user_id', 'merchant_key'],
   },
+
+  // Added 2026-08-18 after Codex's stage-4 VERIFY. `merchant_key_hmac` alone is
+  // a ONE-WAY hash, so once the plaintext `merchant_key` is dropped the value is
+  // gone forever — and a master-key rotation, which necessarily changes the index
+  // key, could not recompute it. The table's primary key would be unrebuildable.
+  // Keeping an encrypted copy makes rotation possible: decrypt under the old key,
+  // re-hash under the new one.
+  { table: 'subscription_overrides', column: 'merchant_key', enc: 'merchant_key_enc', kind: 'text', notNull: true },
+
+  // Added 2026-08-18 after Codex's stage-4 VERIFY. I had justified leaving this
+  // in plaintext as "only the 12 seeded defaults" — that was WRONG.
+  // routes/categories.js:127 lets a user POST any name (max 40 chars,
+  // is_default:false) and :159 lets them rename an existing one, so a category
+  // can be "Therapy", "Divorce lawyer" or anything else. The keyword lookup at
+  // :112 is an exact `.eq('name', …)`, which a blind index answers exactly.
+  { table: 'categories', column: 'name', enc: 'name_enc', kind: 'text', notNull: true },
 ];
 
 /**
@@ -104,24 +123,20 @@ export const ENCRYPTED_FIELDS = [
  * nothing, forever, with no error.
  */
 export const BLIND_INDEXES = [
-  // Merchant memory: routes/categories.js used `.ilike('description', '%term%')`
-  // where `term` was already the first two normalised words. Hashing that same
-  // normalised key reproduces the lookup as an equality match.
+  // Merchant memory is a TYPEAHEAD (QuickAddDialog.jsx fires /suggest on every
+  // keystroke from 2 characters), and the old `.ilike('description', '%term%')`
+  // matched partial words naturally. An exact-match hash would light the category
+  // chip only once the merchant was typed in full — the feature would look broken.
+  // So this stores a hash of EVERY prefix of the normalised merchant, and the read
+  // path hashes what has been typed so far. See merchantPrefixes() in
+  // lib/merchant.js for what this costs and what it still does not cover.
+  // [Codex stage-4 VERIFY, 2026-08-18 — replaced two exact-match hashes]
   {
     table: 'transactions',
-    column: 'merchant_hmac',
+    column: 'merchant_prefix_hmacs',
     from: 'description',
-    normalise: 'merchant',
-  },
-  // The old ILIKE was a SUBSTRING match, so a one-word entry ("Tesco") matched a
-  // two-word stored description ("Tesco Express 1234"). A hash matches only
-  // exactly, so the one-word case needs its own index or partial entries
-  // silently stop suggesting.
-  {
-    table: 'transactions',
-    column: 'merchant_hmac_1',
-    from: 'description',
-    normalise: 'merchantFirstWord',
+    normalise: 'merchantPrefixes',
+    multi: true,
   },
   // subscription_overrides.merchant_key is the PRIMARY KEY and holds either the
   // normalised merchant ("netflix") or a synthetic key that embeds an amount
@@ -133,6 +148,15 @@ export const BLIND_INDEXES = [
     table: 'subscription_overrides',
     column: 'merchant_key_hmac',
     from: 'merchant_key',
+    normalise: 'identity',
+  },
+  // routes/categories.js:112 does `.eq('name', keywordName)` — an exact equality
+  // match, which is precisely what a blind index answers. `identity` because a
+  // category name is matched whole, not by merchant-style first-two-words.
+  {
+    table: 'categories',
+    column: 'name_hmac',
+    from: 'name',
     normalise: 'identity',
   },
 ];

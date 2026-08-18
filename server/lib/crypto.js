@@ -205,9 +205,49 @@ export function decryptAmount(field, userId, stored) {
  */
 export function blindIndex(field, userId, value) {
   requireBlindIndex(field);
+  // Without this, a missing userId derives the index key from the literal string
+  // "blind:undefined" — one shared key across every row that hit the bug. Those
+  // rows become mutually comparable, so anyone reading the table could tell which
+  // of them share a merchant ACROSS users, which is the exact property the
+  // per-user key exists to prevent. userKey() has always thrown here; this did
+  // not. [Codex stage-4 VERIFY, 2026-08-18]
+  if (!userId) throw new Error('blindIndex called without a userId');
   if (value === null || value === undefined) return null;
   const text = String(value);
   if (text === '') return null;
   const key = Buffer.from(hkdfSync('sha256', masterKey(), HKDF_SALT, `blind:${userId}`, KEY_BYTES));
   return createHmac('sha256', key).update(`${field}|${text}`, 'utf8').digest('base64');
+}
+
+/**
+ * Encrypt/decrypt according to the field's registered `kind`.
+ *
+ * The registry has always carried `kind: 'amount' | 'text'`, but nothing enforced
+ * it — every path called encryptField/decryptField directly, so an amount could
+ * round-trip through the text codec and skip the finite-number checks entirely.
+ * That meant the backfill and the migration-013 gate certified amounts under
+ * WEAKER rules than the runtime enforces: a column decrypting to "" or "abc"
+ * passed the gate, then became 0 or NaN in the app after the plaintext was
+ * dropped. [Codex stage-4 VERIFY, 2026-08-18]
+ *
+ * Use these instead of the raw pair anywhere the field comes from the registry.
+ */
+/**
+ * Blind index over a LIST of values — the typeahead prefix set. Returns null
+ * rather than an empty array for "nothing to index", so a blank description does
+ * not become its own searchable bucket.
+ */
+export function blindIndexMany(field, userId, values) {
+  if (!Array.isArray(values) || values.length === 0) return null;
+  return values.map((v) => blindIndex(field, userId, v)).filter((v) => v !== null);
+}
+
+export function encryptRegistered(field, userId, value) {
+  const { kind } = requireField(field);
+  return kind === 'amount' ? encryptAmount(field, userId, value) : encryptField(field, userId, value);
+}
+
+export function decryptRegistered(field, userId, stored) {
+  const { kind } = requireField(field);
+  return kind === 'amount' ? decryptAmount(field, userId, stored) : decryptField(field, userId, stored);
 }

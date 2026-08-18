@@ -1,5 +1,5 @@
 /**
- * Keeps lib/encryptedFields.js, migration 012 and migration 013 in step.
+ * Keeps lib/encryptedFields.js, migration 012 and migration 019 in step.
  *
  * Both of the worst defects the 2026-08-18 audit found were DRIFT, not logic:
  *
@@ -7,7 +7,7 @@
  *     its column list, so a money column existed that no list knew about — and
  *     because amount = original_amount * fx_rate, the "encrypted" amount was
  *     recoverable by multiplication.
- *   - the draft migration 013 in the plan document still dropped five columns
+ *   - the draft migration 019 in the plan document still dropped five columns
  *     from the ORIGINAL scope whose `_enc` twins were never created, so running
  *     it would have destroyed every description, category name, goal name,
  *     contribution note and subscription label in the database.
@@ -16,7 +16,7 @@
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import { ENCRYPTED_FIELDS, BLIND_INDEXES, fieldsByTable } from '../lib/encryptedFields.js';
 
 /**
@@ -28,7 +28,7 @@ const stripComments = (text) => text.replace(/--[^\n]*/g, '');
 const sql = (f) => stripComments(readFileSync(new URL(`../migrations/${f}`, import.meta.url), 'utf8'));
 const M012 = sql('012_encryption_columns.sql');
 const M018 = sql('018_encryption_text_columns.sql');
-const M013 = sql('013_encryption_drop_plaintext.sql');
+const M013 = sql('019_encryption_drop_plaintext.sql'); // renumbered 013 -> 019
 // 012 (money) and 018 (free text + blind indexes) are both additive, both
 // unapplied, and applied in the same step. For "does every column exist?" they
 // are one migration.
@@ -100,7 +100,7 @@ test('the subscription primary key moves off the plaintext merchant key', () => 
   assert.ok(droppedColumns(M013).has('subscription_overrides.merchant_key'));
 });
 
-test('migration 013 drops every plaintext column whose ciphertext twin exists', () => {
+test('migration 019 drops every plaintext column whose ciphertext twin exists', () => {
   const dropped = droppedColumns(M013);
   const missing = ENCRYPTED_FIELDS
     .map((f) => `${f.table}.${f.column}`)
@@ -108,7 +108,7 @@ test('migration 013 drops every plaintext column whose ciphertext twin exists', 
   assert.deepEqual(missing, [], `encrypted but plaintext never dropped: ${missing.join(', ')}`);
 });
 
-test('migration 013 drops NOTHING that has no encrypted or hashed replacement', () => {
+test('migration 019 drops NOTHING that has no encrypted or hashed replacement', () => {
   // The exact defect in the July draft: it dropped transactions.description,
   // categories.name, savings_goals.name, savings_contributions.note and
   // subscription_overrides.display_name, none of which 012 ever twinned.
@@ -125,16 +125,16 @@ test('migration 013 drops NOTHING that has no encrypted or hashed replacement', 
   assert.deepEqual(
     unsafe,
     [],
-    `migration 013 would DESTROY columns with no encrypted replacement: ${unsafe.join(', ')}`,
+    `migration 019 would DESTROY columns with no encrypted replacement: ${unsafe.join(', ')}`,
   );
 });
 
-test('migration 013 renames nothing', () => {
+test('migration 019 renames nothing', () => {
   // A rename turns a numeric column into text under a still-running old server,
   // which then writes bare plaintext into the column the new code reads as
   // ciphertext. Keeping the _enc suffix forever is what makes the cutover safe.
   const renames = [...M013.matchAll(/rename\s+column\s+(\w+)\s+to\s+(\w+)/gi)].map((m) => `${m[1]} -> ${m[2]}`);
-  assert.deepEqual(renames, [], `migration 013 must not rename columns: ${renames.join(', ')}`);
+  assert.deepEqual(renames, [], `migration 019 must not rename columns: ${renames.join(', ')}`);
 });
 
 test('every registered table has a primary key the backfill can page on', () => {
@@ -158,4 +158,65 @@ test('the fx reconstruction hole is closed: amount and original_amount are both 
   const tx = ENCRYPTED_FIELDS.filter((f) => f.table === 'transactions').map((f) => f.column);
   assert.ok(tx.includes('amount'), 'transactions.amount must be encrypted');
   assert.ok(tx.includes('original_amount'), 'transactions.original_amount must be encrypted or amount is derivable');
+});
+
+
+// --- ordering and post-drop invariants (Codex stage-4 VERIFY, 2026-08-18) ----
+
+test('the destructive migration sorts LAST among the encryption migrations', () => {
+  // As 013 it sorted BEFORE 018, so applying migrations in filename order — the
+  // obvious instinct — would have dropped the plaintext before 018 created the
+  // columns meant to replace it. Prose said "run me last"; the filename said the
+  // opposite, and the filename is what gets followed.
+  const names = readdirSync(new URL('../migrations/', import.meta.url)).filter((f) => f.endsWith('.sql')).sort();
+  const additive = names.filter((n) => /encryption_(columns|text_columns)/.test(n));
+  const destructive = names.find((n) => /encryption_drop_plaintext/.test(n));
+  assert.ok(destructive, 'the drop migration must exist');
+  for (const a of additive) {
+    assert.ok(a < destructive, `${a} must sort before ${destructive}, or the drop runs first`);
+  }
+  assert.equal(names[names.length - 1], destructive, 'the drop must be the last migration of all');
+});
+
+test('every NOT NULL plaintext column has its invariant restored on the _enc column', () => {
+  // 012/018 create the _enc columns NULLABLE, because the backfill fills them one
+  // row at a time. Once the plaintext is dropped, the database stops guaranteeing
+  // that a transaction has an amount unless 019 re-applies it.
+  const setNotNull = new Set(
+    [...M013.matchAll(/alter\s+table\s+public\.(\w+)\s+alter\s+column\s+(\w+)\s+set\s+not\s+null/gi)]
+      .map((m) => `${m[1]}.${m[2]}`),
+  );
+  const missing = ENCRYPTED_FIELDS
+    .filter((f) => f.notNull)
+    .map((f) => `${f.table}.${f.enc}`)
+    .filter((c) => !setNotNull.has(c));
+  assert.deepEqual(missing, [], `NOT NULL lost on: ${missing.join(', ')}`);
+});
+
+test('nullable columns are NOT given a NOT NULL they never had', () => {
+  const setNotNull = new Set(
+    [...M013.matchAll(/alter\s+table\s+public\.(\w+)\s+alter\s+column\s+(\w+)\s+set\s+not\s+null/gi)]
+      .map((m) => `${m[1]}.${m[2]}`),
+  );
+  const wrong = ENCRYPTED_FIELDS
+    .filter((f) => !f.notNull)
+    .map((f) => `${f.table}.${f.enc}`)
+    .filter((c) => setNotNull.has(c));
+  assert.deepEqual(wrong, [], `these were nullable and must stay nullable: ${wrong.join(', ')}`);
+});
+
+test('the subscription merchant key keeps an ENCRYPTED source, not only a hash', () => {
+  // A hash is one-way. With only merchant_key_hmac, a master-key rotation could
+  // never recompute the primary key and the table would be unrebuildable.
+  const enc = ENCRYPTED_FIELDS.find((f) => f.table === 'subscription_overrides' && f.column === 'merchant_key');
+  assert.ok(enc, 'merchant_key must have an encrypted, recoverable copy');
+  assert.ok(BLIND_INDEXES.some((b) => b.table === 'subscription_overrides' && b.from === 'merchant_key'));
+});
+
+test('custom category names are encrypted', () => {
+  // routes/categories.js:127 lets a user POST any name and :159 rename one, so
+  // "only the 12 seeded defaults" was false.
+  assert.ok(ENCRYPTED_FIELDS.some((f) => f.table === 'categories' && f.column === 'name'));
+  assert.ok(BLIND_INDEXES.some((b) => b.table === 'categories' && b.from === 'name'),
+    'the keyword lookup does .eq(name, …) in the database and needs an index');
 });

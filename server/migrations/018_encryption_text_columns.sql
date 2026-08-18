@@ -26,12 +26,15 @@
 -- people. See blindIndex() in lib/crypto.js.
 --
 -- STILL PLAINTEXT ON PURPOSE:
---   categories.name   routes/categories.js:112 looks it up with `.eq('name', …)`
---                     in the database, and it is only the 12 seeded defaults
---                     ("Groceries", "Transport") — they reveal nothing about one
---                     person's spending.
 --   transactions.fx_rate  a public market rate; keeping it numeric keeps the
 --                     `fx_rate > 0` CHECK enforceable.
+--
+-- CORRECTED 2026-08-18 (Codex stage-4 VERIFY): categories.name was listed here
+-- as safe "because it is only the 12 seeded defaults". That was wrong.
+-- routes/categories.js:127 accepts any name a user posts (40 chars, is_default
+-- false) and :159 renames existing ones, so a category can be "Therapy" or
+-- "Divorce lawyer". It is now encrypted, with a blind index for the exact
+-- `.eq('name', …)` keyword lookup.
 --
 -- lib/encryptedFields.js is the source of truth for all of this, and
 -- test/encryptionScope.test.js fails the build if this file drifts from it.
@@ -40,13 +43,15 @@
 
 alter table public.transactions
   add column if not exists description_enc text,
-  -- Blind index over the first TWO normalised words ("tesco express").
-  add column if not exists merchant_hmac text,
-  -- Blind index over the FIRST word only ("tesco"). The old `.ilike('%term%')`
-  -- was a SUBSTRING match, so a one-word entry matched a two-word stored
-  -- description. A hash matches only exactly, so that case needs its own index
-  -- or partial entries silently stop suggesting.
-  add column if not exists merchant_hmac_1 text;
+  -- Blind index for merchant memory. Merchant memory is a TYPEAHEAD —
+  -- QuickAddDialog.jsx fires /suggest on every keystroke from the second
+  -- character — and the old `.ilike('description', '%term%')` matched partial
+  -- words naturally. An exact-match hash would light the category chip only once
+  -- the merchant was typed out in full, so this holds a hash of EVERY prefix of
+  -- the normalised merchant and the read path hashes what has been typed so far.
+  -- The array LENGTH reveals how long the merchant name is, not what it is; see
+  -- merchantPrefixes() in lib/merchant.js.
+  add column if not exists merchant_prefix_hmacs text[];
 
 -- The nightly cron (lib/runRecurrences.js) copies this into a real transaction,
 -- so leaving it readable would leak every recurring merchant anyway.
@@ -64,8 +69,19 @@ alter table public.savings_contributions
 alter table public.special_groups
   add column if not exists name_enc text;
 
+alter table public.categories
+  add column if not exists name_enc text,
+  -- Exact-match blind index for the keyword lookup at routes/categories.js:112.
+  add column if not exists name_hmac text;
+
 alter table public.subscription_overrides
   add column if not exists display_name_enc text,
+  -- An ENCRYPTED copy of the merchant key, not just the hash. A hash is one-way:
+  -- once the plaintext merchant_key is dropped, a master-key rotation (which
+  -- changes the index key) could never recompute the hash, and this table's
+  -- primary key would be unrebuildable. Decrypt under the old key, re-hash under
+  -- the new one. [Codex stage-4 VERIFY, 2026-08-18]
+  add column if not exists merchant_key_enc text,
   -- `merchant_key` is the PRIMARY KEY and holds either the normalised merchant
   -- ("netflix") or a synthetic key embedding an amount bucket
   -- ("auto:<category>:25:monthly") — so it leaks both the merchant AND roughly
@@ -77,14 +93,19 @@ alter table public.subscription_overrides
 -- Merchant memory runs on every keystroke-ish in Quick Add, so these matter.
 -- Scoped by user_id because every lookup is already `.eq('user_id', …)`.
 
-create index if not exists transactions_user_merchant_hmac_idx
-  on public.transactions (user_id, merchant_hmac);
+-- GIN so `merchant_prefix_hmacs @> ARRAY[<typed prefix hash>]` is an index scan.
+-- This runs on every keystroke in Quick Add, so it matters.
+create index if not exists transactions_merchant_prefix_hmacs_idx
+  on public.transactions using gin (merchant_prefix_hmacs);
 
-create index if not exists transactions_user_merchant_hmac1_idx
-  on public.transactions (user_id, merchant_hmac_1);
+create index if not exists transactions_user_idx
+  on public.transactions (user_id);
 
 -- Uniqueness is what lets migration 013 promote this to the primary key. If this
 -- CREATE fails with a duplicate-key error, two different merchant keys hashed to
 -- the same value for one user — stop and investigate before going further.
 create unique index if not exists subscription_overrides_user_key_hmac_idx
   on public.subscription_overrides (user_id, merchant_key_hmac);
+
+create index if not exists categories_user_name_hmac_idx
+  on public.categories (user_id, name_hmac);

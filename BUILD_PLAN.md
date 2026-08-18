@@ -733,7 +733,7 @@ older than the 200-row window load. Verify by tapping into an old month in the r
 > so those 12 are leads, not defects, and are recorded in full so they cannot be lost again.
 >
 > Two findings were data-destroying and are now fixed:
-> - **The draft migration 013 in the plan document would have destroyed five columns.** It was
+> - **The draft migration 019 in the plan document would have destroyed five columns.** It was
 >   written in July against the original scope and still dropped `transactions.description`,
 >   `categories.name`, `savings_goals.name`, `savings_contributions.note` and
 >   `subscription_overrides.display_name` — all removed from scope on 2026-08-09, so their `_enc`
@@ -791,7 +791,7 @@ older than the 200-row window load. Verify by tapping into an old month in the r
 > - **`subscription_overrides.merchant_key`** was the PRIMARY KEY and held the merchant name, or a
 >   synthetic key embedding an amount bucket (`auto:<cat>:25:monthly`) — leaking both merchants and
 >   roughly their cost in a column no amount encryption touched. Replaced by `merchant_key_hmac`;
->   migration 013 moves the primary key onto it.
+>   migration 019 moves the primary key onto it.
 > - **Composite-PK paging restored** in the backfill (with tests this time) — `subscription_overrides`
 >   is why it has to exist.
 > - **Migration 018** adds every new column and the lookup indexes. Additive and re-runnable, applied
@@ -814,7 +814,7 @@ Vercel, and backed it up in ~/Keys/ — walk him through this first. Then: lib/c
 node:test tests FIRST (npm test passes), additive migration 012, encrypt-backfill.mjs whose
 verification RE-READS each written row from the database (an in-memory round-trip is not a
 verification — see the plan's warning box), dual-write route sweep, full click-through on encrypted
-data, and ONLY THEN — with Alex's explicit confirmation in that session — migration 013
+data, and ONLY THEN — with Alex's explicit confirmation in that session — migration 019
 dropping plaintext (irreversible) + the category-seeding move from the SQL trigger to
 GET /api/me. Update SECURITY.md with the spec's honest-limits block verbatim.
 ```
@@ -828,7 +828,7 @@ database to verify) but has **not been run**. Still gated on Alex,
 all requiring his explicit go-ahead: generating `DATA_ENCRYPTION_KEY` and backing it up,
 applying migration 012, running the backfill against real data, the full route sweep
 (dual-write reads/writes through the `_enc` columns), the click-through verification, and
-migration 013 (irreversible plaintext drop + category-seeding trigger change).
+migration 019 (irreversible plaintext drop + category-seeding trigger change).
 
 ---
 

@@ -196,14 +196,16 @@ test('parseArgs refuses an unknown flag rather than performing a live run', () =
   }
 });
 
-test('JOBS scope: money and free text are encrypted; only DB-queried text is left alone', () => {
+test('JOBS scope: money and free text are encrypted', () => {
   const pairs = JOBS.flatMap((j) => j.fields.map((f) => fieldKey(j.table, f.column)));
   // categories.name is looked up with `.eq('name', …)` in the database
   // (routes/categories.js:112) and is only the 12 seeded defaults, so it stays.
-  assert.ok(!pairs.includes('categories.name'), 'matched by name in lib/categoryKeywords.js');
-  // transactions.description WAS in this exclusion list until 2026-08-18. It is
-  // now encrypted, and merchant memory searches a blind index instead.
+  // transactions.description WAS excluded until 2026-08-18. It is now encrypted,
+  // and merchant memory searches a blind index instead.
   assert.ok(pairs.includes('transactions.description'), 'descriptions must be encrypted');
+  // categories.name was excluded on the false premise that it is only the 12
+  // seeded defaults. Users can POST any name. [Codex stage-4 VERIFY]
+  assert.ok(pairs.includes('categories.name'), 'custom category names must be encrypted');
   // These are the point of the exercise.
   for (const must of [
     'transactions.amount',
@@ -269,26 +271,29 @@ test('the backfill scope is the shared registry, not a list this script owns', a
 // --- blind indexes and the composite-PK path --------------------------------
 
 test('a blind index is written alongside the ciphertext and recomputes correctly', async () => {
-  const { blindIndex } = await import('../lib/crypto.js');
-  const { normaliseMerchant } = await import('../lib/merchant.js');
+  const { blindIndexMany } = await import('../lib/crypto.js');
+  const { merchantPrefixes } = await import('../lib/merchant.js');
   const job = [{
     table: 'transactions',
     pk: ['id'],
     fields: [{ table: 'transactions', column: 'description', enc: 'description_enc', kind: 'text' }],
-    blind: [{ table: 'transactions', column: 'merchant_hmac', from: 'description', normalise: 'merchant' }],
+    blind: [{ table: 'transactions', column: 'merchant_prefix_hmacs', from: 'description', normalise: 'merchantPrefixes', multi: true }],
   }];
   const tables = {
-    transactions: [{ id: 'a', user_id: 'u1', description: "Sainsbury's Local 442", description_enc: null, merchant_hmac: null }],
+    transactions: [{ id: 'a', user_id: 'u1', description: "Sainsbury's Local 442", description_enc: null, merchant_prefix_hmacs: null }],
   };
   await runBackfill({ supabase: makeFake(tables), jobs: job, log: silent });
   const row = tables.transactions[0];
   assert.equal(decryptField('transactions.description', 'u1', row.description_enc), "Sainsbury's Local 442");
-  assert.equal(
-    row.merchant_hmac,
-    blindIndex('transactions.merchant_hmac', 'u1', normaliseMerchant("Sainsbury's Local 442")),
+  assert.deepEqual(
+    row.merchant_prefix_hmacs,
+    blindIndexMany('transactions.merchant_prefix_hmacs', 'u1', merchantPrefixes("Sainsbury's Local 442")),
     'the stored index must equal what the read path will hash',
   );
-  assert.ok(!row.merchant_hmac.toLowerCase().includes('sainsbury'), 'the index must not contain the merchant');
+  assert.ok(
+    !row.merchant_prefix_hmacs.join(' ').toLowerCase().includes('sainsbury'),
+    'the index must not contain the merchant',
+  );
 });
 
 test('two transactions at the same merchant share an index; different merchants do not', async () => {
@@ -297,19 +302,19 @@ test('two transactions at the same merchant share an index; different merchants 
     table: 'transactions',
     pk: ['id'],
     fields: [{ table: 'transactions', column: 'description', enc: 'description_enc', kind: 'text' }],
-    blind: [{ table: 'transactions', column: 'merchant_hmac', from: 'description', normalise: 'merchant' }],
+    blind: [{ table: 'transactions', column: 'merchant_prefix_hmacs', from: 'description', normalise: 'merchantPrefixes', multi: true }],
   }];
   const tables = {
     transactions: [
-      { id: 'a', user_id: 'u1', description: 'Tesco Express 1234', description_enc: null, merchant_hmac: null },
-      { id: 'b', user_id: 'u1', description: 'TESCO EXPRESS 9999', description_enc: null, merchant_hmac: null },
-      { id: 'c', user_id: 'u1', description: 'Boots 55', description_enc: null, merchant_hmac: null },
+      { id: 'a', user_id: 'u1', description: 'Tesco Express 1234', description_enc: null, merchant_prefix_hmacs: null },
+      { id: 'b', user_id: 'u1', description: 'TESCO EXPRESS 9999', description_enc: null, merchant_prefix_hmacs: null },
+      { id: 'c', user_id: 'u1', description: 'Boots 55', description_enc: null, merchant_prefix_hmacs: null },
     ],
   };
   await runBackfill({ supabase: makeFake(tables), jobs: job, log: silent });
   const [a, b, c] = tables.transactions;
-  assert.equal(a.merchant_hmac, b.merchant_hmac, 'same merchant, different case/suffix -> same index');
-  assert.notEqual(a.merchant_hmac, c.merchant_hmac);
+  assert.deepEqual(a.merchant_prefix_hmacs, b.merchant_prefix_hmacs, 'same merchant, different case/suffix -> same index');
+  assert.notDeepEqual(a.merchant_prefix_hmacs, c.merchant_prefix_hmacs);
 });
 
 test('the same merchant under two users hashes differently', async () => {
@@ -319,16 +324,16 @@ test('the same merchant under two users hashes differently', async () => {
     table: 'transactions',
     pk: ['id'],
     fields: [{ table: 'transactions', column: 'description', enc: 'description_enc', kind: 'text' }],
-    blind: [{ table: 'transactions', column: 'merchant_hmac', from: 'description', normalise: 'merchant' }],
+    blind: [{ table: 'transactions', column: 'merchant_prefix_hmacs', from: 'description', normalise: 'merchantPrefixes', multi: true }],
   }];
   const tables = {
     transactions: [
-      { id: 'a', user_id: 'u1', description: 'Netflix', description_enc: null, merchant_hmac: null },
-      { id: 'b', user_id: 'u2', description: 'Netflix', description_enc: null, merchant_hmac: null },
+      { id: 'a', user_id: 'u1', description: 'Netflix', description_enc: null, merchant_prefix_hmacs: null },
+      { id: 'b', user_id: 'u2', description: 'Netflix', description_enc: null, merchant_prefix_hmacs: null },
     ],
   };
   await runBackfill({ supabase: makeFake(tables), jobs: job, log: silent });
-  assert.notEqual(tables.transactions[0].merchant_hmac, tables.transactions[1].merchant_hmac);
+  assert.notDeepEqual(tables.transactions[0].merchant_prefix_hmacs, tables.transactions[1].merchant_prefix_hmacs);
 });
 
 test('a rolled-back row loses its blind index too', async () => {
@@ -338,15 +343,15 @@ test('a rolled-back row loses its blind index too', async () => {
     table: 'transactions',
     pk: ['id'],
     fields: [{ table: 'transactions', column: 'description', enc: 'description_enc', kind: 'text' }],
-    blind: [{ table: 'transactions', column: 'merchant_hmac', from: 'description', normalise: 'merchant' }],
+    blind: [{ table: 'transactions', column: 'merchant_prefix_hmacs', from: 'description', normalise: 'merchantPrefixes', multi: true }],
   }];
   const tables = {
-    transactions: [{ id: 'a', user_id: 'u1', description: 'Boots', description_enc: null, merchant_hmac: null }],
+    transactions: [{ id: 'a', user_id: 'u1', description: 'Boots', description_enc: null, merchant_prefix_hmacs: null }],
   };
   await assert.rejects(() =>
     runBackfill({ supabase: makeFake(tables, { corruptColumn: 'description_enc' }), jobs: job, log: silent }));
   assert.equal(tables.transactions[0].description_enc, null);
-  assert.equal(tables.transactions[0].merchant_hmac, null, 'the index must be rolled back with the ciphertext');
+  assert.equal(tables.transactions[0].merchant_prefix_hmacs, null, 'the index must be rolled back with the ciphertext');
 });
 
 test('a composite-PK table is paged and encrypted, not skipped', async () => {

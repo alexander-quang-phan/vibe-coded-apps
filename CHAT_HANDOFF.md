@@ -1,37 +1,50 @@
-# Chat Handoff — updated 2026-08-18 (Codex VERIFY: FAIL)
+# Chat Handoff — updated 2026-08-18 (Claude Code REVISE done; back to Codex)
 
 ## DUAL-AGENT BATON  (both models: update this the MOMENT you finish work)
-- Current stage:  **stage 4 VERIFY completed by Codex — FAIL; return to Claude Code REVISE**
-- Model A is:     Claude Code (built 9.5 hardening). Model B / verifier: **Codex**
-- Up next:        Claude Code revises branch `phase-9.5-encryption-hardening`; then Codex re-verifies
-- Last actor did: Codex performed a read-only adversarial verification. `cd server && npm test`
-                  passed 140/140 and `cd client && npm run build` passed, but two in-memory probes
-                  made `verify-encryption.mjs` return `pass:true` while skipping/corrupting data
-                  (501-row composite PK: 500 checked; value-only post-scan edit: no drift reported).
-                  **No DB touched, nothing deployed, no migration applied, nothing merged.**
-- Next must:      Claude Code fixes every blocking issue below, adds regression tests that fail on
-                  the reproduced states, and hands the branch back to Codex. At minimum: make the
-                  gate prove the target/role/key identity/row totals, enforce field `kind`, and
-                  paginate composite keys/capped responses correctly; make drift detection honest;
-                  preserve an encrypted recoverable source
-                  for `subscription_overrides.merchant_key`; repair migration numbering/order and
-                  post-drop NOT NULL invariants; either preserve real ILIKE substring/typeahead
-                  semantics or explicitly approve/document a narrower contract and test the actual
-                  route/vote/confidence path; reject missing user IDs in `blindIndex()`.
-- Last verdict:   **FAIL — DO NOT merge and DO NOT apply 012, 018, or 013.** The sole gate has
-                  reproducible false-PASS states; the HMAC-only subscription PK is not rebuildable
-                  after master-key rotation; ordered migrations run 013 before 018; 013 drops DB
-                  integrity constraints; and `merchantMemory.test.js` models prefix equality, not
-                  the existing `%term%` ILIKE behavior. Also resolve/document the custom-category
-                  privacy gap (`categories.name` is not only 12 seeded defaults).
+- Current stage:  **stage 5 REVISE completed by Claude Code — stage 4 RE-VERIFY is CODEX'S**
+- Model A is:     Claude Code (build + revise). Model B / verifier: **Codex**
+- Up next:        Codex independently re-verifies `phase-9.5-encryption-hardening`
+- Last actor did: fixed every blocking issue from Codex's FAIL on `f19f8b7`, and added regression
+                  tests that fail against the old code for BOTH reproduced false-PASS states.
+                  Suite 140 -> 161. **No DB touched, nothing deployed, nothing merged,
+                  no migration applied.**
+- Next must:      Codex re-verifies. Do NOT take my word that these are fixed — the two probes are
+                  now committed tests, so re-run them AND try to find states they miss.
+                  Specifically worth attacking again: the digest-based drift check (does a change
+                  that leaves the digest identical exist?), the `checked === total` invariant under
+                  a table that changes size mid-pass, and whether hashed prefixes leak more than
+                  the length claim admits.
+- Last verdict:   Codex 2026-08-18: **FAIL** on `f19f8b7`. All items addressed — see the response
+                  table below. Both reproduced false-PASS states verified FIXED by probe and by test.
 - Handoff log:
-  - 2026-08-08 Claude Code: Phase 10 A1–A6 + B1 + B2, built, verified, deployed
-  - 2026-08-10 Claude Code: Phase 11 + 12, migration 016, DEPLOYED
   - 2026-08-11 Claude Code: Phase 12b + 13 + 14, migration 017, DEPLOYED
   - 2026-08-12 Claude Code: third validation sweep — CLEAN. Repo cleanup. No code change.
   - 2026-08-18 Claude Code: 9.5 re-audit + hardening, branch, NOT merged. Codex to verify.
-  - 2026-08-18 Codex: stage 4 VERIFY FAIL; 140/140 server tests + client build pass, but adversarial
-    probes and migration/blind-index review found release-blocking false-PASS/data-recovery defects.
+  - 2026-08-18 Codex: stage 4 VERIFY **FAIL** — reproducible false-PASS states in the sole gate,
+    unrecoverable subscription PK, migration order, ILIKE contract, custom-category gap.
+  - 2026-08-18 Claude Code: stage 5 REVISE — all blocking items fixed, 21 new tests. Back to Codex.
+
+## Codex FAIL -> response (every item)
+
+| # | Codex finding | Verdict | Fix |
+|---|---|---|---|
+| 1 | Gate false-PASS: 501-row composite PK, only 500 checked | **Reproduced** | Ordered offset paging over ALL pk columns, plus a `checked === exact count` invariant that fails the gate on ANY paging bug. Test: "501 rows under a composite PK are all verified". |
+| 2 | Gate false-PASS: value-only post-scan edit, no drift reported | **Reproduced** | Drift is now a SHA-256 digest over every row's keys, plaintext, ciphertext and indexes, compared across two full passes. A count cannot see 250->25; a digest can. Test: "a value-only edit after the read pass is detected as drift". |
+| 3 | Gate must prove target / role / key identity / row totals | Valid | Preflight prints the database host, decodes the JWT role and FAILS unless `service_role` (through the anon key RLS hides rows and every count reads zero), prints a 12-char key fingerprint (never the key), and reports `checked/total` per table. |
+| 4 | Field `kind` not enforced | Valid | `encryptRegistered` / `decryptRegistered` in lib/crypto.js. Gate and backfill now reject an "amount" that decrypts to `""`/`"abc"` — previously certified as fine, then 0/NaN in the app after the drop. |
+| 5 | Capped responses could skip rows | Valid | The read window advances by rows RETURNED, not requested. Test simulates a 137-row server cap over 1200 rows. |
+| 6 | `merchant_key` HMAC-only is not rebuildable after key rotation | Valid, serious | Added `merchant_key_enc` — an encrypted, recoverable copy — beside the hash. Rotation can decrypt under the old key and re-hash under the new one. |
+| 7 | Ordered migrations run 013 before 018 | Valid | Renumbered **013 -> 019**. A test asserts the destructive migration sorts last of all. |
+| 8 | 019 drops DB integrity constraints | Valid | Every NOT NULL the dropped columns carried is re-applied to its `_enc` column, derived from `notNull` in the registry and asserted by test. The `> 0` and length CHECKs genuinely cannot survive encryption — now documented in 019 and SECURITY.md as living only in Zod. |
+| 9 | `merchantMemory.test.js` models prefix equality, not `%term%` ILIKE | Valid | **Merchant memory is a typeahead** (QuickAddDialog fires per keystroke from 2 chars), so exact-match hashing would have broken it. Replaced the two scalar hashes with `merchant_prefix_hmacs text[]` (GIN) holding every prefix. Tests now exercise the real route path incl. vote counting and the `>=3 -> high` confidence rule, and pin the two DOCUMENTED LOSSES (infix, second-word-only). |
+| 10 | `blindIndex()` accepts a missing user id | Valid | Throws. Previously derived from the literal `"blind:undefined"` — one shared key making those rows comparable ACROSS users, the exact thing per-user keys prevent. |
+| 11 | `categories.name` is not only 12 seeded defaults | Valid — my error | `POST /api/categories` accepts any name; PATCH renames. Now encrypted with a blind index for the exact `.eq('name', …)` keyword lookup. The false claim is corrected in the code, migration 018 and SECURITY.md. |
+
+Found while fixing, not on Codex's list: comparing a kind-converted value would have
+turned a stored `"12.50"` into `12.5` and mismatched **every two-decimal amount** — a gate
+that could never pass. And `verifyRows` originally skipped blank-ciphertext rows, trusting a
+count taken at a different instant, so a row inserted between the two was invisible to both.
+Both fixed and tested.
 
 ## Goal
 Alex asked to continue the encryption feature "so I can't see other people's transactions and other
