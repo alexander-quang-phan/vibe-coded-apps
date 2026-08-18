@@ -1,189 +1,189 @@
-# Chat Handoff — updated 2026-08-12
+# Chat Handoff — updated 2026-08-18
 
 ## DUAL-AGENT BATON  (both models: update this the MOMENT you finish work)
-- Current stage:  no loop active — Phases 11–14 were ordinary feature work, single-model by design
-- Model A is:     not yet set — Alex chooses at the next kickoff
-- Up next:        Alex's live click-through. The third sweep is done and found nothing new.
-- Last actor did: third validation sweep (clean) + repo cleanup. NO code changed, nothing deployed.
-- Next must:      nothing blocking — the code is in the same state as 2026-08-11
+- Current stage:  **stage 3 BUILD done by Claude Code — stage 4 VERIFY is CODEX'S, not mine**
+- Model A is:     Claude Code (built 9.5 hardening). Model B / verifier: **Codex**
+- Up next:        Codex validates branch `phase-9.5-encryption-hardening` before it goes near `main`
+- Last actor did: re-audit + hardened every pre-enablement defect. Code + docs only.
+                  **No DB touched, nothing deployed, migration 012 still unapplied.**
+- Next must:      Codex verifies. CLAUDE.md is explicit — the model that produced a stage must not
+                  validate it, and 9.5 is named as *the* change that needs the full two-model loop.
 - Last verdict:   —
 - Handoff log:
-  - 2026-07-23 Claude Code: baton added — Trim retrofitted into the dual-agent workflow
   - 2026-08-08 Claude Code: Phase 10 A1–A6 + B1 + B2, built, verified, deployed
   - 2026-08-10 Claude Code: Phase 11 + 12, migration 016, DEPLOYED
   - 2026-08-11 Claude Code: Phase 12b + 13 + 14, migration 017, DEPLOYED
   - 2026-08-12 Claude Code: third validation sweep — CLEAN. Repo cleanup. No code change.
+  - 2026-08-18 Claude Code: 9.5 re-audit + hardening, branch, NOT merged. Codex to verify.
 
 ## Goal
-Alex uses Trim daily and wanted to know what he's been spending in an average month, plus to log
-expenses in euros for a trip to France and Italy. That expanded into fixing everything two
-validation sweeps turned up, so the app is trustworthy while he's away.
+Alex asked to continue the encryption feature "so I can't see other people's transactions and other
+private information". This session did **not** build the route sweep — it made the half-built 9.5
+feature safe to switch on, because the re-audit found two defects that would have destroyed data the
+first time Alex ran it.
+
+**Read this before anything else — the goal is only partly achievable as designed.** The server holds
+one master key and must decrypt everything to compute totals and run Ask Trim, so this stops *casual*
+viewing (Supabase dashboard, SQL console, a leaked backup all show `v2:…`) but **not Alex**. True E2E
+was considered and rejected in the spec: it kills Ask Trim, the parser, subscription detection and
+bank sync. And under the current scope `transactions.description` stays **plaintext** — the dashboard
+still shows *what* was bought, just not *how much*. That is an open decision, see below.
 
 ## Current state
 
-**Everything below is on `main` and DEPLOYED.** `a2e29db`..`42050cf`. Server suite **86/86**, client
-builds clean, working tree clean. Migrations 016 and 017 both applied to the live DB.
+**Branch `phase-9.5-encryption-hardening`, commit `272109d`. NOT merged, NOT deployed.**
+Server suite **86 → 116**, client builds clean, working tree clean.
+Nothing in the live database changed: migration 012 is still unapplied, no route imports
+`lib/crypto.js`, `DATA_ENCRYPTION_KEY` is still unset. The feature remains inert — deliberately.
 
-**Live and working:**
+### The re-audit
+Six adversarial lenses, 36 findings, each handed to a separate skeptic told to refute it.
+**24 got a verdict (15 survived, 9 refuted). 12 never got a skeptic** — the operational and
+test-quality refuters died on a session limit, twice, at 7:20am and 1:40pm. Those 12 are recorded
+in full in `docs/2026-08-18-encryption-reaudit.md` as *leads, not defects*. This is the third time
+this project has lost audit findings to a session limit; the difference is they are written down now.
 
-| Feature | Where |
-|---|---|
-| Running average, 3/6/12 completed months | Analytics, top card |
-| Foreign-currency expenses | Quick Add — currency chip beside Amount |
-| Change a transaction's currency | Transactions → edit |
-| "Can I afford this?" follows the special toggle | Dashboard |
-| Special-expense groups actually save | Quick Add |
-| Add transactions from the Transactions page | floating + button |
-| Weekly budgets measured correctly | Budgets |
+### The two that would have destroyed data — both fixed
+1. **The draft migration 013 in the plan document.** Written in July against the original scope; the
+   2026-08-09 re-scope removed five columns from migration 012, so their `_enc` twins were never
+   created — but the draft still dropped `transactions.description`, `categories.name`,
+   `savings_goals.name`, `savings_contributions.note` and `subscription_overrides.display_name`.
+   Each `drop column` succeeds, the following `rename` fails on a column that doesn't exist. Pasted
+   into the SQL editor that is the permanent loss of every description, category name, goal name,
+   contribution note and subscription label — for a feature whose purpose is protecting that data.
+   The SQL has been REMOVED from the plan and replaced by a real migration file.
+2. **Encrypting `amount` never hid foreign-currency amounts.** `amount = original_amount × fx_rate`,
+   and migration 016 added both as plaintext numerics a month after 012 froze its column list. Every
+   EUR expense Alex logged in France and Italy was one multiplication away in the dashboard.
+   `original_amount` is now encrypted.
 
-**21 bugs fixed.** The ones worth remembering are under "Key decisions" and "Traps".
+Both were **drift between four hand-maintained lists**, not logic errors — which is why the fix is
+`server/lib/encryptedFields.js`, one registry everything derives from, with a test that fails the
+build if the migrations, the backfill or the gate diverge from it.
 
-**NOT verified:** nothing has been exercised against Alex's real account — an agent has no Supabase
-login. Everything was proven by unit tests, mock-API round trips, and real components driven in a
-browser. See "Traps" for the harness technique.
+### Also landed
+- **Envelope v2 with AAD.** `table.column` is now GCM additional authenticated data. Proven
+  RED/GREEN: under v1 a `savings_goals.target_amount` ciphertext decrypted cleanly as
+  `current_amount`. **This could only be added before the first row is encrypted** — afterwards it
+  means re-encrypting everything. That timing is the whole reason it was done now.
+- **The gate was rewritten.** It could return PASS on a database it would then destroy — it asked
+  only "plaintext present, ciphertext NULL?" and was blind to a row where both were present and
+  **disagreed**, which is what every missed UPDATE path produces. Now checks all four states, reads
+  **every** row (five users — sampling bought nothing but false confidence), fails closed on an
+  absent count, and re-counts afterwards to detect writes during its own run. **First 11 tests it
+  has ever had.**
+- **Backfill:** verifies against the database's *current* plaintext, not its own stale snapshot (a
+  row edited mid-run was being "verified" as the old value); an empty table is now reported as
+  suspicious rather than as success; unreachable composite-PK dead code removed.
+- **`node encrypt-backfill.mjs dry-run`** — forgetting the dashes — used to perform a **live write
+  pass**. The old guard only inspected arguments starting with `-`.
+- **`decryptField` no longer echoes user data** into an error that `index.js:120` logs to Vercel.
+- **SECURITY.md documents encryption for the first time**, including `DATA_ENCRYPTION_KEY` custody —
+  it appeared in no operational document despite two scripts telling readers to see SECURITY.md.
 
 ## Key decisions (and why)
 
-- **Running average covers COMPLETED months only.** A part-month biases the mean low and makes the
-  figure creep upward all month. The current month is shown beside it, never inside it.
-- **`trim:avgIncludeSpecial` is deliberately SEPARATE from `trim:heroIncludeSpecial`.** The hero
-  toggles this month's net; the card toggles an N-month average. Flipping one must not change a page
-  the user isn't looking at.
-- **An empty month counts as £0 but is FLAGGED.** It might be a genuinely cheap month, or one Alex
-  forgot to log — averaging it silently would flatter him.
-- **Foreign currency converts AT ENTRY; `transactions.amount` stays single-currency.** This is why
-  no total, budget, average, projection or affordability check needed changing. Converting on read
-  would have put a conversion step inside all of them.
-- **The SERVER derives the converted amount and ignores the client's `amount`.** Proven by posting a
-  deliberately wrong 999 and getting 38.50 stored.
-- **Manual FX rate entry is a first-class path, not a fallback.** Frankfurter (ECB) publishes 30
-  currencies and does NOT cover VND, one of Trim's five base currencies. The rate is always editable
-  regardless — ECB's reference rate is not what a card charges.
-- **A calendar day belongs to the user, not the server** (Phase 14). `user_stats.timezone` holds
-  their IANA zone, reported automatically by the client only when it changes.
+- **Dual-write, NO rename.** Migration 013 drops plaintext and renames nothing; `_enc` suffixes stay
+  forever. The spec's drop-and-rename had no safe deploy ordering — a rename turns a `numeric` column
+  into `text`, so any still-running old instance or the 03:00 cron writes a bare number into the
+  column the new code reads as ciphertext, and that row never decrypts again. Ugly column names are
+  cheaper than a one-shot cutover. **Decided by me on the audit evidence, not by Alex** — see Open
+  questions.
+- **AAD binds `table.column`, not the row id.** Every `id` is `default gen_random_uuid()`, so the
+  server doesn't know it until after the INSERT; binding it would mean server-generated uuids on
+  every insert path. Consequence stated plainly: a ciphertext can still be copied between two rows
+  of the same user and column — strictly less freedom than a DB-write attacker already has.
+- **No key id in the envelope.** A skeptic refuted this properly: `masterKey()` re-reads env per
+  call, so one process can hold two generations and identify a row by trial decryption (GCM
+  false-accept is 2⁻¹²⁸). A key id would save one failed decryption per row, nothing more.
+- **`fx_rate` stays plaintext.** A public market rate reveals only a currency pair and a date, and
+  keeping it numeric keeps the `fx_rate > 0` CHECK enforceable in the database.
+- **The gate reads every row rather than sampling.** Five users. Full verification costs seconds and
+  is the only thing that makes PASS mean what it says. `--sample` still exists but prints INCOMPLETE
+  and cannot authorise the drop.
 
 ## Traps — read before touching these areas
 
-1. **Never hand-list cache keys in a mutation.** Use `invalidateMoney()` from
-   `client/src/lib/invalidate.js`. Ten call sites had each drifted to a different subset; this class
-   of bug appeared three times.
-2. **Never reintroduce a UTC clock read for a period boundary.** `transactions.date` is a calendar
-   day in the USER's zone. Anything compared against it comes from `server/lib/month.js`.
-   *Deliberately still UTC and correct:* the `/api/fx` day cache, the nightly recurrence runner, and
-   `nextMonthFirstISO()` (string arithmetic on a supplied `ym`, no clock).
-3. **Mirror every server-route change in `server/scripts/devMock.js`.** The mock is what dev
-   exercises. `POST /api/transactions` once shipped without `special_group_id` while the mock
-   persisted it correctly — so it worked locally and failed only in production, and survived until
-   Alex reported it.
-4. **`position: fixed` does not work inside a page root with `animate-fade-up`.** That utility has
-   fill-mode `both`, leaving a permanent identity transform which becomes the containing block. The
-   add button was stranded ~7000px down the page. `QuickAddButton` portals to `<body>` for this
-   reason.
-5. **A passing `npm run build` does not mean working code.** Twice this session Vite built happily
-   over a runtime crash (a missing import block; a temporal-dead-zone reference). Run it.
-6. **Verifying UI without a login:** write a throwaway Vite entry (`client/preview.html` +
-   `src/preview.jsx`) rendering the real page with the TanStack cache pre-seeded from the mock's
-   actual payload — `staleTime: Infinity, retry: false` stops it ever making an authenticated call.
-   Delete the harness after. Used four times; it works well.
+1. **Never hand-list what is encrypted.** `server/lib/encryptedFields.js` is the one registry;
+   migrations, backfill and gate all derive from it. Both data-destroying defects this session were
+   drift between hand-maintained copies of that list.
+2. **The AAD envelope can only change before the first row is encrypted.** After the backfill, any
+   change to the wire format means re-encrypting every row under a new key derivation.
+3. **`server/scripts/verify-encryption.mjs` exit 0 is the ONLY thing that may authorise migration
+   013.** Not the backfill's exit code, not a UI click-through.
+4. **Disable the 03:00 recurrences cron** for the whole window from the gate passing to 013
+   finishing. `lib/runRecurrences.js` INSERTs transactions and cannot write `_enc`.
+5. Everything from previous sessions still applies: `invalidateMoney()`, `server/lib/month.js` for
+   period boundaries, mirror route changes in `devMock.js`, `position: fixed` vs `animate-fade-up`,
+   and a passing `npm run build` is not working code.
 
 ## Files that matter
-- `server/lib/month.js` — the ONE tz-aware day/month definition. 10 tests.
-- `server/lib/fx.js` — currency conversion; rounds to the BASE currency. 8 tests.
-- `server/lib/runningAverage.js` — the completed-months rule. 12 tests.
-- `server/lib/overallBudget.js` — the ONE definition of "your total budget".
-- `server/lib/special.js` — special expenses leave budget maths only while the pref is on.
-- `client/src/lib/invalidate.js` — the ONE cache-invalidation list.
-- `client/src/lib/format.js` — `todayISO` / `thisMonthISO`, both LOCAL. Every client "today".
-- `client/src/components/ui/money-input.jsx` — every money field. Never `type="number"`.
-- `server/scripts/devMock.js` — mirrors every route; keep it in step.
-- Specs: `docs/superpowers/specs/2026-08-10-running-average-design.md`,
-  `…-multi-currency-design.md`. Plan: `docs/superpowers/plans/2026-08-10-running-average.md`.
+- `server/lib/encryptedFields.js` — **NEW, the one registry.** Start here.
+- `server/lib/crypto.js` — v2 envelope, AAD, redacted errors. 27 tests.
+- `server/migrations/012_encryption_columns.sql` — additive, never applied, now includes
+  `original_amount_enc`.
+- `server/migrations/013_encryption_drop_plaintext.sql` — **NEW.** Irreversible; preconditions in
+  its own header. Replaces the draft removed from the plan doc.
+- `server/scripts/verify-encryption.mjs` — the gate. Rewritten. 11 tests.
+- `server/scripts/encrypt-backfill.mjs` — 14 tests.
+- `server/test/encryptionScope.test.js` — **NEW.** Fails the build if the registry, 012 and 013 drift.
+- `docs/2026-08-18-encryption-reaudit.md` — all 36 findings + verdicts, incl. the 12 unverified.
+- `SECURITY.md` — "Encryption at rest" section + key custody + the 10-step rollout order.
 
 ## Next steps (in order)
 
-1. **Alex: live click-through** (~5 min, only he can — it's behind login). Log an expense in EUR and
-   check it stores the converted figure with the original underneath; pick a group on a special
-   expense and confirm the Dashboard panel updates; log something late evening and confirm it says
-   "Today".
-2. ~~Re-run the validation sweep~~ — **DONE 2026-08-12, and it came back clean.** See below for
-   exactly which lenses were covered and which were not, so a fourth pass doesn't repeat them.
-3. **Decide on the one open lead:** `server/routes/transactions.js:289-305` reads `user_stats`,
-   computes `applyLogEvent`, then writes the whole row back. Two concurrent POSTs (a fast
-   double-tap on Add) both read the same base, so the second write clobbers the first — XP/streak
-   counted once instead of twice. **Money is NOT affected**; the transactions rows are both correct.
-   A proper fix is a Postgres RPC doing an atomic increment, or a version column with a retry —
-   a migration plus a non-trivial change, so it deserves its own session. Low severity; Alex's call.
-4. Longer-standing: 9.5 encryption at rest (half-built and INERT, migration 012 NOT applied);
-   Phase 8 bank sync (blocked on Enable Banking); custom domain; Supabase leaked-password toggle
-   (still the ONLY security advisor lint on the live DB — confirmed 2026-08-12).
-
-## Third sweep (2026-08-12) — what was and was not checked
-
-Deliberately aimed at lenses the first two sweeps did NOT use. Done by direct inspection rather
-than a big agent fan-out, after a 16-agent workflow was killed mid-run by an interrupt.
-
-**Checked, clean:**
-- *Tenant isolation / IDOR* — all 15 route files. Every `.update()`, `.delete()` and `.upsert()`
-  is scoped by `.eq('user_id', req.user.id)`, not just the SELECTs. The one upsert that could have
-  trusted the client (`subscriptions.js:264`) sets `user_id: req.user.id` server-side and includes
-  it in `onConflict`. `cron.js` is the documented unscoped exception.
-- *Input validation vs SECURITY.md* — Zod on every mutating route that takes a body; UUID checks on
-  every `:id` route. The routes showing zero UUID checks have no id param; `cron` takes no body.
-- *devMock route parity* — every user-facing route has a mock counterpart. The only real routes the
-  mock lacks are `/api/cron/recurrences` GET+POST, which is correct (machine-invoked).
-- *FK / cascade integrity* — every foreign key in `server/migrations/*.sql` has an explicit
-  `ON DELETE` (13 cascade, 3 set null). No unguarded references.
-- *Live DB* — project `fqfzjcpypxvikdgmegzq` is ACTIVE_HEALTHY. Security advisors return exactly
-  one lint: the known leaked-password toggle. No RLS gaps flagged.
-- *Server-side division sites* — guarded (e.g. `subscriptions.js:178,204` check `minAmt <= 0` first).
-
-**NOT checked — genuinely open if a fourth pass is wanted:**
-- Ask Trim context/prompt limits (context size bound, history cap, mid-stream disconnect handling).
-- Client-side numeric edges — NaN/Infinity reaching progress bars, donut slices, pace lines.
-- What each page RENDERS after a cascade delete (the SQL is right; the UI path was not traced).
-- Field-level devMock parity (route-level parity was verified; field-by-field was not).
+1. **Codex verifies this branch.** Not me — CLAUDE.md forbids the builder validating its own stage,
+   and names 9.5 as the change that needs the two-model loop.
+2. **Alex decides the description question** (blocks the route sweep's shape):
+   descriptions currently stay readable. Encrypt them via a blind index (HMAC of the normalised
+   merchant, searched instead of the text — real work, but delivers what he actually asked for);
+   keep amounts-only; or encrypt them and lose merchant memory.
+3. **The route sweep — the whole remaining feature, ~111 DB call sites.** Not started. Recommended
+   shape: a thin codec at the query boundary so the ~180 arithmetic sites are untouched, phased on
+   `ENCRYPTION_PHASE` (`off` default = identical to today), so it can ship and be proven in
+   production *before* any key exists.
+4. **Alex generates and backs up `DATA_ENCRYPTION_KEY`** — `openssl rand -base64 32`, two offline
+   places, before it goes anywhere near `.env`. Only he may do this (AGENTS.md).
+5. **Verify the 12 unverified audit leads** in `docs/2026-08-18-encryption-reaudit.md`.
+6. Longer-standing: the `user_stats` lost-update lead (`routes/transactions.js:289-305`, XP/streak
+   only, money unaffected); Phase 8 bank sync; custom domain; the Supabase leaked-password toggle
+   (still the only security-advisor lint).
 
 ## Open questions for Alex
-- None blocking.
+- **Descriptions: encrypt them or not?** (next step 2). This is the gap between what Alex asked for
+  and what the current scope delivers.
+- **The cutover decision was made without him.** I asked twice, but this session could not reach him
+  — the harness reported no human input both times — so I proceeded on the audit evidence and said
+  so. Dual-write/no-rename is reversible at every step until 013, so it is a safe default, but he
+  should confirm it before the sweep is written.
 
 ## How to resume
 Start a session in this folder and say: "Read @CHAT_HANDOFF.md and continue with next step 2."
 
 ## Previous sessions
-- **2026-08-12 (third sweep + cleanup):** No code changed, nothing deployed — `main` still at
-  `a0b49c5`. The sweep found no new defects across six lenses (see the section above) and one
-  low-severity lead (the `user_stats` lost update). Repo cleanup: 8 stale worktrees, all fully
-  merged, removed — 6 of them; **2 could not be removed because the sandbox blocked the command**
-  (`.claude/worktrees/reverent-poitras-5090fb` and `…/stripe-payment-integration-d042da`) — Alex can
-  clear them with `git worktree remove --force <path>`. 14 merged branches deleted. Uncommitted
-  scratch state from every worktree was backed up first to
-  `~/.claude/backups/trim-worktrees-2026-08-12/` (116K) and can be deleted once Alex is happy.
-  Three branches were deliberately KEPT because they are NOT merged:
-  `claude/affectionate-shirley-83720f` and `claude/phase-10-batch-a` (both look superseded by work
-  already on main, but that was not verified) and `docs/task-6.12-spec-unbuilt` (explicitly a
-  preservation branch — do not delete).
-- **2026-08-11 (final pass):** the last four sweep leads, all four real. Weekly budgets were
-  measured against a month of spend (GBP 50/week read ~430% used; weekly IS offered in the UI, so
-  reachable — new `lib/budgetPeriod.js`, 4 tests, verified 28% vs the old 124%). The donut divided a
-  special-excluded category total by a special-included month total, so slices summed short —
-  verified now summing to exactly 100.0% with GBP 180 of special spend. Ask Trim had BOTH faults
-  independently and was the only surface still counting special expenses against budgets. One stale
-  empty-state string. Suite 86.
-- **2026-08-11 (Phases 12b/13/14):** Currency editing after creation; the FX rate gate (a foreign
-  expense with no rate was being stored as base currency — self-inflicted, caught by the second
-  sweep, confirmed by two lenses); `invalidateMoney()`; one `ZERO_DECIMAL`; offline guards on
-  Dashboard/Analytics/Settings (Settings would have SAVED factory defaults over real ones);
-  `getSession()` catch; Ask Trim history banner; amber light-mode contrast; budget dialog naming;
-  and Phase 14, the timezone fix — migration 017, 3 duplicate `monthBounds` and 16 `getUTCMonth`
-  calls replaced by one lib across 7 money paths.
-- **2026-08-10 (Phases 11/12):** Running average + multi-currency, migrations 016. Two validation
-  sweeps run. The first lost 11 of 14 agents to an account session limit and reported `confirmed: 0`
-  — which meant "nothing was verified", not "nothing is wrong"; findings were recovered from its
-  journal by hand. The second completed cleanly, 11/11.
+- **2026-08-12 (third sweep + cleanup):** Six lenses, no new defects; one low-severity lead (the
+  `user_stats` lost update). Repo cleanup: 6 of 8 stale worktrees removed — 2 blocked by the sandbox
+  (`.claude/worktrees/reverent-poitras-5090fb`, `…/stripe-payment-integration-d042da`), clear with
+  `git worktree remove --force`. Scratch state backed up to
+  `~/.claude/backups/trim-worktrees-2026-08-12/`. Three branches deliberately KEPT (unmerged):
+  `claude/affectionate-shirley-83720f`, `claude/phase-10-batch-a`, `docs/task-6.12-spec-unbuilt`.
+- **2026-08-11 (final pass):** Four sweep leads, all real. Weekly budgets measured against a month of
+  spend (£50/week read ~430%); the donut divided a special-excluded category total by a
+  special-included month total; Ask Trim had both faults independently. Suite 86.
+- **2026-08-11 (Phases 12b/13/14):** Currency editing; the FX rate gate; `invalidateMoney()`;
+  offline guards on Dashboard/Analytics/Settings; Phase 14 timezone fix (migration 017) — 3 duplicate
+  `monthBounds` and 16 `getUTCMonth` calls replaced by one lib across 7 money paths.
+- **2026-08-10 (Phases 11/12):** Running average + multi-currency, migration 016. Two sweeps; the
+  first lost 11 of 14 agents to a session limit and reported `confirmed: 0`, which meant "nothing was
+  verified", not "nothing is wrong". **Same failure hit this session twice — treat a low
+  `confirmed` count as a broken run, never as a clean bill of health.**
 - **2026-08-08 (Phase 10):** A1–A6 + B1 + B2, migrations 014 + 015, deployed. CRON_SECRET set.
-  Shared dialog scroll fix.
-- **2026-07-18 (Phase 9 + 6.12a):** 9.1–9.4 deployed, migrations 010 + 011. **9.5 encryption is
-  half-built and INERT** — no route imports it, `DATA_ENCRYPTION_KEY` unset, migration 012 not
-  applied. Its review found 3 Critical defects, two from the plan's own example code.
+- **2026-07-18 (Phase 9 + 6.12a):** 9.1–9.4 deployed, migrations 010 + 011. 9.5 left half-built and
+  inert; its review found 3 Critical defects, two from the plan's own example code.
 - **2026-07-15 / 07-14 / 07-13:** Bank-sync design (blocked on Enable Banking); signup confirmation
   fix; v1 deploy to Vercel. Test account `trim.tester@example.com`; mock via `npm run dev:mock`.
+
+## Live-and-working features (unchanged this session)
+Running average (3/6/12 completed months, Analytics) · foreign-currency expenses (Quick Add currency
+chip) · currency editing (Transactions → edit) · "Can I afford this?" follows the special toggle ·
+special-expense groups save · floating + button on Transactions · weekly budgets measured correctly.
