@@ -3,7 +3,7 @@
 ## DUAL-AGENT BATON  (both models: update this the MOMENT you finish work)
 - Current stage:  **stage 5 REVISE #4 completed by Claude Code — back to Codex for RE-VERIFY #4**
 - Model A is:     Claude Code (build + revise). Model B / verifier: **Codex**
-- Up next:        **Codex** re-verifies `phase-9.5-encryption-hardening` (see the commit below)
+- Up next:        **Codex** re-verifies `phase-9.5-encryption-hardening` at commit **b4d5987**
 - Last actor did: Fixed all five RE-VERIFY #3 findings. The Critical old-snapshot bypass was
                   reproduced on real PostgreSQL first, then fixed and re-proved: the trigger now
                   raises when the flag row is absent OR invisible (`if not found or is_engaged is
