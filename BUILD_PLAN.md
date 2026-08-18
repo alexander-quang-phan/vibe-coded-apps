@@ -802,11 +802,49 @@ older than the 200-row window load. Verify by tapping into an old month in the r
 >
 > Suite **116 -> 133**.
 >
-> **Still outstanding:** the ~111-site route sweep is UNWRITTEN and is the whole remaining feature —
-> no route imports `lib/crypto.js`, so nothing is encrypted in the running app. Alex must generate
-> and back up `DATA_ENCRYPTION_KEY`. The two routes coupled to plaintext search
-> (`categories.js` merchant memory, `subscriptions.js` merchant_key) now have a proven design to
-> port to, but neither has been ported yet.
+> **Still outstanding (updated 2026-08-19):** the route sweep is **STARTED, 1 of ~15 route files
+> done**. Nothing is encrypted in the running app and nothing can be until Alex generates and backs
+> up `DATA_ENCRYPTION_KEY` and the migrations are applied — `ENCRYPTION_PHASE` defaults to `off`,
+> where every path writes and reads exactly the columns it always did.
+>
+> Of the two routes coupled to plaintext search: `categories.js` merchant memory is **ported**
+> (`lib/merchantMemory.js`, wired into `/suggest` behind the phase flag); `subscriptions.js`
+> `merchant_key` is not.
+
+### ▢ Task 9.5 Part A — the dual-write route sweep (IN PROGRESS, started 2026-08-19)
+
+> **Why Part A exists as its own task.** Four rounds of cross-model verification on the migration-019
+> cutover machinery found real defects, but four and a half of the last five were in machinery added
+> *during* that loop rather than in the feature it protects. Splitting the phase at the irreversible
+> line means the whole remaining feature can be built, shipped and used with **no irreversible step
+> anywhere** — the plaintext stays beside the ciphertext until Part B (migration 019), which can wait
+> months. Decided with Alex on 2026-08-19; the reasoning is in CHAT_HANDOFF.md.
+>
+> **The shape.** `server/lib/encryptionCodec.js` is a codec at the query boundary, so the ~180
+> arithmetic sites are untouched: `selectFor()` rewrites a query's column list, `decodeRows()` hands
+> the route a plaintext-shaped row whatever is stored, `encodeWrite()` produces the columns to write,
+> and `presentRow()` returns only the columns the route asked for — without which routes doing
+> `res.json({ budget: data })` would have started shipping ciphertext and `user_id` to the browser.
+> Everything derives from `lib/encryptedFields.js`; there are no per-table lists.
+>
+> **At `ENCRYPTION_PHASE=off` the codec is a no-op in both directions**, asserted as the first test in
+> its file. That is what makes Part A shippable and provable in production before any key exists.
+>
+> **Verification pattern.** `test/helpers/routeHarness.js` mounts the REAL router on a real Express
+> server and speaks HTTP to it over a fake PostgREST. Each swept route gets a suite that runs at all
+> three phases and asserts identical JSON, the right columns landing in the table per phase, and that
+> no `_enc` / `_hmac` / `v2:` / user id ever appears in a response. `npm test` therefore runs with
+> `--experimental-test-module-mocks`.
+>
+> - **Done:** `lib/blindIndex.js` (extracted from the backfill, so the gate no longer imports helpers
+>   from the script it audits), `lib/encryptionCodec.js` (27 tests), the route harness, and
+>   **`routes/budgets.js`** — chosen first because it touches four encrypted columns across four
+>   tables. Suite 244 -> 294.
+> - **Next:** `routes/transactions.js` (16 call sites, and the only route carrying a blind index, so
+>   it is where the design gets its real test), then goals, wins, dashboard, analytics, affordability,
+>   projections, specialGroups, subscriptions, ask + `lib/askContext.js`, the remaining reads in
+>   categories/me, and **`lib/runRecurrences.js`** — the 03:00 cron INSERTs transactions and must go
+>   through the codec or it writes rows the gate will reject.
 
 > **Codex stage-4 VERIFY: FAIL (2026-08-18).** Eleven findings, including two reproduced false
 > PASSes in the gate itself (a 501-row composite-PK scan that verified 500; a value-only edit after
