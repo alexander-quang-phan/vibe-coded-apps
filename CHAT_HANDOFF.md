@@ -1,21 +1,30 @@
-# Chat Handoff — updated 2026-08-18 (Claude Code REVISE done; back to Codex)
+# Chat Handoff — updated 2026-08-18 (Codex RE-VERIFY: FAIL)
 
 ## DUAL-AGENT BATON  (both models: update this the MOMENT you finish work)
-- Current stage:  **stage 5 REVISE completed by Claude Code — stage 4 RE-VERIFY is CODEX'S**
+- Current stage:  **stage 4 RE-VERIFY completed by Codex — FAIL; return to Claude Code REVISE**
 - Model A is:     Claude Code (build + revise). Model B / verifier: **Codex**
-- Up next:        Codex independently re-verifies `phase-9.5-encryption-hardening`
-- Last actor did: fixed every blocking issue from Codex's FAIL on `f19f8b7`, and added regression
-                  tests that fail against the old code for BOTH reproduced false-PASS states.
-                  Suite 140 -> 161. **No DB touched, nothing deployed, nothing merged,
-                  no migration applied.**
-- Next must:      Codex re-verifies. Do NOT take my word that these are fixed — the two probes are
-                  now committed tests, so re-run them AND try to find states they miss.
-                  Specifically worth attacking again: the digest-based drift check (does a change
-                  that leaves the digest identical exist?), the `checked === total` invariant under
-                  a table that changes size mid-pass, and whether hashed prefixes leak more than
-                  the length claim admits.
-- Last verdict:   Codex 2026-08-18: **FAIL** on `f19f8b7`. All items addressed — see the response
-                  table below. Both reproduced false-PASS states verified FIXED by probe and by test.
+- Up next:        Claude Code revises `phase-9.5-encryption-hardening`; then Codex re-verifies again
+- Last actor did: Codex re-ran the revised suite (**161/161**) and client build (PASS). The two
+                  committed regressions now pass, but two new in-memory PostgREST probes still made
+                  `verify-encryption.mjs` return `pass:true` over unsafe final data: (1) changing
+                  `user_id` before pass two leaves the digest identical and its decrypt failures are
+                  discarded; (2) deleting an already-scanned row and inserting an unencrypted row
+                  into that offset window preserves `checked === total` and both observed digests.
+                  **No DB touched, nothing deployed/merged, and no migration applied.**
+- Next must:      Fix both new gate false-PASSes with regression tests. Digest every validation input
+                  (including `user_id`) with unambiguous framing, and never discard second-pass
+                  failures/counts. Do not claim independent REST scans prove quiescence: enforce a
+                  real write barrier/consistent snapshot for the irreversible window. Then resolve
+                  the prefix-trie leakage explicitly, cap the read query consistently at 24 or
+                  change the design, update all stale security/handoff/build-plan claims, and make
+                  migration 019 remove/replace the plaintext category-seeding trigger before it
+                  drops `categories.name`.
+- Last verdict:   **FAIL — DO NOT merge, deploy, or apply migrations 012/018/019.** Static paging and
+                  value-edit regressions are fixed, but the sole authorisation gate still has two
+                  reproduced false-PASS states; prefix arrays leak pairwise common-prefix structure
+                  beyond the documented claim; queries stop matching after 24 normalised chars;
+                  SECURITY.md still documents the deleted scalar indexes/plaintext category design;
+                  and 019 leaves `handle_new_user()` writing the column it drops.
 - Handoff log:
   - 2026-08-11 Claude Code: Phase 12b + 13 + 14, migration 017, DEPLOYED
   - 2026-08-12 Claude Code: third validation sweep — CLEAN. Repo cleanup. No code change.
@@ -23,6 +32,45 @@
   - 2026-08-18 Codex: stage 4 VERIFY **FAIL** — reproducible false-PASS states in the sole gate,
     unrecoverable subscription PK, migration order, ILIKE contract, custom-category gap.
   - 2026-08-18 Claude Code: stage 5 REVISE — all blocking items fixed, 21 new tests. Back to Codex.
+  - 2026-08-18 Codex: stage 4 RE-VERIFY **FAIL** — 161/161 + client build pass, but two new gate
+    false-PASS probes, prefix-trie leakage/24-char regression, stale security docs, and the category
+    seeding trigger remain. Baton-only handoff; no DB/migration/deploy/merge.
+
+## Codex RE-VERIFY FAIL -> new evidence
+
+1. **Digest omits `user_id`, and pass two's failures are ignored.** `verifyRows()` selects
+   `user_id` but hashes only the PK/field/index values (`verify-encryption.mjs:110-141`). For normal
+   `id`-PK tables, changing only `user_id` before the second pass leaves the digest byte-identical.
+   The ciphertext no longer decrypts under the new owner, but the caller discards `again.failures`
+   at lines 306-309. Reproduced result:
+   `{"pass":true,"drifted":[],"failures":0,"finalUser":"...0002"}`.
+
+2. **`checked === total` does not prove a changing offset scan covered the final table.** With 600
+   valid rows, pass two read page 1, then the fake deleted an already-read row and inserted a new
+   plaintext-only row whose PK sorted inside that page. Page 2 was unchanged, so the observed row
+   stream and digest matched pass one; count stayed 600; the new row was never read. Reproduced:
+   `{"pass":true,"checked":600,"finalRows":600,"drifted":[],"skipped":[],"badFinalRows":["00000-new"]}`.
+   No finite sequence of independent offset-paged HTTP reads proves quiescence under concurrent
+   writes; the irreversible window needs an enforced write barrier or a consistent DB snapshot.
+
+3. **The prefix array discloses a same-user prefix trie, not only length/equality.** Each row stores
+   ordered hashes for every character prefix from 2 through 24. Comparing arrays reveals exact
+   longest-common-prefix length and strict-prefix families: `Tesco Express`/`Tesco Metro` share five
+   tokens, proving six common normalised characters; every `Tesco` token is the start of the longer
+   array. Array cardinality reveals exact normalised length below the cap and `>=24` above it. A
+   known row labels its whole prefix path and clusters neighbouring rows. SECURITY.md:152-158 does
+   not even disclose length, while merchant.js:70-73 says it does. SECURITY.md:180-194 and the
+   narrative below this baton still describe the removed two-scalar-index/plaintext-category design.
+
+4. **The 24-character bound is asymmetric.** Stored prefixes stop at 24, but the proposed read
+   helper hashes the uncapped normalised query. Local probe: 23/24 chars match; 25/26 do not. Add a
+   boundary regression and cap both sides identically, or choose/document a different bound.
+
+5. **Migration 019 drops `categories.name` but leaves the signup trigger inserting it.**
+   `001_init.sql:158-192` defines `handle_new_user()` with `insert into categories (..., name, ...)`.
+   Migration 019 never replaces that function before dropping the column, despite the encryption
+   spec and BUILD_PLAN.md explicitly requiring category seeding to move to `GET /api/me`. A later
+   signup therefore fails (or the drop is blocked), and the route-side replacement is not built.
 
 ## Codex FAIL -> response (every item)
 
