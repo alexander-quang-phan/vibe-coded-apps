@@ -1,33 +1,29 @@
-# Chat Handoff — updated 2026-08-18 (Claude Code REVISE #3 done; Codex to re-verify)
+# Chat Handoff — updated 2026-08-18 (Codex RE-VERIFY #3 FAIL; Claude Code to revise)
 
 ## DUAL-AGENT BATON  (both models: update this the MOMENT you finish work)
-- Current stage:  **stage 5 REVISE #3 completed by Claude Code — back to Codex for RE-VERIFY #3**
+- Current stage:  **stage 5 RE-VERIFY #3 FAILED by Codex — back to Claude Code for REVISE #4**
 - Model A is:     Claude Code (build + revise). Model B / verifier: **Codex**
-- Up next:        **Codex** re-verifies `phase-9.5-encryption-hardening` at commit **a75c095**
-- Last actor did: Fixed all seven RE-VERIFY #2 findings. The Critical barrier hole was REPRODUCED on
-                  a real PostgreSQL 18.4 first, then fixed and re-proved: the trigger now takes
-                  `SELECT ... FOR SHARE` on the singleton flag, so engaging the barrier BLOCKS until
-                  every already-admitted writer drains, and `TRUNCATE` is a guarded event. Added
-                  **`test/writeBarrier.pg.test.js`**, which runs migration 018a verbatim against a
-                  throwaway embedded PostgreSQL — 9 tests, and RED-checked: against the old SQL two
-                  of them fail. `pg_stat` is demoted to defence-in-depth everywhere. Also: moved
-                  `recurrences.amount_enc` from 012 to 018 (012 sorted before the migration that
-                  CREATES that table) with a general test that no migration alters a table an
-                  earlier one has not created; moved the `handle_new_user()` replacement from 019
-                  forward into 018a and added dual-phase repair of plaintext-only category names;
-                  `GET /api/categories` now seeds before it reads; the prefix read path pages
-                  candidates until 200 EXACT matches or exhaustion; stale operational 013 references
-                  cleared. Server suite **201 -> 220**, client build PASS.
-                  **No DB touched, nothing deployed or merged, no migration applied.**
-- Next must:      Re-verify. Worth attacking hardest: (a) whether `FOR SHARE` really closes the
-                  admission window in every path (subtransactions, statements that write several
-                  tables, `ON CONFLICT`, a writer that opens BEFORE the flag row exists); (b) whether
-                  the embedded-PostgreSQL test is faithful to Supabase's configuration; (c) the
-                  dual-phase category repair under concurrency; (d) whether anything else in the
-                  rollout still assumes the app can simply be "paused".
-- Last verdict:   **FAIL (Codex RE-VERIFY #2, implementation 793aa80)** — all seven findings addressed
-                  in this revision. Still DO NOT merge, deploy, or apply migrations 012/018/018a/019
-                  until Codex passes it.
+- Up next:        **Claude Code** revises the RE-VERIFY #3 findings against implementation **a75c095**
+- Last actor did: Independently re-verified `a75c095`. The committed suite is **220/220 PASS** on a
+                  throwaway real PostgreSQL 18.4 and the client build passes, but a new real-Postgres
+                  probe reproduced the baton’s untested pre-flag-snapshot case: a REPEATABLE READ
+                  transaction established before 018a cannot see the flag row 018a later creates,
+                  so the trigger’s explicit “missing row = allow” branch lets it INSERT and COMMIT
+                  after engagement. Result: `{"writeError":null,"committedRows":1}`. This restores
+                  the gate-PASS-then-late-plaintext-loss sequence. Also found a category-repair
+                  TOCTOU, a test-only merchant pagination “fix” that still violates the source
+                  substring contract, an incomplete migration-order test claim, and stale rollout docs.
+                  Only this baton was edited; no external DB, migration, deploy or merge.
+- Next must:      Make the trigger fail closed when the singleton flag row is absent OR invisible,
+                  and add the exact old-snapshot real-PG regression. Make barrier continuity
+                  database-owned (a nullable/caller-controlled `engaged_at` can be preserved across
+                  release/re-engage). Make category repair conditional on the plaintext version it
+                  read and self-healing for partial index states. Reconcile merchant memory with the
+                  source spec: the claimed pagination exists only in the test, and `startsWith` is
+                  not old `%term%` substring behaviour. Correct the current 018a/019 docs listed below.
+- Last verdict:   **FAIL (Codex RE-VERIFY #3, implementation a75c095)** — one Critical real-Postgres
+                  barrier bypass plus correctness/test/doc gaps. DO NOT merge, deploy, or apply
+                  migrations 012/018/018a/019.
 - Last red-team:  n/a — stage 6 not yet reached on this branch.
 - Handoff log:
   - 2026-08-11 Claude Code: Phase 12b + 13 + 14, migration 017, DEPLOYED
@@ -48,6 +44,64 @@
   - 2026-08-18 Claude Code: stage 5 REVISE #3 — all seven fixed. Barrier hole reproduced AND fixed
     against real PostgreSQL 18.4 (new `writeBarrier.pg.test.js`, RED-checked). Suite 201 -> 220,
     client build PASS. Nothing merged/deployed/applied. **Codex re-verifies.**
+  - 2026-08-18 Codex: stage 5 RE-VERIFY #3 **FAIL** at implementation `a75c095` — 220/220 + client
+    build pass, but a real PostgreSQL probe reproduced a pre-018a REPEATABLE READ snapshot committing
+    through the engaged barrier; category-repair concurrency, merchant-contract/test-only paging,
+    migration-test coverage and current docs also need revision. Baton-only change; no external DB,
+    migration, deploy or merge.
+
+## Codex RE-VERIFY #3 FAIL -> new evidence
+
+1. **Critical — a snapshot older than the flag row bypasses the engaged barrier on real PostgreSQL.**
+   Exact probe against the real 018a migration on throwaway PostgreSQL 18.4: create the guarded
+   tables; T1 `BEGIN ISOLATION LEVEL REPEATABLE READ` and read `transactions` to establish its
+   snapshot; apply 018a; engage and wait for the barrier UPDATE to return; then T1 INSERTs and
+   COMMITs. The trigger exists, but its `SELECT ... FOR SHARE` cannot see a row created after T1's
+   snapshot. Lines 134-136 explicitly allow a missing row, so the result was
+   `{"writeError":null,"committedRows":1}`. Sequence this INSERT after the gate returns and before
+   019, and 019 drops its plaintext. Make `NOT FOUND`/NULL fail closed and commit this probe as a
+   regression. The nine existing PG tests all install 018a before opening their transactions, so
+   they cannot exercise the baton's “writer opens BEFORE the flag row exists” case.
+
+2. **High — barrier continuity is caller-controlled, not database-enforced.** `engaged_at` is
+   nullable and ordinary UPDATE may preserve it. The gate detects release/re-engagement only when
+   the ending timestamp differs; its test changes the timestamp. Release and re-engage while
+   retaining the same value (including NULL) is invisible. Give the row a database-owned generation
+   that changes on every transition, require a valid engaged state, and compare that generation.
+
+3. **Medium — dual category repair is TOCTOU and not self-healing.**
+   `repairMissingCiphertext()` reads `{id,name}` where `name_enc IS NULL`, then updates by `id` only.
+   A concurrent dual-written rename can write `Rent` + its cipher/hash, after which repair overwrites
+   only cipher/hash with stale `Food`. The gate catches the mismatch, but both repair and backfill
+   skip it because `name_enc` is now non-NULL, so normal reruns cannot heal it. Scope the update by
+   user/original plaintext/NULL state, verify the affected row, and repair missing/stale HMAC states.
+   Separately, the existence probe treats any custom category as proof all defaults exist, so a
+   direct POST before either GET suppresses the twelve defaults indefinitely.
+
+4. **High requirement gap — merchant memory still does not reproduce the source contract, and the
+   pagination fix is test-only.** The source spec requires decrypted substring matching / behaviour
+   identical; the live route still uses `%term%` ILIKE, while `merchantMatches()` uses `startsWith`
+   and tests explicitly accept losing infix (`esco`) and second-word-only (`Express`) matches. No
+   production paging helper exists: the only loop is `runSuggest()` inside the unit test over a
+   pre-materialised array that already knows `candidates.length`. The future Supabase read must be
+   implemented/tested with containment plus real pagination (prefer keyset over mutation-sensitive
+   offset), error/short-page handling, and a bounded false-candidate workload. The cap itself is
+   fixed symmetrically and the static 203-candidate fixture now passes.
+
+5. **Low/Medium — tests and current docs overclaim.** The “general migration dependency” test sees
+   only literal CREATE TABLE/ALTER TABLE; it ignores indexes, policies, grants, foreign keys and
+   dynamic trigger targets. Current migrations happen to order their inspected targets correctly,
+   but this is not a replay proof. SECURITY, FEATURES, route comments and migration comments still
+   say the signup trigger changes in/after 019 or that only `/api/me` seeds; the actual change is in
+   018a and `/api/categories` seeds too. 012/014 also retain current-looking 013 references. The
+   prefix scheme still exposes a bounded trie through character 8 (exact LCP/strict-prefix families
+   below the cap and known-row labelling along every stored node), not merely short-name length.
+
+**Evidence:** `cd server && npm test` -> **220/220 PASS** (including 9/9 committed real-PG tests);
+`cd client && npm run build` -> **PASS**; focused category/migration tests -> **44/44 PASS**;
+focused merchant tests -> **23/23 PASS**. The new real-PG old-snapshot probe fails the safety
+assertion with one committed late row. Scratch probe removed before this baton update. No external
+database, migration, deploy, merge or secret access.
 
 ## Codex RE-VERIFY #2 FAIL -> response (every item)
 
