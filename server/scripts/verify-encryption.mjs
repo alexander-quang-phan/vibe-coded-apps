@@ -47,6 +47,7 @@ import 'dotenv/config';
 import { pathToFileURL } from 'node:url';
 import { decryptField } from '../lib/crypto.js';
 import { fieldsByTable, fieldKey } from '../lib/encryptedFields.js';
+import { blindValueFor } from './encrypt-backfill.mjs';
 
 const PAGE = 500;
 
@@ -92,7 +93,11 @@ const countCipherWithoutPlaintext = (supabase, job, f) =>
  */
 async function verifyRows(supabase, job, { limit, log }) {
   const cursorCol = pkOf(job)[0];
-  const cols = [...new Set([...pkOf(job), 'user_id', ...job.fields.flatMap((f) => [f.column, f.enc])])].join(', ');
+  const cols = [...new Set([
+    ...pkOf(job), 'user_id',
+    ...job.fields.flatMap((f) => [f.column, f.enc]),
+    ...(job.blind ?? []).flatMap((b) => [b.from, b.column]),
+  ])].join(', ');
   const failures = [];
   let checked = 0;
   let cursor = null;
@@ -129,6 +134,21 @@ async function verifyRows(supabase, job, { limit, log }) {
           failures.push(
             `${job.table} ${pkLabel(job, row)} ${f.enc}: ciphertext is STALE — it does not match the ` +
               `plaintext beside it, so 013 would make the wrong value permanent`,
+          );
+        }
+      }
+
+      // Blind indexes are deterministic, so the only correct value is the one
+      // that recomputes from the plaintext this row currently holds. A wrong
+      // index throws nowhere and breaks nothing loudly — merchant memory just
+      // stops suggesting forever. After 013 the plaintext is gone and it cannot
+      // be recomputed at all, so this is the last moment it is checkable.
+      for (const b of job.blind ?? []) {
+        const want = blindValueFor(job.table, b, row);
+        if (row[b.column] !== want) {
+          failures.push(
+            `${job.table} ${pkLabel(job, row)} ${b.column}: blind index does not match its plaintext — ` +
+              `after 013 this row becomes unfindable and cannot be repaired`,
           );
         }
       }

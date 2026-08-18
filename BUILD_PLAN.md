@@ -773,12 +773,37 @@ older than the 200-row window load. Verify by tapping into an old month in the r
 >
 > Suite 86 -> **116**, client builds clean.
 >
+> **Scope expanded 2026-08-18 (Alex: "encrypt descriptions too"), and the cutover confirmed.**
+> Amounts alone left the dashboard showing WHAT was bought while hiding only how much. Now
+> encrypted as well: `transactions.description`, `recurrences.description`, `savings_goals.name`,
+> `savings_contributions.note`, `special_groups.name`, `subscription_overrides.display_name`.
+> `categories.name` stays plaintext (looked up by `.eq('name', …)` in the database, and it is only
+> the 12 seeded defaults).
+>
+> - **Blind index** (`server/lib/crypto.js` `blindIndex()`): a per-user keyed HMAC stored beside the
+>   ciphertext so merchant memory keeps working. `transactions.merchant_hmac` (first two normalised
+>   words) and `.merchant_hmac_1` (first word — the old `.ilike('%term%')` was a SUBSTRING match, so
+>   a one-word entry matched a two-word merchant). Proven to reproduce the old behaviour in
+>   `test/merchantMemory.test.js`.
+> - **`lib/merchant.js`** — the ONE normalisation. There were two and they disagreed on apostrophes
+>   (`"sainsburys local"` vs `"sainsbury s"`), so merchant memory had silently never matched an
+>   apostrophe merchant. A blind index makes that class of drift fatal, so it is now shared.
+> - **`subscription_overrides.merchant_key`** was the PRIMARY KEY and held the merchant name, or a
+>   synthetic key embedding an amount bucket (`auto:<cat>:25:monthly`) — leaking both merchants and
+>   roughly their cost in a column no amount encryption touched. Replaced by `merchant_key_hmac`;
+>   migration 013 moves the primary key onto it.
+> - **Composite-PK paging restored** in the backfill (with tests this time) — `subscription_overrides`
+>   is why it has to exist.
+> - **Migration 018** adds every new column and the lookup indexes. Additive and re-runnable, applied
+>   in the same step as 012.
+>
+> Suite **116 -> 133**.
+>
 > **Still outstanding:** the ~111-site route sweep is UNWRITTEN and is the whole remaining feature —
 > no route imports `lib/crypto.js`, so nothing is encrypted in the running app. Alex must generate
-> and back up `DATA_ENCRYPTION_KEY`. **One open product decision blocks the sweep's shape:**
-> `transactions.description` stays plaintext, so the dashboard still shows *what* was bought, only
-> not *how much*. Encrypting it needs a blind index (HMAC of the normalised merchant) because
-> `routes/categories.js:89` `.ilike()`s it in the database.
+> and back up `DATA_ENCRYPTION_KEY`. The two routes coupled to plaintext search
+> (`categories.js` merchant memory, `subscriptions.js` merchant_key) now have a proven design to
+> port to, but neither has been ported yet.
 
 **Chat prompt:**
 ```

@@ -47,8 +47,23 @@
  */
 import 'dotenv/config';
 import { pathToFileURL } from 'node:url';
-import { encryptField, decryptField } from '../lib/crypto.js';
+import { encryptField, decryptField, blindIndex } from '../lib/crypto.js';
 import { fieldsByTable, fieldKey } from '../lib/encryptedFields.js';
+import { normaliseMerchant, normaliseMerchantFirstWord } from '../lib/merchant.js';
+
+/** Must match the read path exactly — see lib/merchant.js. */
+export const NORMALISERS = {
+  merchant: normaliseMerchant,
+  merchantFirstWord: normaliseMerchantFirstWord,
+  identity: (v) => (v === null || v === undefined ? null : String(v)),
+};
+
+/** The blind-index value a row should carry, recomputable from its plaintext. */
+export function blindValueFor(table, b, row) {
+  const normalise = NORMALISERS[b.normalise];
+  if (!normalise) throw new Error(`Unknown normaliser '${b.normalise}' for ${table}.${b.column}`);
+  return blindIndex(fieldKey(table, b.column), row.user_id, normalise(row[b.from]));
+}
 
 export const PAGE_SIZE = 500;
 
@@ -113,6 +128,15 @@ async function processRow(supabase, job, row, { dryRun }) {
   // (rather than writing NULL over NULL) is what stops the old infinite loop:
   // we never write, so we never expect the `is null` filter to drop it — the
   // keyset cursor has already moved past it.
+  // Blind indexes ride along in the same patch. They are derived from the same
+  // plaintext, so they must be written in the same statement — a row with a
+  // ciphertext but no index is invisible to merchant memory, and a row with an
+  // index but no ciphertext is worse.
+  for (const b of job.blind ?? []) {
+    patch[b.column] = blindValueFor(job.table, b, row);
+    if (patch[b.column] !== null) hasPlaintext = true;
+  }
+
   if (!hasPlaintext) return 'nothing-to-encrypt';
 
   // 1. In-memory check. Cheap, and catches a broken key before we touch the DB.
@@ -143,7 +167,12 @@ async function processRow(supabase, job, row, { dryRun }) {
     //    dual-write), so a user editing 250 -> 25 between our SELECT and our
     //    UPDATE would otherwise be "verified" as 250 and then have its only
     //    correct copy dropped by migration 013.  [audit 2026-08-18, High]
-    const cols = uniq([...job.fields.map((f) => f.column), ...job.fields.map((f) => f.enc)]).join(', ');
+    const cols = uniq([
+      'user_id',
+      ...job.fields.map((f) => f.column),
+      ...job.fields.map((f) => f.enc),
+      ...(job.blind ?? []).flatMap((b) => [b.from, b.column]),
+    ]).join(', ');
     let select = supabase.from(job.table).select(cols);
     for (const k of pk) select = select.eq(k, row[k]);
     const { data: stored, error: selErr } = await select.maybeSingle();
@@ -169,6 +198,20 @@ async function processRow(supabase, job, row, { dryRun }) {
         throw new Error(
           `VERIFY FAILED (database round-trip mismatch — the row may have been edited mid-run; ` +
             `re-run to repair) ${job.table} ${pkLabel(job, row)} column=${f.enc}`,
+        );
+      }
+    }
+
+    // Blind indexes are deterministic, so "correct" means "recomputes to the
+    // same value from the plaintext the database currently holds". A silently
+    // wrong index does not throw anywhere — merchant memory just stops
+    // suggesting, forever, with no error to notice.
+    for (const b of job.blind ?? []) {
+      const want = blindValueFor(job.table, b, { ...stored, user_id: row.user_id });
+      if (stored[b.column] !== want) {
+        throw new Error(
+          `VERIFY FAILED (blind index does not match its plaintext) ` +
+            `${job.table} ${pkLabel(job, row)} column=${b.column}`,
         );
       }
     }
@@ -200,6 +243,9 @@ async function processRow(supabase, job, row, { dryRun }) {
 async function rollbackEnc(supabase, job, row, cause) {
   const patch = {};
   for (const f of job.fields) patch[f.enc] = null;
+  // Blind indexes go back too. Leaving one behind means a row whose ciphertext
+  // was rolled back is still findable by merchant — the exact leak this is for.
+  for (const b of job.blind ?? []) patch[b.column] = null;
   try {
     let undo = supabase.from(job.table).update(patch);
     for (const k of pkOf(job)) undo = undo.eq(k, row[k]);
@@ -224,7 +270,11 @@ async function rollbackEnc(supabase, job, row, cause) {
  */
 async function keysetScan(supabase, job, onRow) {
   const cursorCol = pkOf(job)[0];
-  const cols = uniq([...pkOf(job), 'user_id', ...job.fields.map((f) => f.column)]).join(', ');
+  const cols = uniq([
+    ...pkOf(job), 'user_id',
+    ...job.fields.map((f) => f.column),
+    ...(job.blind ?? []).map((b) => b.from),
+  ]).join(', ');
   const firstEnc = job.fields[0].enc;
   let cursor = null;
 
@@ -251,16 +301,53 @@ async function keysetScan(supabase, job, onRow) {
 }
 
 /**
- * NOTE: there was an `offsetScan` here for composite primary keys, used only by
- * `subscription_overrides`. That table left the encryption scope in the
- * 2026-08-09 re-scope (its `display_name` is a label, not an amount), so every
- * registered table now has a single-column PK and the branch was unreachable —
- * dead code with zero tests sitting in the middle of an irreversible data
- * migration, plus a `counts.alreadyEncrypted` that could therefore never be
- * anything but 0. Removed 2026-08-18. If a composite-PK table is ever encrypted,
- * write it back WITH tests: a positional window over a set our own writes shrink
- * skips rows, which is why it could not simply reuse the keyset path.
+ * Composite PK (subscription_overrides: user_id + merchant_key): ordered offset.
+ *
+ * Removed on 2026-08-18 as unreachable dead code, then RESTORED the same day
+ * when `subscription_overrides.display_name` entered scope — encrypting every
+ * description while leaving the recurring-merchant list readable would have been
+ * pointless. It has tests this time.
+ *
+ * Termination: `offset` grows by rows.length >= 1 every iteration over a finite
+ * table, and we stop on an empty or short page.
+ *
+ * The `is null` idempotency filter is deliberately NOT applied here. A positional
+ * window over a set that our own writes shrink skips rows: encrypt the first 500,
+ * they leave the filter, and `range(500, 999)` now starts 500 rows further into a
+ * set that is 500 rows shorter. We scan in PK order and skip already-encrypted
+ * rows client-side instead.
  */
+async function offsetScan(supabase, job, onRow, counts) {
+  const pk = pkOf(job);
+  const firstEnc = job.fields[0].enc;
+  const cols = uniq([
+    ...pk, 'user_id',
+    ...job.fields.map((f) => f.column),
+    ...(job.blind ?? []).map((b) => b.from),
+    firstEnc,
+  ]).join(', ');
+  let offset = 0;
+
+  for (;;) {
+    let q = supabase.from(job.table).select(cols);
+    for (const k of pk) q = q.order(k, { ascending: true });
+
+    const { data: rows, error } = await q.range(offset, offset + PAGE_SIZE - 1);
+    if (error) throw error;
+    if (!rows.length) break;
+
+    for (const row of rows) {
+      if (!isBlank(row[firstEnc])) {
+        counts.alreadyEncrypted += 1;
+        continue;
+      }
+      await onRow(row);
+    }
+
+    offset += rows.length;
+    if (rows.length < PAGE_SIZE) break;
+  }
+}
 
 async function runJob(supabase, job, { dryRun, log }) {
   const counts = { encrypted: 0, nothingToEncrypt: 0, alreadyEncrypted: 0, scanned: 0 };
@@ -271,13 +358,8 @@ async function runJob(supabase, job, { dryRun, log }) {
     else counts.nothingToEncrypt += 1;
   };
 
-  if (pkOf(job).length !== 1) {
-    throw new Error(
-      `${job.table}: composite primary key (${pkOf(job).join(', ')}) — the composite scan was removed ` +
-        `as unreachable dead code. See the note above keysetScan before encrypting this table.`,
-    );
-  }
-  await keysetScan(supabase, job, onRow);
+  if (pkOf(job).length === 1) await keysetScan(supabase, job, onRow);
+  else await offsetScan(supabase, job, onRow, counts);
 
   const suffix = dryRun ? 'would be encrypted (dry run — nothing written)' : 'encrypted + verified against the database';
   const extras = [

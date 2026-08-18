@@ -144,13 +144,18 @@ total, answer an Ask Trim question, or detect a subscription. So:
   and can decrypt any row on demand. True end-to-end encryption was considered
   and rejected in the design: it would kill Ask Trim, the natural-language
   parser, subscription detection and bank sync.
-- **It does NOT hide what you bought, only how much.** `transactions.description`
-  is deliberately left in plaintext because `routes/categories.js` runs `.ilike()`
-  on it *in the database* for merchant memory, and a ciphertext cannot be
-  `ILIKE`d. So "Boots", "Pharmacy" or a therapist's name stay readable in the
-  dashboard while the amount beside them does not. Closing this needs a blind
-  index (an HMAC of the normalised merchant, searched instead of the text) and is
-  an open decision, not an oversight.
+- **It hides what you bought as well as how much** (decided 2026-08-18).
+  `transactions.description` is encrypted, and merchant memory searches a **blind
+  index** instead of the text — see below. Descriptions, recurring-schedule
+  descriptions, savings-goal names, contribution notes, special-group names and
+  subscription display names are all ciphertext.
+- **A blind index leaks the SHAPE of your spending, not its content.** Because the
+  hash is deterministic, anyone reading the table can see that a set of rows share
+  a merchant, and how many there are — but not which merchant. The index key is
+  per-user, so the same shop under two people hashes differently and one leaked
+  backup cannot be correlated across users. Someone holding the master key could
+  hash a guess ("tesco") and compare — but they could simply decrypt the
+  description instead, so this is not a new weakness.
 - **Ask Trim still sends decrypted context to Anthropic** per question. Encryption
   at rest changes nothing about that.
 
@@ -160,15 +165,40 @@ total, answer an Ask Trim question, or detect a subscription. So:
 013, the backfill, and the completeness gate all derive from it, and
 `server/test/encryptionScope.test.js` fails the build if they drift apart.
 
-Money columns across `transactions` (`amount`, `original_amount`), `budgets`,
-`savings_goals`, `savings_contributions`, `user_stats` and `recurrences`, plus
-`ask_messages.content`. `transactions.fx_rate` stays plaintext on purpose: it is a
-public market rate that reveals only a currency pair and a date, and keeping it
-numeric keeps the `fx_rate > 0` CHECK enforceable in the database.
+**Money:** `transactions.amount` and `.original_amount`, `budgets.amount_limit`,
+`savings_goals.target_amount` and `.current_amount`, `savings_contributions.amount`,
+`user_stats.monthly_limit`, `recurrences.amount`.
 
 `transactions.original_amount` is encrypted because `amount = original_amount ×
 fx_rate` — encrypting only `amount` left every foreign-currency expense
 reconstructable by one multiplication.
+
+**Free text:** `transactions.description`, `recurrences.description`,
+`ask_messages.content`, `savings_goals.name`, `savings_contributions.note`,
+`special_groups.name`, `subscription_overrides.display_name`.
+
+**Blind indexes** (keyed hashes, not ciphertext — searchable but unreadable):
+`transactions.merchant_hmac` (first two normalised words) and `.merchant_hmac_1`
+(first word), both derived from the description, so Task 6.9's suggested-category
+chip keeps working. And `subscription_overrides.merchant_key_hmac`, which replaces
+the plaintext `merchant_key` — that column was the table's PRIMARY KEY and held
+either the merchant name ("netflix") or a synthetic key embedding an amount bucket
+("auto:<category>:25:monthly"), so it leaked both merchants and roughly what they
+cost in a column no amount encryption touched. Migration 013 moves the primary key
+onto the hash.
+
+**Still plaintext on purpose:** `categories.name` is looked up with `.eq('name', …)`
+in the database and is only the 12 seeded defaults ("Groceries", "Transport"),
+which say nothing about one person's spending. `transactions.fx_rate` is a public
+market rate that reveals only a currency pair and a date, and keeping it numeric
+keeps the `fx_rate > 0` CHECK enforceable in the database.
+
+**One normalisation, or the index silently dies.** `lib/merchant.js` is the only
+definition. The write path and the read path must hash the identical string — a
+one-character difference returns no matches, forever, with no error, and after
+migration 013 the plaintext is gone so it cannot be diagnosed. There used to be
+two definitions that disagreed on apostrophes (`"sainsburys local"` vs
+`"sainsbury s"`), which is why this is called out.
 
 ### Cryptography
 
@@ -208,7 +238,7 @@ Each step is reversible until the last. Nothing may be skipped.
    — behaviour is identical to today, which is what makes the sweep provable in
    production before any encryption exists.
 2. Generate and back up the key (above). Set it in `server/.env` and Vercel.
-3. Apply migration 012 (additive, re-runnable, no data touched).
+3. Apply migrations 012 **and 018** (both additive, re-runnable, no data touched).
 4. Set `ENCRYPTION_PHASE=dual`. Every write now writes both columns.
 5. `node scripts/encrypt-backfill.mjs --dry-run`, then for real.
 6. Pause the app **and disable the 03:00 recurrences cron**.

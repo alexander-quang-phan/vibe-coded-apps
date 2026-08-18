@@ -174,3 +174,50 @@ test('the gate derives its scope from the registry, not from the backfill it aud
   const fromGate = JOBS.flatMap((j) => j.fields.map((f) => fieldKey(j.table, f.column))).sort();
   assert.deepEqual(fromGate, ENCRYPTED_FIELDS.map((f) => fieldKey(f.table, f.column)).sort());
 });
+
+// --- blind indexes -----------------------------------------------------------
+
+test('CRITICAL: FAIL on a blind index that does not match its plaintext', async () => {
+  // A wrong index throws nowhere. Merchant memory silently stops suggesting, and
+  // after 013 the plaintext is gone so it can never be recomputed. This gate is
+  // the last moment it is checkable at all.
+  const { blindIndex } = await import('../lib/crypto.js');
+  const { normaliseMerchant } = await import('../lib/merchant.js');
+  const job = [{
+    table: 'transactions',
+    pk: ['id'],
+    fields: [{ table: 'transactions', column: 'description', enc: 'description_enc', kind: 'text' }],
+    blind: [{ table: 'transactions', column: 'merchant_hmac', from: 'description', normalise: 'merchant' }],
+  }];
+  const good = {
+    id: 'a', user_id: U, description: 'Tesco Express',
+    description_enc: encryptField('transactions.description', U, 'Tesco Express'),
+    merchant_hmac: blindIndex('transactions.merchant_hmac', U, normaliseMerchant('Tesco Express')),
+  };
+  const ok = await verifyEncryption({ supabase: makeFake([good]), jobs: job, log: silent });
+  assert.equal(ok.pass, true);
+
+  // Same row, but the index is for a different merchant — e.g. the description
+  // was edited through a route that updated the ciphertext and forgot the index.
+  const bad = { ...good, merchant_hmac: blindIndex('transactions.merchant_hmac', U, 'boots') };
+  const r = await verifyEncryption({ supabase: makeFake([bad]), jobs: job, log: silent });
+  assert.equal(r.pass, false);
+  assert.match(r.failures[0], /blind index does not match/);
+});
+
+test('FAIL when a description is encrypted but its index was never written', async () => {
+  const job = [{
+    table: 'transactions',
+    pk: ['id'],
+    fields: [{ table: 'transactions', column: 'description', enc: 'description_enc', kind: 'text' }],
+    blind: [{ table: 'transactions', column: 'merchant_hmac', from: 'description', normalise: 'merchant' }],
+  }];
+  const rows = [{
+    id: 'a', user_id: U, description: 'Boots',
+    description_enc: encryptField('transactions.description', U, 'Boots'),
+    merchant_hmac: null,
+  }];
+  const r = await verifyEncryption({ supabase: makeFake(rows), jobs: job, log: silent });
+  assert.equal(r.pass, false);
+  assert.match(r.failures[0], /blind index does not match/);
+});

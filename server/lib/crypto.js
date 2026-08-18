@@ -45,8 +45,8 @@
  *   the value there would copy the plaintext this module exists to hide into a
  *   second, unencrypted store.
  */
-import { createCipheriv, createDecipheriv, hkdfSync, randomBytes } from 'node:crypto';
-import { requireField } from './encryptedFields.js';
+import { createCipheriv, createDecipheriv, createHmac, hkdfSync, randomBytes } from 'node:crypto';
+import { requireField, requireBlindIndex } from './encryptedFields.js';
 
 const VERSION = 'v2';
 const HKDF_SALT = 'trim-data-v1'; // unchanged: this salts the KEY, not the envelope
@@ -170,4 +170,44 @@ export function decryptAmount(field, userId, stored) {
   const n = s.trim() === '' ? NaN : Number(s);
   if (!Number.isFinite(n)) throw new Error(`decryptAmount(${field}): decrypted value is not a finite number`);
   return n;
+}
+
+/**
+ * Blind index — a deterministic, keyed hash used to look a value up WITHOUT
+ * storing it or being able to read it back.
+ *
+ * This exists because `transactions.description` is encrypted but merchant
+ * memory (routes/categories.js) has to find "other transactions from this
+ * merchant" IN THE DATABASE. You cannot ILIKE a ciphertext, and fetching every
+ * row to decrypt it does not scale or stay a database query. So the row also
+ * carries HMAC(normalised merchant), and the lookup hashes the search term the
+ * same way and matches on equality.
+ *
+ * Properties, stated plainly because a blind index is a real privacy trade:
+ *
+ * - It is DETERMINISTIC by construction. Two transactions at the same merchant
+ *   carry the same hash, so anyone reading the table learns which rows share a
+ *   merchant, and how many there are — but not which merchant.
+ * - The key is PER-USER (`blind:<id>`, a different HKDF info label from the
+ *   encryption key's `user:<id>`), so the same shop under two users produces
+ *   different hashes. Without that, one leaked backup would let someone
+ *   correlate spending across every user at once.
+ * - It does NOT resist a dictionary attack by someone holding the master key:
+ *   hash "tesco" under a user's index key and compare. That is not a new
+ *   weakness — the same person can already decrypt the description outright.
+ *   It IS resistant for the threat this feature targets: a leaked backup or a
+ *   dashboard glance, neither of which has the key.
+ * - The field name is mixed into the hash, so indexes from different columns
+ *   are not comparable with each other.
+ *
+ * Returns null for a null/empty value, so "no merchant" is not itself a
+ * searchable bucket that groups every blank-description row together.
+ */
+export function blindIndex(field, userId, value) {
+  requireBlindIndex(field);
+  if (value === null || value === undefined) return null;
+  const text = String(value);
+  if (text === '') return null;
+  const key = Buffer.from(hkdfSync('sha256', masterKey(), HKDF_SALT, `blind:${userId}`, KEY_BYTES));
+  return createHmac('sha256', key).update(`${field}|${text}`, 'utf8').digest('base64');
 }

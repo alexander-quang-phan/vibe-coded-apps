@@ -16,22 +16,18 @@
  *
  * SCOPE RULE: encrypt the MONEY, leave searchable text alone.
  *
+ * SCOPE EXPANDED 2026-08-18 (Alex): encrypt descriptions too, via a blind index.
+ * Amounts alone left the dashboard showing WHAT was bought — "Boots",
+ * "Pharmacy", a therapist's name — while hiding only how much. Free-text labels
+ * came with it, since nothing queries them.
+ *
  * Deliberately NOT here (and why — do not "fix" these without reading it):
- *   transactions.description   routes/categories.js:89 runs .ilike() on this IN
- *                              THE DATABASE for merchant memory (Task 6.9). You
- *                              cannot ILIKE a ciphertext and decrypting after
- *                              fetch does not help. Encrypting it needs a blind
- *                              index (an HMAC of the normalised merchant, searched
- *                              instead of the text) — a real piece of work, and an
- *                              open product decision for Alex. Until then this is
- *                              the biggest honest gap in the feature: descriptions
- *                              stay readable in the Supabase dashboard.
- *   categories.name            lib/categoryKeywords.js matches on it by name.
- *   savings_goals.name,
- *   savings_contributions.note,
- *   subscription_overrides.display_name,
- *   special_groups.name        Labels, not amounts. Nothing queries them, so they
- *                              can be added later at low cost.
+ *   categories.name            routes/categories.js:112 looks a category up by
+ *                              `.eq('name', keywordName)` in the DATABASE, and
+ *                              lib/categoryKeywords.js matches on it by name.
+ *                              It is also just the 12 seeded defaults
+ *                              ("Groceries", "Transport"), which reveal nothing
+ *                              about a particular person's spending.
  *   transactions.fx_rate       A PUBLIC market rate. On its own it reveals only
  *                              which currency pair was used on which day, never
  *                              how much. Leaving it plaintext keeps the
@@ -68,12 +64,94 @@ export const ENCRYPTED_FIELDS = [
   // Task 6.12's recurring schedules carry the same financial data as transactions,
   // and lib/runRecurrences.js inserts a real transaction from them every night.
   { table: 'recurrences', column: 'amount', enc: 'amount_enc', kind: 'amount' },
+
+  // --- free text, added 2026-08-18 ------------------------------------------
+
+  // The one that needed a blind index. See BLIND_INDEXES below.
+  { table: 'transactions', column: 'description', enc: 'description_enc', kind: 'text' },
+
+  // The same merchant text as a transaction — runRecurrences.js copies it into
+  // one every night, so leaving it readable would leak every recurring merchant.
+  { table: 'recurrences', column: 'description', enc: 'description_enc', kind: 'text' },
+
+  // Labels. Nothing queries any of these in the database (verified 2026-08-18:
+  // goals and special groups are ordered by created_at, never by name), so they
+  // cost nothing but a column each.
+  { table: 'savings_goals', column: 'name', enc: 'name_enc', kind: 'text' },
+  { table: 'savings_contributions', column: 'note', enc: 'note_enc', kind: 'text' },
+  { table: 'special_groups', column: 'name', enc: 'name_enc', kind: 'text' },
+
+  // The display name of a detected subscription — "Netflix", "PureGym". Its
+  // table has a COMPOSITE primary key, which is why the backfill keeps an
+  // offset-paging path.
+  {
+    table: 'subscription_overrides',
+    column: 'display_name',
+    enc: 'display_name_enc',
+    kind: 'text',
+    pk: ['user_id', 'merchant_key'],
+  },
 ];
+
+/**
+ * Blind indexes — keyed hashes stored beside an encrypted column so the database
+ * can still answer an equality lookup it could otherwise only answer in plaintext.
+ * See blindIndex() in lib/crypto.js for the privacy trade this makes.
+ *
+ * `from` is the PLAINTEXT column each is derived from, and `normalise` is applied
+ * before hashing. Both the write path and the read path must use this table —
+ * a blind index whose two sides disagree by one character silently returns
+ * nothing, forever, with no error.
+ */
+export const BLIND_INDEXES = [
+  // Merchant memory: routes/categories.js used `.ilike('description', '%term%')`
+  // where `term` was already the first two normalised words. Hashing that same
+  // normalised key reproduces the lookup as an equality match.
+  {
+    table: 'transactions',
+    column: 'merchant_hmac',
+    from: 'description',
+    normalise: 'merchant',
+  },
+  // The old ILIKE was a SUBSTRING match, so a one-word entry ("Tesco") matched a
+  // two-word stored description ("Tesco Express 1234"). A hash matches only
+  // exactly, so the one-word case needs its own index or partial entries
+  // silently stop suggesting.
+  {
+    table: 'transactions',
+    column: 'merchant_hmac_1',
+    from: 'description',
+    normalise: 'merchantFirstWord',
+  },
+  // subscription_overrides.merchant_key is the PRIMARY KEY and holds either the
+  // normalised merchant ("netflix") or a synthetic key that embeds an amount
+  // bucket ("auto:<cat>:25:monthly") — so it leaks both merchants AND roughly
+  // what they cost, in a column no encryption touched. Hashing it keeps the
+  // equality lookup and the upsert conflict target working while making it
+  // opaque. Migration 013 moves the primary key onto this column.
+  {
+    table: 'subscription_overrides',
+    column: 'merchant_key_hmac',
+    from: 'merchant_key',
+    normalise: 'identity',
+  },
+];
+
 
 /** 'transactions.amount' — the exact string used as GCM additional authenticated data. */
 export const fieldKey = (table, column) => `${table}.${column}`;
 
 const BY_KEY = new Map(ENCRYPTED_FIELDS.map((f) => [fieldKey(f.table, f.column), f]));
+
+const BLIND_BY_KEY = new Map(BLIND_INDEXES.map((b) => [fieldKey(b.table, b.column), b]));
+
+export function requireBlindIndex(key) {
+  const b = BLIND_BY_KEY.get(key);
+  if (!b) throw new Error(`Unknown blind index: ${key} (add it to lib/encryptedFields.js)`);
+  return b;
+}
+
+export const blindIndexesFor = (table) => BLIND_INDEXES.filter((b) => b.table === table);
 
 /**
  * Throws on an unregistered field. This is the guard that makes AAD safe to
@@ -88,14 +166,16 @@ export function requireField(key) {
 
 export const isEncryptedField = (key) => BY_KEY.has(key);
 
-/** Primary key columns for a table, defaulting to the `id` every table but user_stats has. */
-export const pkFor = (table) => ENCRYPTED_FIELDS.find((f) => f.table === table)?.pk ?? ['id'];
+/** Primary key columns for a table, defaulting to the `id` most tables have. */
+export const pkFor = (table) => ENCRYPTED_FIELDS.find((f) => f.table === table && f.pk)?.pk ?? ['id'];
 
 /** One entry per table, with all of its encrypted columns — the shape the backfill and gate want. */
 export function fieldsByTable() {
   const out = new Map();
   for (const f of ENCRYPTED_FIELDS) {
-    if (!out.has(f.table)) out.set(f.table, { table: f.table, pk: pkFor(f.table), fields: [] });
+    if (!out.has(f.table)) {
+      out.set(f.table, { table: f.table, pk: pkFor(f.table), fields: [], blind: blindIndexesFor(f.table) });
+    }
     out.get(f.table).fields.push(f);
   }
   return [...out.values()];

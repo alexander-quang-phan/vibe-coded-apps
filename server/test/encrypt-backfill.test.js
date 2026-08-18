@@ -25,14 +25,14 @@ function makeFake(tables, faults = {}) {
     from(table) {
       const rows = tables[table] ?? [];
       const q = {
-        _mode: null, _filters: [], _isNull: null, _gt: null, _limit: null, _patch: null,
+        _mode: null, _filters: [], _isNull: null, _gt: null, _limit: null, _patch: null, _range: null,
         select() { q._mode = 'select'; return q; },
         update(patch) { q._mode = 'update'; q._patch = patch; return q; },
         is(col, val) { if (val === null) q._isNull = col; return q; },
         not() { return q; },
         order() { return q; },
         limit(n) { q._limit = n; return q; },
-        range() { return q; },
+        range(from, to) { q._range = [from, to]; return q; },
         gt(col, v) { q._gt = [col, v]; return q; },
         eq(col, v) { q._filters.push([col, v]); return q; },
         maybeSingle() { return q._runSelectOne(); },
@@ -71,7 +71,9 @@ function makeFake(tables, faults = {}) {
           }
           let out = rows.filter((r) => (q._isNull ? r[q._isNull] == null : true));
           if (q._gt) out = out.filter((r) => r[q._gt[0]] > q._gt[1]);
-          out.sort((a, b) => (a.id > b.id ? 1 : -1));
+          const key = (r) => (r.id !== undefined ? String(r.id) : `${r.user_id}|${r.merchant_key}`);
+          out.sort((a, b) => (key(a) > key(b) ? 1 : -1));
+          if (q._range) out = out.slice(q._range[0], q._range[1] + 1);
           if (q._limit) out = out.slice(0, q._limit);
           return Promise.resolve({ data: out.map((r) => ({ ...r })), error: null }).then(resolve, reject);
         },
@@ -194,26 +196,14 @@ test('parseArgs refuses an unknown flag rather than performing a live run', () =
   }
 });
 
-test('a composite-PK table is refused rather than silently skipped', async () => {
-  // The composite scan was removed as unreachable dead code. If a table with a
-  // composite PK is ever added to the registry, the run must STOP, not quietly
-  // page it with the wrong strategy.
-  const job = [{
-    table: 'subscription_overrides',
-    pk: ['user_id', 'merchant_key'],
-    fields: [F('subscription_overrides', 'display_name')],
-  }];
-  await assert.rejects(
-    () => runBackfill({ supabase: makeFake({ subscription_overrides: [] }), jobs: job, log: silent }),
-    /composite primary key/,
-  );
-});
-
-test('JOBS scope: money is encrypted, searchable text is deliberately left alone', () => {
+test('JOBS scope: money and free text are encrypted; only DB-queried text is left alone', () => {
   const pairs = JOBS.flatMap((j) => j.fields.map((f) => fieldKey(j.table, f.column)));
-  // Encrypting these would break DB-side queries that no decrypt-after-fetch fixes.
-  assert.ok(!pairs.includes('transactions.description'), 'ILIKE-searched in routes/categories.js');
+  // categories.name is looked up with `.eq('name', …)` in the database
+  // (routes/categories.js:112) and is only the 12 seeded defaults, so it stays.
   assert.ok(!pairs.includes('categories.name'), 'matched by name in lib/categoryKeywords.js');
+  // transactions.description WAS in this exclusion list until 2026-08-18. It is
+  // now encrypted, and merchant memory searches a blind index instead.
+  assert.ok(pairs.includes('transactions.description'), 'descriptions must be encrypted');
   // These are the point of the exercise.
   for (const must of [
     'transactions.amount',
@@ -274,4 +264,112 @@ test('the backfill scope is the shared registry, not a list this script owns', a
   const fromJobs = JOBS.flatMap((j) => j.fields.map((f) => fieldKey(j.table, f.column))).sort();
   const fromRegistry = ENCRYPTED_FIELDS.map((f) => fieldKey(f.table, f.column)).sort();
   assert.deepEqual(fromJobs, fromRegistry);
+});
+
+// --- blind indexes and the composite-PK path --------------------------------
+
+test('a blind index is written alongside the ciphertext and recomputes correctly', async () => {
+  const { blindIndex } = await import('../lib/crypto.js');
+  const { normaliseMerchant } = await import('../lib/merchant.js');
+  const job = [{
+    table: 'transactions',
+    pk: ['id'],
+    fields: [{ table: 'transactions', column: 'description', enc: 'description_enc', kind: 'text' }],
+    blind: [{ table: 'transactions', column: 'merchant_hmac', from: 'description', normalise: 'merchant' }],
+  }];
+  const tables = {
+    transactions: [{ id: 'a', user_id: 'u1', description: "Sainsbury's Local 442", description_enc: null, merchant_hmac: null }],
+  };
+  await runBackfill({ supabase: makeFake(tables), jobs: job, log: silent });
+  const row = tables.transactions[0];
+  assert.equal(decryptField('transactions.description', 'u1', row.description_enc), "Sainsbury's Local 442");
+  assert.equal(
+    row.merchant_hmac,
+    blindIndex('transactions.merchant_hmac', 'u1', normaliseMerchant("Sainsbury's Local 442")),
+    'the stored index must equal what the read path will hash',
+  );
+  assert.ok(!row.merchant_hmac.toLowerCase().includes('sainsbury'), 'the index must not contain the merchant');
+});
+
+test('two transactions at the same merchant share an index; different merchants do not', async () => {
+  // This IS the privacy trade, made explicit: equal merchants are visibly equal.
+  const job = [{
+    table: 'transactions',
+    pk: ['id'],
+    fields: [{ table: 'transactions', column: 'description', enc: 'description_enc', kind: 'text' }],
+    blind: [{ table: 'transactions', column: 'merchant_hmac', from: 'description', normalise: 'merchant' }],
+  }];
+  const tables = {
+    transactions: [
+      { id: 'a', user_id: 'u1', description: 'Tesco Express 1234', description_enc: null, merchant_hmac: null },
+      { id: 'b', user_id: 'u1', description: 'TESCO EXPRESS 9999', description_enc: null, merchant_hmac: null },
+      { id: 'c', user_id: 'u1', description: 'Boots 55', description_enc: null, merchant_hmac: null },
+    ],
+  };
+  await runBackfill({ supabase: makeFake(tables), jobs: job, log: silent });
+  const [a, b, c] = tables.transactions;
+  assert.equal(a.merchant_hmac, b.merchant_hmac, 'same merchant, different case/suffix -> same index');
+  assert.notEqual(a.merchant_hmac, c.merchant_hmac);
+});
+
+test('the same merchant under two users hashes differently', async () => {
+  // Per-user index keys: one leaked backup must not let anyone correlate
+  // spending across every user at once.
+  const job = [{
+    table: 'transactions',
+    pk: ['id'],
+    fields: [{ table: 'transactions', column: 'description', enc: 'description_enc', kind: 'text' }],
+    blind: [{ table: 'transactions', column: 'merchant_hmac', from: 'description', normalise: 'merchant' }],
+  }];
+  const tables = {
+    transactions: [
+      { id: 'a', user_id: 'u1', description: 'Netflix', description_enc: null, merchant_hmac: null },
+      { id: 'b', user_id: 'u2', description: 'Netflix', description_enc: null, merchant_hmac: null },
+    ],
+  };
+  await runBackfill({ supabase: makeFake(tables), jobs: job, log: silent });
+  assert.notEqual(tables.transactions[0].merchant_hmac, tables.transactions[1].merchant_hmac);
+});
+
+test('a rolled-back row loses its blind index too', async () => {
+  // Otherwise a row whose ciphertext was rolled back is still findable by
+  // merchant — the exact leak the index is supposed to be a controlled version of.
+  const job = [{
+    table: 'transactions',
+    pk: ['id'],
+    fields: [{ table: 'transactions', column: 'description', enc: 'description_enc', kind: 'text' }],
+    blind: [{ table: 'transactions', column: 'merchant_hmac', from: 'description', normalise: 'merchant' }],
+  }];
+  const tables = {
+    transactions: [{ id: 'a', user_id: 'u1', description: 'Boots', description_enc: null, merchant_hmac: null }],
+  };
+  await assert.rejects(() =>
+    runBackfill({ supabase: makeFake(tables, { corruptColumn: 'description_enc' }), jobs: job, log: silent }));
+  assert.equal(tables.transactions[0].description_enc, null);
+  assert.equal(tables.transactions[0].merchant_hmac, null, 'the index must be rolled back with the ciphertext');
+});
+
+test('a composite-PK table is paged and encrypted, not skipped', async () => {
+  // subscription_overrides (user_id + merchant_key). The offset path was briefly
+  // deleted as dead code; this table is why it has to exist.
+  const job = [{
+    table: 'subscription_overrides',
+    pk: ['user_id', 'merchant_key'],
+    fields: [{ table: 'subscription_overrides', column: 'display_name', enc: 'display_name_enc', kind: 'text' }],
+    blind: [{ table: 'subscription_overrides', column: 'merchant_key_hmac', from: 'merchant_key', normalise: 'identity' }],
+  }];
+  const tables = {
+    subscription_overrides: [
+      { user_id: 'u1', merchant_key: 'netflix', display_name: 'Netflix', display_name_enc: null, merchant_key_hmac: null },
+      { user_id: 'u1', merchant_key: 'auto:cat1:25:monthly', display_name: 'Gym', display_name_enc: null, merchant_key_hmac: null },
+    ],
+  };
+  const totals = await runBackfill({ supabase: makeFake(tables), jobs: job, log: silent });
+  assert.equal(totals.encrypted, 2);
+  for (const r of tables.subscription_overrides) {
+    assert.equal(decryptField('subscription_overrides.display_name', r.user_id, r.display_name_enc), r.display_name);
+    assert.ok(r.merchant_key_hmac, 'the plaintext merchant key must get a hashed replacement');
+  }
+  // The synthetic key embeds an amount bucket; the hash must not.
+  assert.ok(!tables.subscription_overrides[1].merchant_key_hmac.includes('25'));
 });

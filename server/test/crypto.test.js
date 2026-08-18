@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { encryptField, decryptField, encryptAmount, decryptAmount } from '../lib/crypto.js';
+import { encryptField, decryptField, encryptAmount, decryptAmount, blindIndex } from '../lib/crypto.js';
 
 // Test fixture key only — never a real key, and it stays inside this file.
 process.env.DATA_ENCRYPTION_KEY ??= Buffer.alloc(32, 7).toString('base64');
@@ -221,4 +221,57 @@ test('encryptAmount refuses empty string and NaN, but keeps null/undefined and z
   assert.equal(encryptAmount(TX_AMOUNT, USER_A, undefined), null);
   assert.equal(decryptAmount(TX_AMOUNT, USER_A, encryptAmount(TX_AMOUNT, USER_A, 0)), 0); // 0 is a real amount
   assert.equal(decryptAmount(TX_AMOUNT, USER_A, null), null);
+});
+
+// --- blind index -------------------------------------------------------------
+// Merchant memory has to find "other transactions from this merchant" IN THE
+// DATABASE, and you cannot ILIKE a ciphertext. These tests pin the trade-offs
+// that choice makes, so nobody has to rediscover them from the code.
+
+const MERCHANT_IDX = 'transactions.merchant_hmac';
+
+test('a blind index is deterministic — that is the whole point, and the whole cost', () => {
+  assert.equal(blindIndex(MERCHANT_IDX, USER_A, 'tesco'), blindIndex(MERCHANT_IDX, USER_A, 'tesco'));
+});
+
+test('a blind index does not contain the value it indexes', () => {
+  const idx = blindIndex(MERCHANT_IDX, USER_A, 'sainsburys local');
+  assert.ok(!idx.toLowerCase().includes('sainsbury'));
+  assert.notEqual(idx, 'sainsburys local');
+});
+
+test('the same merchant under two users produces different indexes', () => {
+  // Without per-user index keys, one leaked backup would let someone correlate
+  // spending across every user at once — "these four people all shop here".
+  assert.notEqual(blindIndex(MERCHANT_IDX, USER_A, 'netflix'), blindIndex(MERCHANT_IDX, USER_B, 'netflix'));
+});
+
+test('indexes from different columns are not comparable', () => {
+  // The field name is mixed into the hash, so you cannot line up one column's
+  // index against another's to learn that two values are equal.
+  assert.notEqual(
+    blindIndex('transactions.merchant_hmac', USER_A, 'netflix'),
+    blindIndex('transactions.merchant_hmac_1', USER_A, 'netflix'),
+  );
+});
+
+test('an empty or missing value has no index rather than a shared one', () => {
+  // If blank hashed to a real value, every blank-description row would group
+  // together into one visible bucket.
+  assert.equal(blindIndex(MERCHANT_IDX, USER_A, null), null);
+  assert.equal(blindIndex(MERCHANT_IDX, USER_A, undefined), null);
+  assert.equal(blindIndex(MERCHANT_IDX, USER_A, ''), null);
+});
+
+test('an unregistered blind index is a loud error', () => {
+  assert.throws(() => blindIndex('transactions.merchant_hash', USER_A, 'x'), /Unknown blind index/);
+});
+
+test('the index key is derived separately from the encryption key', () => {
+  // Same HKDF master, different info label ('blind:' vs 'user:'). If they were
+  // the same key, the HMAC and the ciphertext would share key material.
+  const idx = blindIndex(MERCHANT_IDX, USER_A, 'tesco');
+  const ct = encryptField('transactions.description', USER_A, 'tesco');
+  assert.notEqual(idx, ct);
+  assert.ok(!ct.includes(idx));
 });

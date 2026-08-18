@@ -1,11 +1,12 @@
-# Chat Handoff — updated 2026-08-18
+# Chat Handoff — updated 2026-08-18 (second pass: scope expanded)
 
 ## DUAL-AGENT BATON  (both models: update this the MOMENT you finish work)
 - Current stage:  **stage 3 BUILD done by Claude Code — stage 4 VERIFY is CODEX'S, not mine**
 - Model A is:     Claude Code (built 9.5 hardening). Model B / verifier: **Codex**
 - Up next:        Codex validates branch `phase-9.5-encryption-hardening` before it goes near `main`
-- Last actor did: re-audit + hardened every pre-enablement defect. Code + docs only.
-                  **No DB touched, nothing deployed, migration 012 still unapplied.**
+- Last actor did: re-audit + hardening, THEN Alex's scope expansion (descriptions encrypted via a
+                  blind index; cutover confirmed). Code + docs only.
+                  **No DB touched, nothing deployed, migrations 012/018 still unapplied.**
 - Next must:      Codex verifies. CLAUDE.md is explicit — the model that produced a stage must not
                   validate it, and 9.5 is named as *the* change that needs the full two-model loop.
 - Last verdict:   —
@@ -26,15 +27,44 @@ first time Alex ran it.
 one master key and must decrypt everything to compute totals and run Ask Trim, so this stops *casual*
 viewing (Supabase dashboard, SQL console, a leaked backup all show `v2:…`) but **not Alex**. True E2E
 was considered and rejected in the spec: it kills Ask Trim, the parser, subscription detection and
-bank sync. And under the current scope `transactions.description` stays **plaintext** — the dashboard
-still shows *what* was bought, just not *how much*. That is an open decision, see below.
+bank sync.
+
+**Alex answered both open questions on 2026-08-18:** encrypt descriptions too, via a blind index; and
+the dual-write/no-rename cutover is confirmed. Descriptions are now in scope, so the dashboard hides
+*what* was bought as well as *how much* — at the cost that a deterministic index makes it visible
+which rows share a merchant (not which merchant). That trade is documented in SECURITY.md and pinned
+by tests.
 
 ## Current state
 
-**Branch `phase-9.5-encryption-hardening`, commit `272109d`. NOT merged, NOT deployed.**
-Server suite **86 → 116**, client builds clean, working tree clean.
-Nothing in the live database changed: migration 012 is still unapplied, no route imports
+**Branch `phase-9.5-encryption-hardening`. NOT merged, NOT deployed.**
+Server suite **86 → 140**, client builds clean, working tree clean.
+Nothing in the live database changed: migrations 012 and 018 are unapplied, no route imports
 `lib/crypto.js`, `DATA_ENCRYPTION_KEY` is still unset. The feature remains inert — deliberately.
+
+### Scope expansion (second pass, after Alex's answer)
+Encrypted on top of the money: `transactions.description`, `recurrences.description`,
+`savings_goals.name`, `savings_contributions.note`, `special_groups.name`,
+`subscription_overrides.display_name`. `categories.name` stays plaintext — it is looked up with
+`.eq('name', …)` in the database and is only the 12 seeded defaults.
+
+- **`blindIndex()` in `lib/crypto.js`** — per-user keyed HMAC. `transactions.merchant_hmac` (first
+  two normalised words) + `.merchant_hmac_1` (first word, because the old `.ilike('%term%')` was a
+  SUBSTRING match and a one-word entry matched a two-word merchant). `test/merchantMemory.test.js`
+  proves the lookup reproduces the old behaviour case by case.
+- **`lib/merchant.js`** — the ONE normalisation. There were two, and they disagreed on apostrophes:
+  `routes/categories.js` produced `"sainsbury s"` while `lib/subscriptions.js` produced
+  `"sainsburys local"`, so **merchant memory has silently never matched an apostrophe merchant**.
+  A blind index makes that class of drift fatal rather than merely wrong, so it is now shared — and
+  the bug is fixed as a side effect.
+- **`subscription_overrides.merchant_key`** was the PRIMARY KEY holding the merchant name, or a
+  synthetic key embedding an amount bucket (`auto:<cat>:25:monthly`) — leaking merchants AND roughly
+  their cost in a column no amount encryption touched. Replaced by `merchant_key_hmac`; migration
+  013 moves the primary key onto it.
+- **Composite-PK paging restored** in the backfill, with tests. I had deleted it earlier the same
+  session as unreachable dead code — correct then, wrong once `subscription_overrides` entered scope.
+- **Migration 018** adds every new column plus the lookup indexes. Additive, re-runnable, applied in
+  the same step as 012.
 
 ### The re-audit
 Six adversarial lenses, 36 findings, each handed to a separate skeptic told to refute it.
@@ -118,8 +148,15 @@ build if the migrations, the backfill or the gate diverge from it.
    and a passing `npm run build` is not working code.
 
 ## Files that matter
-- `server/lib/encryptedFields.js` — **NEW, the one registry.** Start here.
-- `server/lib/crypto.js` — v2 envelope, AAD, redacted errors. 27 tests.
+- `server/lib/encryptedFields.js` — **NEW, the one registry** (15 encrypted fields + 3 blind
+  indexes). Start here.
+- `server/lib/merchant.js` — **NEW.** The one merchant normalisation. Both sides of every blind
+  index must use it.
+- `server/migrations/018_encryption_text_columns.sql` — **NEW.** Free text + blind indexes + lookup
+  indexes. Apply with 012.
+- `server/test/merchantMemory.test.js` — **NEW.** Proves encrypting descriptions did not break the
+  suggested-category chip.
+- `server/lib/crypto.js` — v2 envelope, AAD, redacted errors, `blindIndex()`. 34 tests.
 - `server/migrations/012_encryption_columns.sql` — additive, never applied, now includes
   `original_amount_enc`.
 - `server/migrations/013_encryption_drop_plaintext.sql` — **NEW.** Irreversible; preconditions in
@@ -134,14 +171,18 @@ build if the migrations, the backfill or the gate diverge from it.
 
 1. **Codex verifies this branch.** Not me — CLAUDE.md forbids the builder validating its own stage,
    and names 9.5 as the change that needs the two-model loop.
-2. **Alex decides the description question** (blocks the route sweep's shape):
-   descriptions currently stay readable. Encrypt them via a blind index (HMAC of the normalised
-   merchant, searched instead of the text — real work, but delivers what he actually asked for);
-   keep amounts-only; or encrypt them and lose merchant memory.
+2. ~~Alex decides the description question~~ — **ANSWERED 2026-08-18: encrypt them, via a blind
+   index.** Done and tested; see "Scope expansion" above.
 3. **The route sweep — the whole remaining feature, ~111 DB call sites.** Not started. Recommended
    shape: a thin codec at the query boundary so the ~180 arithmetic sites are untouched, phased on
    `ENCRYPTION_PHASE` (`off` default = identical to today), so it can ship and be proven in
-   production *before* any key exists.
+   production *before* any key exists. Two routes need real thought rather than mechanical porting,
+   and both now have a proven design to port TO:
+   - `routes/categories.js` `/suggest` — swap `.ilike('description', …)` for an equality match on
+     `merchant_hmac` / `merchant_hmac_1`. The exact read-path logic is in
+     `test/merchantMemory.test.js`.
+   - `routes/subscriptions.js` — `.eq('merchant_key', …)` and `onConflict: 'user_id,merchant_key'`
+     move to `merchant_key_hmac`.
 4. **Alex generates and backs up `DATA_ENCRYPTION_KEY`** — `openssl rand -base64 32`, two offline
    places, before it goes anywhere near `.env`. Only he may do this (AGENTS.md).
 5. **Verify the 12 unverified audit leads** in `docs/2026-08-18-encryption-reaudit.md`.
@@ -150,12 +191,12 @@ build if the migrations, the backfill or the gate diverge from it.
    (still the only security-advisor lint).
 
 ## Open questions for Alex
-- **Descriptions: encrypt them or not?** (next step 2). This is the gap between what Alex asked for
-  and what the current scope delivers.
-- **The cutover decision was made without him.** I asked twice, but this session could not reach him
-  — the harness reported no human input both times — so I proceeded on the audit evidence and said
-  so. Dual-write/no-rename is reversible at every step until 013, so it is a safe default, but he
-  should confirm it before the sweep is written.
+- **None blocking.** Both previous questions are answered: descriptions ARE encrypted (blind index),
+  and dual-write/no-rename is confirmed.
+- Worth a look when convenient, not blocking: `subscription_overrides.merchant_key_hmac` uses the
+  raw stored key as its hash input, so two users with the same merchant still hash differently
+  (per-user key) but a re-run after any change to `normaliseMerchant` would need the index rebuilt.
+  That is inherent to blind indexes; noted so it is not a surprise.
 
 ## How to resume
 Start a session in this folder and say: "Read @CHAT_HANDOFF.md and continue with next step 2."
