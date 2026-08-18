@@ -176,13 +176,21 @@ total, answer an Ask Trim question, or detect a subscription. So:
   "aldi" 3). At 8 characters or more every merchant stores the same number of
   hashes, and two merchants that agree for the first 8 characters are
   indistinguishable no matter how much further they agree.
-  **This was worse until 2026-08-18.** Prefixes ran to 24 characters, which does
-  not leak "which rows share a merchant" — it publishes a per-user prefix *trie*:
-  the exact longest common prefix of any two rows, the strict-prefix families
-  ("Tesco" inside "Tesco Express"), and every merchant's exact length. Codex found
-  it on re-verification. The cap is now 8 on both sides, and queries longer than
-  that stay exact by decrypting the candidates and re-testing them on the server
-  — so the feature is unchanged and only the leakage moved.
+  **What that still means, stated without euphemism.** Below 8 characters this is
+  a bounded prefix *trie*, not merely a set of equality buckets. Comparing two
+  rows gives the exact number of leading normalised characters they share (so
+  "Tesco Express" and "Tesco Metro" visibly agree for six); strict-prefix families
+  are visible ("Tesco" is a prefix of both); and a single row you can identify —
+  from a receipt, a shared expense, a screenshot — labels every node on its own
+  prefix path and every row hanging off it. Frequency does the rest: the largest
+  cluster in a month is a reasonable guess at a weekly supermarket. Above 8
+  characters none of that is visible, because every merchant stores an identical
+  8-deep path.
+  **It was worse until 2026-08-18.** Prefixes ran to 24 characters, so the trie was
+  24 deep and the array's length was every merchant's exact length. Codex found it
+  on re-verification. The cap is now 8 on both sides, and queries longer than that
+  stay exact by decrypting the candidates and re-testing them on the server — so
+  the feature is unchanged and only the leakage moved.
 - **Ask Trim still sends decrypted context to Anthropic** per question. Encryption
   at rest changes nothing about that.
 
@@ -315,9 +323,11 @@ backfill writes, so it is blocked too — and re-engage it before the next attem
 - [ ] `app.set('trust proxy', 1)` active (it is — don't remove).
 - [ ] RLS enabled on every user-data table (run `SELECT tablename, rowsecurity FROM pg_tables WHERE schemaname='public'` and confirm).
 - [ ] `001_init.sql` trigger `handle_new_user` is present (creates `user_stats` + 12 defaults on signup).
-      **After migration 019 it seeds `user_stats` only** — the database has no encryption key, so it
-      cannot write `categories.name_enc`. Default categories are then seeded by `GET /api/me`
-      (`server/lib/defaultCategories.js`), which is idempotent and already live.
+      **From migration 018a it seeds `user_stats` only** — the database has no encryption key, so it
+      cannot write `categories.name_enc`, and the replacement lands at the start of the dual-write
+      window rather than at the drop. Default categories are then seeded by `GET /api/me` **and**
+      `GET /api/categories` (`server/lib/defaultCategories.js`) — both, because the client starts
+      those requests independently and either may arrive first. Idempotent, and already live.
 - [x] Email confirmation: **OFF everywhere** (decided 2026-07-14 — the built-in sender's ~2 emails/hour cap plus spam-foldering made signups look broken at friends scale). Revisit if Trim is ever shared beyond friends; the Signup page already handles the confirm-email flow if it's re-enabled.
 - [ ] Service-role key rotated if it ever appeared in logs or commits.
 - [ ] Production `CLIENT_URL` (e.g. `https://trim-client-production.up.railway.app`) set on the API service — see DEPLOY.md.

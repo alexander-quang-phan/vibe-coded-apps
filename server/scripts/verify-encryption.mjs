@@ -158,11 +158,29 @@ const countCipherWithoutPlaintext = (supabase, job, f) =>
  */
 export async function readBarrier(supabase) {
   try {
-    const { data, error } = await supabase.from(BARRIER_TABLE).select('engaged, engaged_at');
+    const { data, error } = await supabase.from(BARRIER_TABLE).select('engaged, engaged_at, generation');
     if (error) throw error;
     const row = Array.isArray(data) ? data[0] : data;
     if (!row) return { ok: false, reason: `${BARRIER_TABLE} has no row — migration 018a is not applied.` };
-    return { ok: true, engaged: row.engaged === true, engagedAt: row.engaged_at ?? null };
+    // `generation` is bumped by a database trigger on EVERY update, so unlike
+    // `engaged_at` it cannot be preserved across a release/re-engage cycle by a
+    // caller writing the same value back. An absent generation means 018a is the
+    // older version of itself, which cannot prove continuity — fail closed.
+    // [Codex stage-5 RE-VERIFY #3 finding 2, 2026-08-18]
+    if (row.generation === null || row.generation === undefined) {
+      return {
+        ok: false,
+        reason:
+          `${BARRIER_TABLE}.generation is missing — this is the first version of migration 018a, whose ` +
+          `continuity check a release-and-re-engage could slip through. Re-apply 018a.`,
+      };
+    }
+    return {
+      ok: true,
+      engaged: row.engaged === true,
+      engagedAt: row.engaged_at ?? null,
+      generation: String(row.generation),
+    };
   } catch (err) {
     return {
       ok: false,
@@ -399,7 +417,7 @@ export async function verifyEncryption({
       `  write barrier   : ${
         barrierBefore.ok
           ? barrierBefore.engaged
-            ? `ENGAGED since ${barrierBefore.engagedAt}`
+            ? `ENGAGED since ${barrierBefore.engagedAt} (generation ${barrierBefore.generation})`
             : 'NOT ENGAGED'
           : 'UNREADABLE'
       }`,
@@ -466,9 +484,14 @@ export async function verifyEncryption({
       failures.push(`write barrier (after): ${barrierAfter.reason}`);
     } else if (!barrierAfter.engaged) {
       failures.push('write barrier was RELEASED while this gate was running — the window is not sealed.');
-    } else if (barrierBefore.ok && barrierAfter.engagedAt !== barrierBefore.engagedAt) {
+    } else if (barrierBefore.ok && barrierAfter.generation !== barrierBefore.generation) {
+      // Compared on the DATABASE-OWNED generation, not on engaged_at: a caller can
+      // write the same timestamp (or NULL) back and make a release/re-engage cycle
+      // look like an unbroken window. The generation is bumped by a trigger on
+      // every update, so any cycle at all shows up here.
       failures.push(
-        'write barrier was released and re-engaged while this gate was running — ' +
+        'write barrier was released and re-engaged while this gate was running ' +
+          `(generation ${barrierBefore.generation} -> ${barrierAfter.generation}) — ` +
           'there was a gap in which anything could have been written.',
       );
     }

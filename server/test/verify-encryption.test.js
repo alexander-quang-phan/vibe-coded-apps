@@ -39,6 +39,7 @@ const ENV = {
 };
 
 const ENGAGED_AT = '2026-08-18T02:00:00.000Z';
+const GENERATION = 7; // database-owned, bumped on every barrier transition
 
 /**
  * Fake PostgREST. Models exactly what the gate uses: head counts with
@@ -56,7 +57,9 @@ const ENGAGED_AT = '2026-08-18T02:00:00.000Z';
  */
 function makeFake(rows, faults = {}) {
   const state = {
-    barrier: faults.barrier === undefined ? { engaged: true, engaged_at: ENGAGED_AT } : faults.barrier,
+    barrier: faults.barrier === undefined
+      ? { engaged: true, engaged_at: ENGAGED_AT, generation: GENERATION }
+      : faults.barrier,
     counters: { ...(faults.counters ?? {}) },
     countCalls: 0,
     readCalls: 0,
@@ -536,7 +539,7 @@ test('the gate REFUSES to run when the write barrier is not engaged', async () =
   // will drop.
   const rows = [{ id: 'a', user_id: U, amount: 12.5, amount_enc: enc(12.5) }];
   const r = await verifyEncryption({
-    supabase: makeFake(rows, { barrier: { engaged: false, engaged_at: null } }),
+    supabase: makeFake(rows, { barrier: { engaged: false, engaged_at: null, generation: GENERATION } }),
     jobs: JOB, log: silent, env: ENV,
   });
   assert.equal(r.pass, false);
@@ -573,7 +576,7 @@ test('FAIL when the barrier is released while the gate is running', async () => 
         if (table === 'encryption_cutover') {
           // Engaged on the first read, released by the last one.
           const snapshot = { ...fake._state.barrier };
-          fake._state.barrier = { engaged: false, engaged_at: null };
+          fake._state.barrier = { engaged: false, engaged_at: null, generation: GENERATION + 1 };
           return { select: () => Promise.resolve({ data: [snapshot], error: null }) };
         }
         return fake.from(table);
@@ -585,9 +588,12 @@ test('FAIL when the barrier is released while the gate is running', async () => 
   assert.ok(r.failures.some((f) => /RELEASED while this gate was running/.test(f)));
 });
 
-test('FAIL when the barrier is released and re-engaged mid-run', async () => {
-  // Same engaged=true at both ends, but a different engaged_at means there was a
-  // gap, and anything could have been written in it.
+test('RE-VERIFY REGRESSION: a release/re-engage keeping the SAME timestamp is still caught', async () => {
+  // The old check compared `engaged_at`, which is caller-supplied — so releasing
+  // and re-engaging while writing the same value back (or NULL) left an invisible
+  // gap, and the old test only proved the case where the timestamp CHANGED.
+  // `generation` is bumped by a database trigger on every update, so a cycle
+  // cannot be disguised. [Codex stage-5 RE-VERIFY #3 finding 2, 2026-08-18]
   const rows = [{ id: 'a', user_id: U, amount: 12.5, amount_enc: enc(12.5) }];
   const fake = makeFake(rows);
   let reads = 0;
@@ -597,8 +603,14 @@ test('FAIL when the barrier is released and re-engaged mid-run', async () => {
       from(table) {
         if (table === 'encryption_cutover') {
           reads += 1;
-          const at = reads === 1 ? ENGAGED_AT : '2026-08-18T02:30:00.000Z';
-          return { select: () => Promise.resolve({ data: [{ engaged: true, engaged_at: at }], error: null }) };
+          // Identical engaged AND identical engaged_at at both ends. Only the
+          // database-owned generation betrays the two transitions.
+          const generation = reads === 1 ? GENERATION : GENERATION + 2;
+          return {
+            select: () => Promise.resolve({
+              data: [{ engaged: true, engaged_at: ENGAGED_AT, generation }], error: null,
+            }),
+          };
         }
         return fake.from(table);
       },
@@ -607,6 +619,19 @@ test('FAIL when the barrier is released and re-engaged mid-run', async () => {
   });
   assert.equal(r.pass, false);
   assert.ok(r.failures.some((f) => /released and re-engaged/.test(f)));
+  assert.ok(r.failures.some((f) => /generation 7 -> 9/.test(f)));
+});
+
+test('a barrier without a generation column fails closed — that is the old 018a', async () => {
+  // The first version of 018a had no generation, so its continuity could be
+  // forged. Reading one now means the migration was never re-applied.
+  const rows = [{ id: 'a', user_id: U, amount: 12.5, amount_enc: enc(12.5) }];
+  const r = await verifyEncryption({
+    supabase: makeFake(rows, { barrier: { engaged: true, engaged_at: ENGAGED_AT } }),
+    jobs: JOB, log: silent, env: ENV,
+  });
+  assert.equal(r.pass, false);
+  assert.ok(r.failures.some((f) => /generation is missing/.test(f)));
 });
 
 test('a --sample run does not require the barrier, and still cannot authorise anything', async () => {
@@ -614,7 +639,7 @@ test('a --sample run does not require the barrier, and still cannot authorise an
   // barrier for it would just push people towards not running it.
   const rows = [{ id: 'a', user_id: U, amount: 12.5, amount_enc: enc(12.5) }];
   const r = await verifyEncryption({
-    supabase: makeFake(rows, { barrier: { engaged: false, engaged_at: null } }),
+    supabase: makeFake(rows, { barrier: { engaged: false, engaged_at: null, generation: GENERATION } }),
     jobs: JOB, sample: 5, log: silent, env: ENV,
   });
   assert.equal(r.failures.length, 0, 'no barrier complaints in sampled mode');
@@ -651,7 +676,7 @@ test('the gate reports which database, which key and whether the barrier is up',
   assert.match(out, /test\.supabase\.co/);
   assert.match(out, /service_role/);
   assert.match(out, /fingerprint [0-9a-f]{12}/);
-  assert.match(out, /write barrier\s+: ENGAGED since/);
+  assert.match(out, /write barrier\s+: ENGAGED since .* \(generation 7\)/);
   assert.ok(!out.includes(ENV.DATA_ENCRYPTION_KEY), 'the key itself must never be printed');
   assert.equal(r.target.host, 'test.supabase.co');
 });

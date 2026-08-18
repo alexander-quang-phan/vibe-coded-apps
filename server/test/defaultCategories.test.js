@@ -21,7 +21,7 @@ const {
   DEFAULT_CATEGORIES, defaultCategoryRow, ensureDefaultCategories,
 } = await import('../lib/defaultCategories.js');
 const { encryptionPhase, writesPlaintext, writesCiphertext, PHASES } = await import('../lib/encryptionPhase.js');
-const { decryptRegistered, blindIndex } = await import('../lib/crypto.js');
+const { decryptRegistered, encryptRegistered, blindIndex } = await import('../lib/crypto.js');
 
 const U = '00000000-0000-4000-8000-000000000001';
 const sqlOf = (f) => readFileSync(new URL(`../migrations/${f}`, import.meta.url), 'utf8');
@@ -33,40 +33,61 @@ const M019 = sqlOf('019_encryption_drop_plaintext.sql');
  * Minimal PostgREST double: `.select().eq().limit()` for the existence probe and
  * `.insert()` for the seeding.
  */
-function fakeDb({ existing = [], insertError = null, missingCiphertext = [] } = {}) {
+/**
+ * PostgREST double. `rows` is the categories table; `renameUnderneath` simulates a
+ * concurrent rename landing between the repair's read and its update, which is
+ * what the `.eq('name', …)` guard has to defeat.
+ */
+function fakeDb({ existing = [], insertError = null, rows = [], renameUnderneath = null } = {}) {
   const inserted = [];
   const updates = [];
+  const table = rows.map((r) => ({ ...r }));
   return {
     inserted,
     updates,
+    table,
     from() {
       const q = {
-        _isNull: null,
+        _filters: {},
         _patch: null,
         select() { return q; },
-        eq() { return q; },
-        is(col) { q._isNull = col; return q; },
+        eq(col, val) { q._filters[col] = val; return q; },
+        is(col) { q._filters[col] = null; return q; },
         limit() { return Promise.resolve({ data: existing, error: null }); },
-        insert(rows) {
+        insert(list) {
           if (insertError) return Promise.resolve({ error: insertError });
-          inserted.push(...rows);
+          inserted.push(...list);
           return Promise.resolve({ error: null });
         },
         update(patch) { q._patch = patch; return q; },
-        // `.select().eq().is()` (the repair read) resolves to the un-encrypted rows;
-        // `.update().eq()` resolves to an ack. Distinguished by which was called.
         then(resolve, reject) {
           if (q._patch) {
-            updates.push(q._patch);
-            return Promise.resolve({ error: null }).then(resolve, reject);
+            // A concurrent rename, applied exactly once, before the guard runs.
+            if (renameUnderneath) {
+              const victim = table.find((r) => r.id === renameUnderneath.id);
+              if (victim && victim.name !== renameUnderneath.name) Object.assign(victim, renameUnderneath);
+            }
+            const target = table.find(
+              (r) => r.id === q._filters.id && r.name === q._filters.name,
+            );
+            if (target) {
+              Object.assign(target, q._patch);
+              updates.push({ id: target.id, ...q._patch });
+              return Promise.resolve({ data: [{ id: target.id }], error: null }).then(resolve, reject);
+            }
+            // Guard rejected it: nothing matched, nothing written.
+            return Promise.resolve({ data: [], error: null }).then(resolve, reject);
           }
-          return Promise.resolve({ data: missingCiphertext, error: null }).then(resolve, reject);
+          return Promise.resolve({ data: table, error: null }).then(resolve, reject);
         },
       };
       return q;
     },
   };
 }
+
+const cipherFor = (name) => encryptRegistered('categories.name', U, name);
+const hmacFor = (name) => blindIndex('categories.name_hmac', U, name);
 
 // --- the list itself ---------------------------------------------------------
 
@@ -161,23 +182,25 @@ test('CRITICAL REGRESSION: dual phase REPAIRS trigger-seeded plaintext-only name
   // "every write writes both" invariant was false and the gate could never pass.
   const db = fakeDb({
     existing: [{ id: 'c1' }],
-    missingCiphertext: [{ id: 'c1', name: 'Food' }, { id: 'c2', name: 'Rent' }],
+    rows: [{ id: 'c1', name: 'Food', name_enc: null, name_hmac: null },
+           { id: 'c2', name: 'Rent', name_enc: null, name_hmac: null }],
   });
   const r = await ensureDefaultCategories(db, U, { phase: 'dual' });
 
   assert.equal(r.reason, 'repaired');
   assert.equal(r.repaired, 2);
-  assert.equal(db.updates.length, 2);
-  assert.equal(decryptRegistered('categories.name', U, db.updates[0].name_enc), 'Food');
-  assert.equal(db.updates[0].name_hmac, blindIndex('categories.name_hmac', U, 'Food'));
-  assert.equal(decryptRegistered('categories.name', U, db.updates[1].name_enc), 'Rent');
+  assert.equal(decryptRegistered('categories.name', U, db.table[0].name_enc), 'Food');
+  assert.equal(db.table[0].name_hmac, hmacFor('Food'));
+  assert.equal(decryptRegistered('categories.name', U, db.table[1].name_enc), 'Rent');
 });
 
 test('dual phase does nothing when every category is already dual-written', async () => {
-  const db = fakeDb({ existing: [{ id: 'c1' }], missingCiphertext: [] });
+  const db = fakeDb({
+    existing: [{ id: 'c1' }],
+    rows: [{ id: 'c1', name: 'Food', name_enc: cipherFor('Food'), name_hmac: hmacFor('Food') }],
+  });
   const r = await ensureDefaultCategories(db, U, { phase: 'dual' });
   assert.equal(r.reason, 'already-present');
-  assert.equal(r.repaired, 0);
   assert.equal(db.updates.length, 0);
 });
 
@@ -185,11 +208,79 @@ test('off and enc phases never attempt the repair', async () => {
   // `off`: the _enc columns may not exist yet, so querying them would error.
   // `enc`: the plaintext is gone, so there is nothing to derive them from.
   for (const phase of ['off', 'enc']) {
-    const db = fakeDb({ existing: [{ id: 'c1' }], missingCiphertext: [{ id: 'c1', name: 'Food' }] });
+    const db = fakeDb({
+      existing: [{ id: 'c1' }],
+      rows: [{ id: 'c1', name: 'Food', name_enc: null, name_hmac: null }],
+    });
     const r = await ensureDefaultCategories(db, U, { phase });
     assert.equal(r.reason, 'already-present', phase);
     assert.equal(db.updates.length, 0, phase);
   }
+});
+
+test('CRITICAL REGRESSION: a rename landing mid-repair is NOT clobbered', async () => {
+  // The TOCTOU. Repair reads {id:'c1', name:'Food', name_enc:null}; a rename to
+  // 'Rent' commits with its own correct cipher and hash; the old update, scoped by
+  // id alone, then stamped Food's cipher over it. Nothing could heal that
+  // afterwards — name_enc was no longer NULL, so repair and the backfill both
+  // skipped the row and only the gate would ever have seen it.
+  // [Codex stage-5 RE-VERIFY #3 finding 3, 2026-08-18]
+  const db = fakeDb({
+    existing: [{ id: 'c1' }],
+    rows: [{ id: 'c1', name: 'Food', name_enc: null, name_hmac: null }],
+    renameUnderneath: { id: 'c1', name: 'Rent', name_enc: cipherFor('Rent'), name_hmac: hmacFor('Rent') },
+  });
+  const r = await ensureDefaultCategories(db, U, { phase: 'dual' });
+
+  assert.equal(r.repaired, 0, 'the guard must refuse to write over a row that moved');
+  assert.equal(r.skipped, 1);
+  assert.equal(db.table[0].name, 'Rent');
+  assert.equal(decryptRegistered('categories.name', U, db.table[0].name_enc), 'Rent',
+    "the rename's own ciphertext must survive");
+  assert.equal(db.table[0].name_hmac, hmacFor('Rent'));
+});
+
+test('repair is self-healing: a STALE cipher is corrected, not skipped', async () => {
+  // The old filter was `name_enc IS NULL`, so any row whose cipher had gone stale
+  // for any reason was invisible to repair and to the backfill forever.
+  const db = fakeDb({
+    existing: [{ id: 'c1' }],
+    rows: [{ id: 'c1', name: 'Rent', name_enc: cipherFor('Food'), name_hmac: hmacFor('Food') }],
+  });
+  const r = await ensureDefaultCategories(db, U, { phase: 'dual' });
+  assert.equal(r.repaired, 1);
+  assert.equal(decryptRegistered('categories.name', U, db.table[0].name_enc), 'Rent');
+  assert.equal(db.table[0].name_hmac, hmacFor('Rent'));
+});
+
+test('repair also fixes a half-written row: cipher present, hash missing', async () => {
+  const db = fakeDb({
+    existing: [{ id: 'c1' }],
+    rows: [{ id: 'c1', name: 'Food', name_enc: cipherFor('Food'), name_hmac: null }],
+  });
+  const r = await ensureDefaultCategories(db, U, { phase: 'dual' });
+  assert.equal(r.repaired, 1);
+  assert.equal(db.table[0].name_hmac, hmacFor('Food'));
+});
+
+test('repair fixes an unreadable cipher rather than trusting it', async () => {
+  const db = fakeDb({
+    existing: [{ id: 'c1' }],
+    rows: [{ id: 'c1', name: 'Food', name_enc: 'v2:zz:zz:zz', name_hmac: hmacFor('Food') }],
+  });
+  const r = await ensureDefaultCategories(db, U, { phase: 'dual' });
+  assert.equal(r.repaired, 1);
+  assert.equal(decryptRegistered('categories.name', U, db.table[0].name_enc), 'Food');
+});
+
+test('CRITICAL REGRESSION: a custom category cannot suppress the twelve defaults', async () => {
+  // The probe was "does this user have ANY category?", so a direct
+  // POST /api/categories before the first GET meant the defaults were never
+  // seeded — permanently, and after 019 the trigger is not there to cover it.
+  // [Codex stage-5 RE-VERIFY #3 finding 3, 2026-08-18]
+  const db = fakeDb({ existing: [] }); // no rows match is_default = true
+  const r = await ensureDefaultCategories(db, U, { phase: 'off' });
+  assert.equal(r.seeded, 12, 'a user holding only custom categories still needs the defaults');
 });
 
 // --- the phase flag ----------------------------------------------------------

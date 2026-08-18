@@ -126,10 +126,11 @@ alongside purely for display and audit; all three are NULL for an ordinary same-
     can no longer run `.ilike('%term%')` on them. The lookup becomes a blind index over the first 2–8
     characters of the normalised merchant, refined exactly on the server. Typing still lights the chip
     from the second character, case and branch numbers are still ignored, and apostrophe merchants
-    ("Sainsbury's") start matching for the first time. **Two things stop working, deliberately:**
-    typing a word from the *middle* of a merchant ("esco" → Tesco) and typing only the *second* word
-    ("Express" → Tesco Express). Both are pinned as DOCUMENTED LOSS tests in
-    `server/test/merchantMemory.test.js`.
+    ("Sainsbury's") start matching for the first time. **Mid-word ("esco" → Tesco) and later-word
+    ("Express" → Tesco Express) matching still work**: the blind index answers the fast prefix case,
+    and `server/lib/merchantMemory.js` falls back to scanning and decrypting recent history for
+    anything the index cannot express. The one deviation is that the fallback looks at the most
+    recent 500 transactions rather than all of them.
 - On success: invalidate `['dashboard', 'transactions', 'me']`, trigger appropriate confetti, show toast.
 - **"Type it instead" path (Task 6.6):** a sparkle-chip toggle at the top of the dialog swaps the structured form for a single freeform textarea ("e.g. spent 12 quid on tacos last night"). Submitting calls `POST /api/transactions/parse`, which returns a draft. The dialog snaps back to the structured form with amount/type/description/date pre-filled and the suggested category chip ringed in emerald — the user still taps a chip to log. Parse never auto-saves. Failure / low confidence / API unavailable falls back to a friendly amber prompt ("couldn't quite read that — mind trying again?") with a "Use chips" escape hatch.
 - **Simple-mode variant:** when `user_stats.simple_mode = true`, the Income/Expense segments, chip grid, and advanced toggle all hide; the dialog collapses to amount + a single "Log" button. The transaction is filed against the seeded "Other" expense category. This is the deliberate 2-tap exception to the otherwise-3-tap rule (FEATURES.md → philosophy → simple mode).
@@ -213,10 +214,12 @@ alongside purely for display and audit; all three are NULL for an ordinary same-
 - RHF + zodResolver. Email + password. Signup min 8 chars, login min 6.
 - Redirect to `/dashboard` once `session` is set.
 - **The 12 default categories** are seeded on signup by the `handle_new_user()` database trigger.
-  Under Phase 9.5 (built, not yet live) migration 019 has to take category seeding out of that
+  Under Phase 9.5 (built, not yet live) migration **018a** takes category seeding out of that
   trigger — the database holds no encryption key, so it cannot write `categories.name_enc` — and
-  `GET /api/me` seeds them instead (`server/lib/defaultCategories.js`). It is idempotent, so it is
-  already deployed-safe and does nothing while the trigger is still doing the job.
+  `GET /api/me` and `GET /api/categories` seed them instead
+  (`server/lib/defaultCategories.js`). Both routes, because the client starts them independently and
+  either may return first. It is idempotent, so it is already deployed-safe and does nothing while
+  the trigger is still doing the job.
 - Email confirmation is **off** (since 2026-07-14, see SECURITY.md): signup returns a session immediately and lands on the Dashboard. The Signup page still handles the confirmation flow as a fallback — if `signUp` ever returns no session and no error (confirmation re-enabled, or an already-registered email, which Supabase anti-enumeration answers the same way), the form is replaced by a "Check your inbox" panel instead of doing nothing.
 
 ## Product features deferred (explicitly)

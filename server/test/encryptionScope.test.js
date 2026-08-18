@@ -261,13 +261,33 @@ test('the gate looks for the exact barrier objects the migration creates', () =>
 
 test('the barrier blocks writes at statement level and can always be released', () => {
   // Row-level would cost a lookup per row on every write forever. And the flag
-  // table itself must carry no trigger, or engaging the barrier would lock in the
-  // ability to release it.
+  // table must never GUARD itself, or engaging the barrier would lock away the
+  // ability to release it. (It does carry a trigger now — the generation bump —
+  // but that one blocks nothing; the behavioural proof is in writeBarrier.pg.test.js.)
   assert.match(M018A, /for each statement execute function public\.reject_writes_during_cutover/i);
-  assert.ok(
-    !/create trigger[^;]*on public\.encryption_cutover/i.test(M018A),
-    'the flag table must not guard itself',
-  );
+  const guardsItself = [...M018A.matchAll(/create trigger[\s\S]*?;/gi)]
+    .filter((m) => /on public\.encryption_cutover/i.test(m[0]))
+    .filter((m) => /reject_writes_during_cutover/i.test(m[0]));
+  assert.deepEqual(guardsItself, [], 'the flag table must not guard itself');
+});
+
+test('the barrier fails CLOSED when it cannot read its own flag', () => {
+  // A REPEATABLE READ snapshot older than the flag row sees no row at all. The
+  // first version treated that as "no barrier" and allowed the write.
+  // [Codex stage-5 RE-VERIFY #3 finding 1, 2026-08-18]
+  assert.match(M018A, /if\s+not\s+found\s+or\s+is_engaged\s+is\s+null\s+then/i);
+  assert.match(M018A, /for\s+share/i, 'the flag read must take a share lock');
+  assert.match(M018A, /or\s+truncate\s+on\s+public/i, 'TRUNCATE is a separate trigger event');
+});
+
+test('barrier continuity is database-owned, not caller-supplied', () => {
+  // engaged_at is nullable and was written by whoever ran the UPDATE, so a
+  // release/re-engage that kept the same value was invisible to the gate.
+  // [Codex stage-5 RE-VERIFY #3 finding 2, 2026-08-18]
+  assert.match(M018A, /generation\s+bigint\s+not\s+null/i);
+  assert.match(M018A, /new\.generation\s*:=\s*old\.generation\s*\+\s*1/i);
+  assert.match(M018A, /new\.engaged_at\s*:=\s*case\s+when\s+new\.engaged/i,
+    'engaged_at must be derived by the database, not accepted from the caller');
 });
 
 test('the counter RPC is not exposed to anon or authenticated', () => {
@@ -278,7 +298,12 @@ test('the counter RPC is not exposed to anon or authenticated', () => {
 
 // --- migration replay ordering (Codex stage-5 RE-VERIFY #2 finding 3) --------
 
-test('CRITICAL REGRESSION: no migration alters a table an earlier one has not created', () => {
+test('no migration touches a table an earlier statement has not created', () => {
+  // NOT a replay proof, and it must not be described as one. It reads literal
+  // CREATE TABLE / ALTER TABLE / CREATE INDEX / CREATE POLICY / CREATE TRIGGER
+  // targets only: it does not resolve `execute format(...)` trigger targets, and
+  // it does not attempt foreign keys, functions or grants. The only way to prove
+  // a replay is to run one. [Codex stage-5 RE-VERIFY #3 finding 5, 2026-08-18]
   // 012_encryption_columns.sql used to `alter table public.recurrences`, which
   // 014_recurrences.sql creates. On the live database that was invisible — 014
   // had been applied for weeks before anyone tried to apply 012 — but a fresh
@@ -304,13 +329,21 @@ test('CRITICAL REGRESSION: no migration alters a table an earlier one has not cr
         .map((m) => ({ at: m.index, kind: 'create', table: m[1] })),
       ...[...text.matchAll(/alter\s+table\s+(?:if\s+exists\s+)?public\.(\w+)/gi)]
         .map((m) => ({ at: m.index, kind: 'alter', table: m[1] })),
+      // Indexes, policies and triggers name a table too, and an index created
+      // before its table is the same replay failure as an ALTER.
+      ...[...text.matchAll(/create\s+(?:unique\s+)?index[\s\S]{0,120}?\son\s+public\.(\w+)/gi)]
+        .map((m) => ({ at: m.index, kind: 'index', table: m[1] })),
+      ...[...text.matchAll(/create\s+policy[\s\S]{0,200}?\son\s+public\.(\w+)/gi)]
+        .map((m) => ({ at: m.index, kind: 'policy', table: m[1] })),
+      ...[...text.matchAll(/create\s+trigger[\s\S]{0,200}?\son\s+public\.(\w+)/gi)]
+        .map((m) => ({ at: m.index, kind: 'trigger', table: m[1] })),
     ].sort((a, b) => a.at - b.at);
 
     for (const e of events) {
       if (e.kind === 'create') {
         if (!created.has(e.table)) created.set(e.table, name);
       } else if (!created.has(e.table)) {
-        problems.push(`${name} alters public.${e.table}, which no earlier statement creates`);
+        problems.push(`${name} ${e.kind}s public.${e.table}, which no earlier statement creates`);
       }
     }
   }

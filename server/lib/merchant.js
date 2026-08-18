@@ -166,6 +166,48 @@ export function merchantMatches(description, typed) {
   return have.startsWith(want);
 }
 
+/**
+ * The whole description, lowercased and de-punctuated, with NO two-word cut.
+ *
+ * `normaliseMerchant` keeps the first two words because that is what the blind
+ * index hashes. But the behaviour Task 6.9 actually shipped was
+ * `.ilike('description', '%term%')` — a SUBSTRING match against the entire stored
+ * description — so reproducing it needs the untruncated text. Used only on the
+ * server, after decryption. [Codex stage-5 RE-VERIFY #3 finding 4, 2026-08-18]
+ */
+export function normaliseFull(description) {
+  if (!description) return null;
+  const cleaned = String(description)
+    .toLowerCase()
+    .replace(/['\u2019]/g, '')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return cleaned || null;
+}
+
+/**
+ * The search term the old route built: the first two normalised words of what the
+ * user typed. Kept identical so the substring contract below is the same one.
+ */
+export const merchantSearchTerm = (typed) => normaliseMerchant(typed);
+
+/**
+ * The ORIGINAL contract: does this description contain the term anywhere?
+ *
+ * `merchantMatches` (prefix) is what the blind index can answer in the database.
+ * This is what `%term%` actually did, and it is strictly wider — it also matches
+ * mid-word ("esco" finds Tesco) and later words ("express" finds Tesco Express).
+ * The server can answer it only after decrypting, which is why the read path in
+ * lib/merchantMemory.js uses the index to go fast and this to stay correct.
+ */
+export function merchantContains(description, typed) {
+  const term = merchantSearchTerm(typed);
+  const haystack = normaliseFull(description);
+  if (!term || !haystack) return false;
+  return haystack.includes(term);
+}
+
 export function prettifyMerchant(description, fallbackKey) {
   const source = description ?? fallbackKey ?? '';
   const words = String(source)

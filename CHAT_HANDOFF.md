@@ -1,29 +1,37 @@
-# Chat Handoff — updated 2026-08-18 (Codex RE-VERIFY #3 FAIL; Claude Code to revise)
+# Chat Handoff — updated 2026-08-18 (Claude Code REVISE #4 done; Codex to re-verify)
 
 ## DUAL-AGENT BATON  (both models: update this the MOMENT you finish work)
-- Current stage:  **stage 5 RE-VERIFY #3 FAILED by Codex — back to Claude Code for REVISE #4**
+- Current stage:  **stage 5 REVISE #4 completed by Claude Code — back to Codex for RE-VERIFY #4**
 - Model A is:     Claude Code (build + revise). Model B / verifier: **Codex**
-- Up next:        **Claude Code** revises the RE-VERIFY #3 findings against implementation **a75c095**
-- Last actor did: Independently re-verified `a75c095`. The committed suite is **220/220 PASS** on a
-                  throwaway real PostgreSQL 18.4 and the client build passes, but a new real-Postgres
-                  probe reproduced the baton’s untested pre-flag-snapshot case: a REPEATABLE READ
-                  transaction established before 018a cannot see the flag row 018a later creates,
-                  so the trigger’s explicit “missing row = allow” branch lets it INSERT and COMMIT
-                  after engagement. Result: `{"writeError":null,"committedRows":1}`. This restores
-                  the gate-PASS-then-late-plaintext-loss sequence. Also found a category-repair
-                  TOCTOU, a test-only merchant pagination “fix” that still violates the source
-                  substring contract, an incomplete migration-order test claim, and stale rollout docs.
-                  Only this baton was edited; no external DB, migration, deploy or merge.
-- Next must:      Make the trigger fail closed when the singleton flag row is absent OR invisible,
-                  and add the exact old-snapshot real-PG regression. Make barrier continuity
-                  database-owned (a nullable/caller-controlled `engaged_at` can be preserved across
-                  release/re-engage). Make category repair conditional on the plaintext version it
-                  read and self-healing for partial index states. Reconcile merchant memory with the
-                  source spec: the claimed pagination exists only in the test, and `startsWith` is
-                  not old `%term%` substring behaviour. Correct the current 018a/019 docs listed below.
-- Last verdict:   **FAIL (Codex RE-VERIFY #3, implementation a75c095)** — one Critical real-Postgres
-                  barrier bypass plus correctness/test/doc gaps. DO NOT merge, deploy, or apply
-                  migrations 012/018/018a/019.
+- Up next:        **Codex** re-verifies `phase-9.5-encryption-hardening` (see the commit below)
+- Last actor did: Fixed all five RE-VERIFY #3 findings. The Critical old-snapshot bypass was
+                  reproduced on real PostgreSQL first, then fixed and re-proved: the trigger now
+                  raises when the flag row is absent OR invisible (`if not found or is_engaged is
+                  null`), so a REPEATABLE READ snapshot older than 018a can no longer write through
+                  an engaged barrier. Barrier continuity is now database-owned — a `generation`
+                  column bumped by a BEFORE UPDATE trigger, with `engaged_at` derived rather than
+                  accepted — and the gate compares generations, so a release/re-engage that keeps
+                  the same timestamp is caught. Category repair is conditional on the plaintext it
+                  read (so a concurrent rename cannot be clobbered) and self-healing for stale or
+                  half-written cipher/hash states; the defaults probe now looks for DEFAULT
+                  categories, so a custom POST cannot suppress the twelve. **Merchant memory is now
+                  real production code** — `lib/merchantMemory.js`, keyset-paged, short-page- and
+                  error-handling, wired into `/suggest` behind `ENCRYPTION_PHASE` — and the two
+                  behaviours the previous revision wrote off as "documented losses" are RESTORED:
+                  mid-word and later-word matching work again via a bounded decrypt-and-scan
+                  fallback. Test/doc overclaiming corrected. Suite **220 -> 244**, client build PASS.
+                  **No DB touched, nothing deployed or merged, no migration applied.**
+- Next must:      Re-verify. Best places to attack: (a) the fail-closed branch — is there any
+                  legitimate path where the flag row is invisible and refusing is worse than
+                  allowing; (b) the generation trigger under concurrent UPDATEs, and whether the
+                  gate's before/after comparison can still be straddled; (c) `lib/merchantMemory.js`
+                  keyset paging on non-unique or non-monotonic ids, and whether the 500-row
+                  fallback window is an acceptable deviation from `%term%`; (d) the repair loop's
+                  cost and correctness when many rows need repair at once; (e) whether the
+                  `/suggest` phase branch behaves at the `dual` -> `enc` boundary.
+- Last verdict:   **FAIL (Codex RE-VERIFY #3, implementation a75c095)** — all five findings addressed
+                  in this revision. Still DO NOT merge, deploy, or apply migrations 012/018/018a/019
+                  until Codex passes it.
 - Last red-team:  n/a — stage 6 not yet reached on this branch.
 - Handoff log:
   - 2026-08-11 Claude Code: Phase 12b + 13 + 14, migration 017, DEPLOYED
@@ -31,24 +39,52 @@
   - 2026-08-18 Claude Code: 9.5 re-audit + hardening, branch, NOT merged. Codex to verify.
   - 2026-08-18 Codex: stage 4 VERIFY **FAIL** — reproducible false-PASS states in the sole gate,
     unrecoverable subscription PK, migration order, ILIKE contract, custom-category gap.
-  - 2026-08-18 Claude Code: stage 5 REVISE — all blocking items fixed, 21 new tests. Back to Codex.
-  - 2026-08-18 Codex: stage 4 RE-VERIFY **FAIL** — 161/161 + client build pass, but two new gate
-    false-PASS probes, prefix-trie leakage/24-char regression, stale security docs, and the category
-    seeding trigger remain. Baton-only handoff; no DB/migration/deploy/merge.
+  - 2026-08-18 Claude Code: stage 5 REVISE — all blocking items fixed, 21 new tests.
+  - 2026-08-18 Codex: stage 4 RE-VERIFY **FAIL** — two new gate false-PASS probes, prefix-trie
+    leakage/24-char regression, stale security docs, category seeding trigger.
   - 2026-08-18 Claude Code: stage 5 REVISE #2 — all five fixed, enforced write barrier added,
-    suite 161 -> 201, client build PASS. Nothing merged/deployed/applied.
-  - 2026-08-18 Codex: stage 5 RE-VERIFY #2 **FAIL** at implementation `793aa80` — 201/201 + client
-    build pass, but the barrier does not drain pre-engagement transactions and omits TRUNCATE;
-    012-before-014 replay remains invalid; dual signup/category and bounded-prefix pagination gaps
-    remain. Baton-only change; no DB/migration/deploy/merge.
-  - 2026-08-18 Claude Code: stage 5 REVISE #3 — all seven fixed. Barrier hole reproduced AND fixed
-    against real PostgreSQL 18.4 (new `writeBarrier.pg.test.js`, RED-checked). Suite 201 -> 220,
-    client build PASS. Nothing merged/deployed/applied. **Codex re-verifies.**
-  - 2026-08-18 Codex: stage 5 RE-VERIFY #3 **FAIL** at implementation `a75c095` — 220/220 + client
-    build pass, but a real PostgreSQL probe reproduced a pre-018a REPEATABLE READ snapshot committing
-    through the engaged barrier; category-repair concurrency, merchant-contract/test-only paging,
-    migration-test coverage and current docs also need revision. Baton-only change; no external DB,
-    migration, deploy or merge.
+    suite 161 -> 201.
+  - 2026-08-18 Codex: stage 5 RE-VERIFY #2 **FAIL** at `793aa80` — barrier does not drain
+    pre-engagement transactions and omits TRUNCATE; 012-before-014 replay; dual signup/category and
+    bounded-prefix pagination gaps.
+  - 2026-08-18 Claude Code: stage 5 REVISE #3 — all seven fixed; barrier hole reproduced AND fixed
+    against real PostgreSQL 18.4. Suite 201 -> 220.
+  - 2026-08-18 Codex: stage 5 RE-VERIFY #3 **FAIL** at `a75c095` — pre-018a REPEATABLE READ snapshot
+    commits through the engaged barrier; caller-controlled continuity; category-repair TOCTOU;
+    test-only merchant paging and an unreconciled substring contract; overclaiming tests/docs.
+  - 2026-08-18 Claude Code: stage 5 REVISE #4 — all five fixed. Old-snapshot bypass reproduced and
+    closed on real PostgreSQL; merchant memory promoted from test model to production code with the
+    substring contract restored. Suite 220 -> 244, client build PASS. Nothing merged/deployed/applied.
+    **Codex re-verifies.**
+
+## WHERE THE FINDINGS ARE COMING FROM  (read this before starting round 5)
+
+Alex asked in round 4 whether this loop is converging. Classifying RE-VERIFY #3's five findings by
+what code they live in:
+
+| Finding | Lives in | Age |
+|---|---|---|
+| 1. Old-snapshot barrier bypass | `018a` write barrier | added in REVISE #2, one round old |
+| 2. Caller-controlled continuity | `018a` + gate barrier check | added in REVISE #2 |
+| 3. Category repair TOCTOU | `lib/defaultCategories.js` repair | added in REVISE #3 |
+| 4. Merchant read path | half original (Task 6.9's ILIKE contract), half REVISE #3's test-only paging | mixed |
+| 5. Overclaiming tests/docs | claims written in REVISE #2 and #3 | one to two rounds old |
+
+**Four and a half of five are in machinery added during this loop, not in the feature being
+protected.** The gate, the barrier and the repair exist to make ONE irreversible step safe
+(migration 019), and each round has been auditing the previous round's safety equipment. That is a
+real dynamic, not a complaint about Codex — every finding has been genuine and two were Critical.
+The deferred proposal below is the way out of it, and it is still deferred, not decided.
+
+## Codex RE-VERIFY #3 FAIL -> response (every item)
+
+| # | Codex finding | Verdict | Fix |
+|---|---|---|---|
+| 1 | Critical — a snapshot older than the flag row bypasses the engaged barrier | **Reproduced on real PostgreSQL** | The trigger's `select ... for share` reads through the CALLING transaction's snapshot, so a REPEATABLE READ transaction that started before 018a existed found no row — and the explicit "missing row = allow" branch, which I wrote deliberately to avoid an outage, waved it through. Now `if not found or is_engaged is null then raise`. A safety barrier that cannot read its own flag must refuse; the outage that risks is recoverable in one statement, the data loss it prevents is not. New real-PG regression creates a scratch database, opens the RR snapshot BEFORE applying 018a, then engages — RED-checked, it fails against the old branch. |
+| 2 | High — barrier continuity is caller-controlled | **Valid** | `engaged_at` was nullable and written by the caller, so release + re-engage keeping the same value (or NULL) was invisible, and the old test only proved the case where it CHANGED. Added a `generation bigint not null` bumped by a BEFORE UPDATE trigger, with `engaged_at` now DERIVED by the database. The gate compares generations and fails closed if the column is absent (i.e. the old 018a). Real-PG test forges the timestamp and still catches the cycle. |
+| 3 | Medium — dual category repair is TOCTOU and not self-healing | **Valid** | The update is now scoped by `id` + `user_id` + **the exact plaintext that was read**, and verified via `.select()`, so a concurrent rename makes it match zero rows instead of stamping a stale cipher over a correct one; anything skipped is repaired on the next request. Repair also now JUDGES every category — null, stale, half-written or undecryptable cipher/hash — rather than only `name_enc IS NULL`, which is what made the corrupted state unhealable. Separately the existence probe now looks for `is_default = true`, so a custom category POSTed before the first GET can no longer suppress the twelve defaults. |
+| 4 | High — merchant memory does not reproduce the source contract, and the pagination fix is test-only | **Valid on both counts** | The paging existed only inside a unit-test loop over a pre-materialised array. There is now a real **`server/lib/merchantMemory.js`**: keyset paging (`id > lastSeen`, not offset), a short page treated as a short page rather than the end, errors surfaced rather than swallowed, a candidate ceiling that reports truncation, and it is wired into `/suggest` behind `ENCRYPTION_PHASE`. And the contract is restored rather than narrowed: `%term%` mid-word and later-word matching work again through a bounded decrypt-and-scan fallback that runs only when the index finds nothing. The FEATURES.md "documented losses" are deleted. **One honest deviation remains and is stated in the code, the tests and FEATURES.md: the fallback looks at the most recent 500 transactions, not all of them.** |
+| 5 | Low/Medium — tests and current docs overclaim | **Valid** | The migration-dependency test now also reads CREATE INDEX / POLICY / TRIGGER targets, and its name and comment say plainly that it is not a replay proof and cannot resolve `execute format(...)` targets. SECURITY.md now discloses the bounded trie in full — exact common-prefix length, strict-prefix families, known-row labelling along the path, and frequency — instead of just short-name length. The trigger-moves-in-018a and both-routes-seed corrections are made in SECURITY.md, FEATURES.md, `lib/defaultCategories.js` and the migration headers; 012 and 014's current-looking 013 references are corrected or marked historical. |
 
 ## Codex RE-VERIFY #3 FAIL -> new evidence
 
@@ -264,7 +300,7 @@ by tests.
 ## Current state
 
 **Branch `phase-9.5-encryption-hardening`. NOT merged, NOT deployed.**
-Server suite **86 → 220**, client builds clean, working tree clean.
+Server suite **86 → 244**, client builds clean, working tree clean.
 Nothing in the live database changed: migrations 012, 018, 018a and 019 are all unapplied and
 `DATA_ENCRYPTION_KEY` is still unset. The feature remains inert — deliberately.
 
@@ -405,6 +441,12 @@ build if the migrations, the backfill or the gate diverge from it.
   tables, and the `encryption_write_counters()` RPC. Inert until engaged. Apply with 012/018.
 - `server/lib/defaultCategories.js` — **NEW.** The 12 defaults + idempotent seeding from
   `GET /api/me`. This is what lets 019 stop the signup trigger writing `categories.name`.
+- `server/lib/merchantMemory.js` — **NEW, and the first real piece of the route sweep.** The
+  production read path for merchant memory: keyset-paged prefix candidates from the blind index,
+  exact re-test on the decrypted text, and a bounded substring fallback that restores the mid-word
+  and later-word matching Task 6.9 shipped. Wired into `/suggest` behind `ENCRYPTION_PHASE`.
+- `server/test/merchantMemoryRead.test.js` — **NEW.** 22 tests driving that helper through a fake
+  PostgREST that pages, short-pages and fails.
 - `server/lib/encryptionPhase.js` — **NEW.** `ENCRYPTION_PHASE` (`off` | `dual` | `enc`), validated
   at import so a typo stops the server instead of writing the wrong columns. 019's footer has told
   the operator to set this since July; nothing read it until now.

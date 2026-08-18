@@ -869,6 +869,32 @@ older than the 200-row window load. Verify by tapping into an old month in the r
 >    it reads, like `GET /api/me`.
 > 7. Stale operational references to the deleted migration 013 corrected throughout.
 
+> **Codex stage-5 RE-VERIFY #3: FAIL (2026-08-18).** 220/220 including 9 real-PostgreSQL tests, and
+> the client build, all passed — but a fresh real-Postgres probe got a write through the engaged
+> barrier. All five findings fixed; suite **220 -> 244**:
+>
+> 1. **A REPEATABLE READ snapshot older than the barrier could still commit.** The trigger reads the
+>    flag through the CALLING transaction's snapshot, so a transaction that began before 018a was
+>    applied saw no flag row — and the deliberate "missing row = allow" branch let it write. It now
+>    raises on absent-or-invisible. Regression opens the snapshot BEFORE applying 018a, in a scratch
+>    database, and is RED-checked.
+> 2. **Barrier continuity was caller-controlled.** `engaged_at` could be written back unchanged
+>    across a release/re-engage. Added a database-owned `generation` bumped by a trigger, with
+>    `engaged_at` derived; the gate compares generations.
+> 3. **Category repair was TOCTOU and not self-healing.** It now scopes each update by the exact
+>    plaintext it read, verifies the write landed, and judges stale/half-written/undecryptable
+>    states rather than only `name_enc IS NULL`. The defaults probe looks for default categories, so
+>    a custom POST can no longer suppress the twelve.
+> 4. **Merchant memory's paging existed only in a unit test, and the substring contract had been
+>    quietly dropped.** `server/lib/merchantMemory.js` is now real code — keyset paging, short-page
+>    and error handling, a reported candidate ceiling — wired into `/suggest` behind
+>    `ENCRYPTION_PHASE`. Mid-word ("esco" → Tesco) and later-word ("Express" → Tesco Express)
+>    matching are RESTORED via a bounded decrypt-and-scan fallback; the only remaining deviation is
+>    that the fallback looks at the most recent 500 transactions.
+> 5. **Tests and docs overclaimed.** The migration-dependency test now reads index/policy/trigger
+>    targets and says plainly it is not a replay proof; SECURITY.md discloses the bounded trie in
+>    full; the trigger-moves-in-018a and both-routes-seed corrections are made everywhere.
+
 **Chat prompt:**
 ```
 Read docs/superpowers/plans/2026-07-17-phase9-pln-privacy-history-pace-special.md (Task 5)

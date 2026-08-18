@@ -138,6 +138,26 @@ after(async () => {
   if (pg) await pg.stop().catch(() => {});
 });
 
+/**
+ * A SEPARATE database with the guarded tables but WITHOUT 018a applied.
+ *
+ * The nine original tests all install 018a in `before`, so every transaction they
+ * open already has the flag row in its snapshot — which is exactly why they could
+ * not exercise the case Codex found. This gives a transaction somewhere to start
+ * BEFORE the barrier exists.
+ */
+async function databaseWithoutBarrier(name) {
+  await admin.query(`drop database if exists ${name}`);
+  await admin.query(`create database ${name}`);
+  const info = { ...connInfo, database: name };
+  const owner = new Client(info);
+  await owner.connect();
+  for (const t of GUARDED) {
+    await owner.query(`create table public.${t} (id serial primary key, user_id uuid, val text)`);
+  }
+  return { owner, info };
+}
+
 /** Reset between tests: release first, THEN clean up, or the barrier blocks us. */
 async function release() {
   await admin.query('update public.encryption_cutover set engaged = false, engaged_at = null');
@@ -327,5 +347,120 @@ test('pg_stat counters lag, which is why they are only defence in depth', async 
   const rows = await admin.query('select count(*)::int as n from public.transactions');
   assert.equal(rows.rows[0].n, 0, 'the rolled-back row is really gone');
   assert.ok(typeof during === 'number' && during >= beforeCount);
+  await release();
+});
+
+
+// --- Codex stage-5 RE-VERIFY #3 finding 1: the old-snapshot bypass -----------
+
+test('CRITICAL REGRESSION: a snapshot older than the flag row cannot write through the barrier', async (t) => {
+  if (guard()) return t.skip(skipReason);
+  if (process.env.TEST_DATABASE_URL) {
+    // Creating databases on somebody's real server is not this test's business.
+    return t.skip('needs the embedded server (creates a scratch database)');
+  }
+
+  // Codex's probe, exactly. The trigger's `SELECT ... FOR SHARE` reads through the
+  // CALLING transaction's snapshot, so a REPEATABLE READ transaction whose
+  // snapshot predates 018a cannot see the flag row at all. The old code treated
+  // "no row" as "no barrier" and let the write through:
+  //     {"writeError":null,"committedRows":1}
+  // Sequence that INSERT after the gate returns, and 019 drops the plaintext it
+  // just committed.
+  const { owner, info } = await databaseWithoutBarrier('barrier_oldsnapshot');
+  const t1 = new Client(info);
+  const engager = new Client(info);
+  try {
+    await t1.connect();
+    await engager.connect();
+
+    // 1. T1's snapshot is established BEFORE the barrier exists.
+    await t1.query('begin isolation level repeatable read');
+    await t1.query('select count(*) from public.transactions');
+
+    // 2. The barrier is installed and engaged, both invisible to T1's snapshot.
+    await owner.query(MIGRATION);
+    await owner.query('update public.encryption_cutover set engaged = true');
+
+    // 3. T1 writes. It MUST be refused.
+    await assert.rejects(
+      () => t1.query("insert into public.transactions (val) values ('past the barrier')"),
+      (err) => err.code === '25006',
+      'a transaction that cannot see the flag row must be refused, not waved through',
+    );
+
+    await t1.query('rollback');
+    const left = await owner.query('select count(*)::int as n from public.transactions');
+    assert.equal(left.rows[0].n, 0, 'nothing may have been committed through the engaged barrier');
+  } finally {
+    await t1.end().catch(() => {});
+    await engager.end().catch(() => {});
+    await owner.end().catch(() => {});
+    await admin.query('drop database if exists barrier_oldsnapshot').catch(() => {});
+  }
+});
+
+test('a deleted flag row refuses writes rather than silently disabling the barrier', async (t) => {
+  if (guard()) return t.skip(skipReason);
+  await release();
+  await admin.query('delete from public.encryption_cutover');
+  try {
+    await withSessions(async (session) => {
+      const w = await session();
+      await assert.rejects(
+        () => w.query("insert into public.transactions (val) values ('no flag row')"),
+        (err) => err.code === '25006',
+        'a barrier that cannot read its own flag must refuse',
+      );
+    });
+  } finally {
+    // The documented one-statement recovery.
+    await admin.query('insert into public.encryption_cutover (id, engaged) values (true, false)');
+  }
+  await release();
+});
+
+// --- Codex stage-5 RE-VERIFY #3 finding 2: continuity the caller cannot forge -
+
+test('CRITICAL REGRESSION: generation is database-owned and survives a forged timestamp', async (t) => {
+  if (guard()) return t.skip(skipReason);
+  await release();
+
+  const read = async () => (await admin.query(
+    'select engaged, engaged_at, generation from public.encryption_cutover where id = true')).rows[0];
+
+  const start = await read();
+
+  // Engage and release, deliberately writing the SAME engaged_at back both times
+  // — which is what made the old `engaged_at` comparison forgeable.
+  await admin.query(`update public.encryption_cutover set engaged = true, engaged_at = '2026-08-18T02:00:00Z'`);
+  const engaged = await read();
+  await admin.query(`update public.encryption_cutover set engaged = false, engaged_at = '2026-08-18T02:00:00Z'`);
+  const released = await read();
+
+  assert.ok(
+    Number(engaged.generation) > Number(start.generation),
+    'engaging must bump the generation',
+  );
+  assert.ok(
+    Number(released.generation) > Number(engaged.generation),
+    'releasing must bump it again, so a cycle is always visible',
+  );
+  // engaged_at is derived, not accepted from the caller.
+  assert.notEqual(
+    engaged.engaged_at && new Date(engaged.engaged_at).toISOString(),
+    '2026-08-18T02:00:00.000Z',
+    'the database must set engaged_at itself, not take the value it was handed',
+  );
+  assert.equal(released.engaged_at, null, 'releasing clears engaged_at');
+  await release();
+});
+
+test('the generation trigger does not block releasing the barrier', async (t) => {
+  if (guard()) return t.skip(skipReason);
+  await admin.query('update public.encryption_cutover set engaged = true');
+  await admin.query('update public.encryption_cutover set engaged = false');
+  const flag = await admin.query('select engaged from public.encryption_cutover where id = true');
+  assert.equal(flag.rows[0].engaged, false);
   await release();
 });

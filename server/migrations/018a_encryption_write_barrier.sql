@@ -75,6 +75,8 @@
 -- the backfill writes, so it is blocked too, deliberately. Re-engage afterwards.
 --
 -- ROLLBACK / REMOVAL once the cutover is finished for good:
+--   drop trigger if exists encryption_cutover_generation on public.encryption_cutover;
+--   drop function if exists public.encryption_cutover_bump();
 --   drop function if exists public.encryption_write_counters();
 --   -- then, per table: drop trigger if exists <table>_encryption_cutover_guard on public.<table>;
 --   drop function if exists public.reject_writes_during_cutover() cascade;
@@ -89,18 +91,53 @@ create table if not exists public.encryption_cutover (
   id          boolean primary key default true,
   engaged     boolean not null default false,
   engaged_at  timestamptz,
+  -- DATABASE-OWNED. Bumped by the trigger below on every single UPDATE, so the
+  -- gate can tell "the barrier held throughout" from "it was released and
+  -- re-engaged while I was reading".  [Codex stage-5 RE-VERIFY #3 finding 2]
+  generation  bigint not null default 0,
   note        text,
   constraint encryption_cutover_singleton check (id)
 );
+
+-- Re-runnable: adds the column to a barrier installed by the first version.
+alter table public.encryption_cutover
+  add column if not exists generation bigint not null default 0;
 
 insert into public.encryption_cutover (id, engaged, note)
 values (true, false, 'Phase 9.5 cutover barrier. Engage only for the migration 019 window.')
 on conflict (id) do nothing;
 
--- The flag table itself carries no trigger, so releasing the barrier is always
--- possible even while it is engaged.
 alter table public.encryption_cutover enable row level security;
 grant select, update on public.encryption_cutover to service_role;
+
+-- --- continuity the caller cannot forge --------------------------------------
+--
+-- `engaged_at` was nullable and set by whoever ran the UPDATE, and the gate only
+-- noticed a release/re-engage cycle when the ending timestamp DIFFERED. An
+-- operator (or a script) that released and re-engaged while writing the same
+-- value — or NULL — left an invisible gap in which anything could be written.
+-- The gate's own test only proved the case where the timestamp changes.
+--
+-- Both fields are now owned by the database and cannot be supplied by the caller:
+-- every UPDATE bumps `generation`, and `engaged_at` is derived from `engaged`.
+-- This trigger blocks nothing, so releasing the barrier is always possible.
+-- [Codex stage-5 RE-VERIFY #3 finding 2, 2026-08-18]
+create or replace function public.encryption_cutover_bump()
+returns trigger
+language plpgsql
+as $$
+begin
+  new.id := true;                               -- the singleton stays singular
+  new.generation := old.generation + 1;         -- monotonic, per transition
+  new.engaged_at := case when new.engaged then now() else null end;
+  return new;
+end;
+$$;
+
+drop trigger if exists encryption_cutover_generation on public.encryption_cutover;
+create trigger encryption_cutover_generation
+  before update on public.encryption_cutover
+  for each row execute function public.encryption_cutover_bump();
 
 -- --- the barrier ------------------------------------------------------------
 -- STATEMENT level, not row level: this blocks whole statements rather than
@@ -131,9 +168,33 @@ begin
    where id = true
      for share;
 
-  -- No flag row at all: allow the write. Refusing here would take the whole app
-  -- down if the row were ever deleted, and the gate already fails CLOSED on an
-  -- unreadable or missing barrier, which is where that must be caught.
+  -- ABSENT OR INVISIBLE => REFUSE. This branch used to allow the write, on the
+  -- reasoning that a deleted flag row should not take the whole app down. That
+  -- was a Critical hole, reproduced on real PostgreSQL 18.4:
+  --
+  --   T1: BEGIN ISOLATION LEVEL REPEATABLE READ; select from transactions;
+  --       -- T1's snapshot is now older than the barrier itself
+  --   (apply 018a, which CREATES encryption_cutover and inserts its row)
+  --   (engage the barrier; the UPDATE returns, nothing to drain)
+  --   T1: INSERT a plaintext-only row; COMMIT;   -- {"writeError":null,"committedRows":1}
+  --
+  -- The trigger fires, but T1's snapshot predates the flag row, so `FOR SHARE`
+  -- finds NOTHING and the old code waved it through. Sequence that INSERT after
+  -- the gate returns and 019 drops the plaintext it just committed.
+  --
+  -- A safety barrier that cannot read its own flag must refuse, not assume. The
+  -- outage this risks is recoverable in one statement (re-insert the row); the
+  -- data loss it prevents is not.
+  -- [Codex stage-5 RE-VERIFY #3 finding 1, 2026-08-18]
+  if not found or is_engaged is null then
+    raise exception
+      using errcode = '25006',
+            message = 'Trim cutover barrier flag is missing or not visible to this transaction; refusing the write',
+            hint = 'If public.encryption_cutover has no row: '
+                || 'insert into public.encryption_cutover (id, engaged) values (true, false); '
+                || 'If this is a long-lived REPEATABLE READ/SERIALIZABLE transaction, end it and retry.';
+  end if;
+
   if is_engaged then
     raise exception
       using errcode = '25006', -- read_only_sql_transaction

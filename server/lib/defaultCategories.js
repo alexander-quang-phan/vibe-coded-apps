@@ -12,6 +12,12 @@
  * succeeds and the NEXT SIGNUP errors inside the trigger, which rolls back the
  * auth.users insert. Nobody could create an account again.
  *
+ * The trigger is replaced in **migration 018a**, not 019 — at the START of the
+ * dual-write window rather than at the drop, so no account created during that
+ * window is seeded with plaintext-only names. 019 keeps an identical replacement
+ * as a safety net if 018a were ever skipped.
+ * [Codex stage-5 RE-VERIFY #2 finding 4, 2026-08-18]
+ *
  * The encryption spec and BUILD_PLAN.md both said this seeding had to move to the
  * API before the drop, because the database has no encryption key and therefore
  * cannot write `name_enc`. It had not been built. This is it.
@@ -30,7 +36,7 @@
  * the whole cutover rests on, and blocking the gate.
  * [Codex stage-5 RE-VERIFY #2 finding 4, 2026-08-18]
  */
-import { encryptRegistered, blindIndex } from './crypto.js';
+import { encryptRegistered, decryptRegistered, blindIndex } from './crypto.js';
 import { CURRENT_PHASE, writesPlaintext, writesCiphertext } from './encryptionPhase.js';
 
 /**
@@ -79,8 +85,7 @@ export function defaultCategoryRow(userId, def, phase = CURRENT_PHASE) {
 }
 
 /**
- * Fill in `name_enc`/`name_hmac` for any category that has a plaintext name but
- * no ciphertext yet.
+ * Bring every one of a user's categories into a correct dual-written state.
  *
  * ONLY meaningful in the `dual` phase: in `off` the `_enc` columns may not exist,
  * and in `enc` the plaintext is gone so there is nothing left to derive them from
@@ -89,30 +94,62 @@ export function defaultCategoryRow(userId, def, phase = CURRENT_PHASE) {
  * Its job is the window between "migration 001's trigger last seeded somebody"
  * and "migration 018a replaced it". Any account created in that window has twelve
  * plaintext-only category names, which the gate correctly refuses to certify.
+ *
+ * SELF-HEALING, and CONDITIONAL ON WHAT IT READ  [Codex stage-5 RE-VERIFY #3
+ * finding 3, 2026-08-18]. The first version selected `name_enc IS NULL` and then
+ * updated by `id` alone. Between those two statements a rename can land — writing
+ * a new `name` AND its matching cipher and hash — and the blind update would then
+ * stamp the OLD plaintext's cipher over the new one. Worse, nothing could heal it:
+ * `name_enc` is no longer NULL, so neither this function nor the backfill would
+ * look at that row again, and only the gate would ever notice.
+ *
+ * So it now (a) judges every category rather than only the NULL ones, catching a
+ * cipher or hash that has gone stale for any reason, and (b) scopes each UPDATE by
+ * the exact plaintext it read, so a concurrent rename makes the update match zero
+ * rows instead of clobbering. Anything skipped that way is simply repaired on the
+ * next request.
  */
+function categoryNeedsRepair(userId, row) {
+  if (row.name === null || row.name === undefined) return false; // nothing to derive from
+  if (!row.name_enc || !row.name_hmac) return true;
+  if (row.name_hmac !== blindIndex('categories.name_hmac', userId, row.name)) return true;
+  try {
+    return decryptRegistered('categories.name', userId, row.name_enc) !== row.name;
+  } catch {
+    return true; // unreadable cipher is a state to repair, not to trust
+  }
+}
+
 async function repairMissingCiphertext(supabase, userId) {
   const { data, error } = await supabase
     .from('categories')
-    .select('id, name')
-    .eq('user_id', userId)
-    .is('name_enc', null);
+    .select('id, name, name_enc, name_hmac')
+    .eq('user_id', userId);
   if (error) throw error;
-  if (!data || data.length === 0) return 0;
+  if (!data || data.length === 0) return { repaired: 0, skipped: 0 };
 
   let repaired = 0;
+  let skipped = 0;
   for (const row of data) {
-    if (row.name === null || row.name === undefined) continue; // nothing to derive from
-    const { error: updateErr } = await supabase
+    if (!categoryNeedsRepair(userId, row)) continue;
+
+    const { data: touched, error: updateErr } = await supabase
       .from('categories')
       .update({
         name_enc: encryptRegistered('categories.name', userId, row.name),
         name_hmac: blindIndex('categories.name_hmac', userId, row.name),
       })
-      .eq('id', row.id);
+      .eq('id', row.id)
+      .eq('user_id', userId)
+      // THE GUARD: only write if the plaintext is still the one we encrypted.
+      .eq('name', row.name)
+      .select('id');
     if (updateErr) throw updateErr;
-    repaired += 1;
+
+    if (touched && touched.length > 0) repaired += 1;
+    else skipped += 1; // renamed underneath us; next request will catch it up
   }
-  return repaired;
+  return { repaired, skipped };
 }
 
 /**
@@ -131,28 +168,36 @@ async function repairMissingCiphertext(supabase, userId) {
 export async function ensureDefaultCategories(supabase, userId, { phase = CURRENT_PHASE } = {}) {
   if (!userId) throw new Error('ensureDefaultCategories called without a userId');
 
+  // Look for DEFAULT categories, not just any category. Probing for "any row"
+  // meant a user who created one custom category before their first GET — an API
+  // client, or any ordering the browser happens to produce — was treated as
+  // already seeded and never got the twelve defaults at all.
+  // `Other` and `Other Income` are protected from deletion by routes/categories.js,
+  // so once seeded this probe keeps finding them and nothing is ever resurrected.
+  // [Codex stage-5 RE-VERIFY #3 finding 3, 2026-08-18]
   const { data, error } = await supabase
     .from('categories')
     .select('id')
     .eq('user_id', userId)
+    .eq('is_default', true)
     .limit(1);
   if (error) throw error;
 
   if (data && data.length > 0) {
     // Present, but not necessarily dual-written. See repairMissingCiphertext.
     if (phase === 'dual') {
-      const repaired = await repairMissingCiphertext(supabase, userId);
-      if (repaired > 0) return { seeded: 0, repaired, reason: 'repaired' };
+      const { repaired, skipped } = await repairMissingCiphertext(supabase, userId);
+      if (repaired > 0 || skipped > 0) return { seeded: 0, repaired, skipped, reason: 'repaired' };
     }
-    return { seeded: 0, repaired: 0, reason: 'already-present' };
+    return { seeded: 0, repaired: 0, skipped: 0, reason: 'already-present' };
   }
 
   const rows = DEFAULT_CATEGORIES.map((d) => defaultCategoryRow(userId, d, phase));
   const { error: insertErr } = await supabase.from('categories').insert(rows);
   if (insertErr) {
     // 23505 = unique_violation: another request seeded them a moment ago.
-    if (insertErr.code === '23505') return { seeded: 0, repaired: 0, reason: 'raced' };
+    if (insertErr.code === '23505') return { seeded: 0, repaired: 0, skipped: 0, reason: 'raced' };
     throw insertErr;
   }
-  return { seeded: rows.length, repaired: 0, reason: 'seeded' };
+  return { seeded: rows.length, repaired: 0, skipped: 0, reason: 'seeded' };
 }

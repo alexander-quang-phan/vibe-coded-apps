@@ -1,5 +1,6 @@
 -- server/migrations/012_encryption_columns.sql
--- Phase 9.5 step 1 of 3: parallel encrypted columns. Plaintext dropped in 013
+-- Phase 9.5 step 1 of 4: parallel encrypted columns. Plaintext dropped in 019
+-- (this file is applied with 018 and 018a; there is no migration 013 in this repo)
 -- ONLY after scripts/verify-encryption.mjs passes against the database.
 --
 -- RE-SCOPED 2026-08-09, before this file had ever been applied anywhere. It is
