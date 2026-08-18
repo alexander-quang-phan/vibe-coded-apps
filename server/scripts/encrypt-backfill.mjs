@@ -47,36 +47,17 @@
  */
 import 'dotenv/config';
 import { pathToFileURL } from 'node:url';
-import { encryptField, decryptField, decryptRegistered, blindIndex, blindIndexMany } from '../lib/crypto.js';
+import { encryptField, decryptField, decryptRegistered } from '../lib/crypto.js';
 import { fieldsByTable, fieldKey } from '../lib/encryptedFields.js';
-import { normaliseMerchant, normaliseMerchantFirstWord, merchantPrefixes } from '../lib/merchant.js';
+// Moved to lib/blindIndex.js so the ROUTE codec can use them without importing
+// from a maintenance script — and so the migration-019 gate stops importing them
+// from the script it audits. Re-exported here because both the gate and this
+// file's own tests already import them from this path.
+// (imported, not just re-exported: this file calls blindValueFor itself, and
+// `export ... from` creates no local binding.)
+import { NORMALISERS, blindValueFor, blindValueEquals } from '../lib/blindIndex.js';
 
-/** Must match the read path exactly — see lib/merchant.js. */
-export const NORMALISERS = {
-  merchant: normaliseMerchant,
-  merchantFirstWord: normaliseMerchantFirstWord,
-  merchantPrefixes,
-  identity: (v) => (v === null || v === undefined ? null : String(v)),
-};
-
-/** The blind-index value a row should carry, recomputable from its plaintext. */
-export function blindValueFor(table, b, row) {
-  const normalise = NORMALISERS[b.normalise];
-  if (!normalise) throw new Error(`Unknown normaliser '${b.normalise}' for ${table}.${b.column}`);
-  const value = normalise(row[b.from]);
-  return b.multi
-    ? blindIndexMany(fieldKey(table, b.column), row.user_id, value)
-    : blindIndex(fieldKey(table, b.column), row.user_id, value);
-}
-
-/** Array-aware equality, since a multi index is a text[] column. */
-export function blindValueEquals(a, b) {
-  if (Array.isArray(a) || Array.isArray(b)) {
-    if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return false;
-    return a.every((v, i) => v === b[i]);
-  }
-  return a === b;
-}
+export { NORMALISERS, blindValueFor, blindValueEquals };
 
 export const PAGE_SIZE = 500;
 

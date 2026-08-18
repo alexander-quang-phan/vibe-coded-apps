@@ -1,61 +1,92 @@
-# Chat Handoff — updated 2026-08-18 (Claude Code REVISE #4 done; Codex to re-verify)
+# Chat Handoff — updated 2026-08-19 (Part A started; 9.5 cutover machinery PARKED, UNVERIFIED)
 
 ## DUAL-AGENT BATON  (both models: update this the MOMENT you finish work)
-- Current stage:  **stage 5 REVISE #4 completed by Claude Code — back to Codex for RE-VERIFY #4**
-- Model A is:     Claude Code (build + revise). Model B / verifier: **Codex**
-- Up next:        **Codex** re-verifies `phase-9.5-encryption-hardening` at commit **b4d5987**
-- Last actor did: Fixed all five RE-VERIFY #3 findings. The Critical old-snapshot bypass was
-                  reproduced on real PostgreSQL first, then fixed and re-proved: the trigger now
-                  raises when the flag row is absent OR invisible (`if not found or is_engaged is
-                  null`), so a REPEATABLE READ snapshot older than 018a can no longer write through
-                  an engaged barrier. Barrier continuity is now database-owned — a `generation`
-                  column bumped by a BEFORE UPDATE trigger, with `engaged_at` derived rather than
-                  accepted — and the gate compares generations, so a release/re-engage that keeps
-                  the same timestamp is caught. Category repair is conditional on the plaintext it
-                  read (so a concurrent rename cannot be clobbered) and self-healing for stale or
-                  half-written cipher/hash states; the defaults probe now looks for DEFAULT
-                  categories, so a custom POST cannot suppress the twelve. **Merchant memory is now
-                  real production code** — `lib/merchantMemory.js`, keyset-paged, short-page- and
-                  error-handling, wired into `/suggest` behind `ENCRYPTION_PHASE` — and the two
-                  behaviours the previous revision wrote off as "documented losses" are RESTORED:
-                  mid-word and later-word matching work again via a bounded decrypt-and-scan
-                  fallback. Test/doc overclaiming corrected. Suite **220 -> 244**, client build PASS.
-                  **No DB touched, nothing deployed or merged, no migration applied.**
-- Next must:      Re-verify. Best places to attack: (a) the fail-closed branch — is there any
-                  legitimate path where the flag row is invisible and refusing is worse than
-                  allowing; (b) the generation trigger under concurrent UPDATEs, and whether the
-                  gate's before/after comparison can still be straddled; (c) `lib/merchantMemory.js`
-                  keyset paging on non-unique or non-monotonic ids, and whether the 500-row
-                  fallback window is an acceptable deviation from `%term%`; (d) the repair loop's
-                  cost and correctness when many rows need repair at once; (e) whether the
-                  `/suggest` phase branch behaves at the `dual` -> `enc` boundary.
-- Last verdict:   **FAIL (Codex RE-VERIFY #3, implementation a75c095)** — all five findings addressed
-                  in this revision. Still DO NOT merge, deploy, or apply migrations 012/018/018a/019
-                  until Codex passes it.
-- Last red-team:  n/a — stage 6 not yet reached on this branch.
+- Current stage:  **stage 4 BUILD — Part A (the reversible half of Phase 9.5), Claude Code**
+- Model A is:     Claude Code (build + revise). Model B / verifier: **Codex — CURRENTLY UNAVAILABLE**
+- Up next:        **Claude Code** continues the Part A route sweep. Codex verifies Part A when it is
+                  built — as ordinary feature code, not as security machinery.
+- Last actor did: Started Part A. Built the query-boundary codec (`lib/encryptionCodec.js`) and swept
+                  the FIRST route through it (`routes/budgets.js`, which touches three encrypted
+                  columns across three tables). Added a reusable route-test harness that mounts the
+                  REAL router on Express and speaks HTTP to it over a fake PostgREST, and proved the
+                  budgets route returns **byte-identical JSON at all three phases** (off/dual/enc).
+                  Suite **244 -> 294**, client build PASS. 1 of ~15 route files swept.
+
+### Part A progress — the route sweep
+- **Done:** `lib/blindIndex.js` (extracted from the backfill), `lib/encryptionCodec.js` +
+  `presentRow` (27 tests), `test/helpers/routeHarness.js` + per-phase route suites,
+  `routes/budgets.js` swept.
+- **Next, in rough order of risk:** `routes/transactions.js` (16 call sites, the big one — amount,
+  original_amount, description + the merchant blind index), `routes/goals.js`, `routes/wins.js`,
+  `routes/dashboard.js`, `routes/analytics.js`, `routes/affordability.js`, `routes/projections.js`,
+  `routes/specialGroups.js`, `routes/subscriptions.js`, `routes/ask.js` + `lib/askContext.js`,
+  `lib/runRecurrences.js` (the 03:00 cron — it INSERTs transactions and MUST go through the codec),
+  and the remaining reads in `routes/categories.js` / `routes/me.js`.
+- **The pattern to copy** is `routes/budgets.js`: keep the route's own column list as a constant,
+  wrap reads in `selectFor(...)` + `decodeRows(...)`, wrap writes in `encodeWrite(...)`, and return
+  through `presentRow(...)` so no ciphertext or `user_id` can reach the client. Then add a
+  three-phase route suite like `test/routeBudgets.*.test.js`.
+- **`npm test` now needs `--experimental-test-module-mocks`** (already in package.json) because the
+  route suites swap `lib/supabase.js` for a fake.
+
+### ⚠️ PARKED AND UNVERIFIED — do not treat as blessed
+Codex refused to display output for this branch twice on 2026-08-19: **"This content can't be shown
+— we take extra caution with cybersecurity requests."** It is a false positive (this is defensive
+work on Alex's own app), but it makes Codex unusable as the verifier for the cutover machinery, and
+rewording the request did not help.
+
+So **REVISE #4 (commit `b4d5987`) HAS NEVER BEEN INDEPENDENTLY VERIFIED.** Specifically unreviewed:
+  - the fail-closed branch in `018a` (`if not found or is_engaged is null`),
+  - the database-owned `generation` continuity counter and the gate's use of it,
+  - the rewritten conditional/self-healing category repair,
+  - `lib/merchantMemory.js` (new production read path),
+  - the documentation corrections.
+Rounds 1-3 *were* reviewed by Codex. Round 4 was not.
+
+**Why it is safe to park:** the gate and the barrier are used at exactly ONE moment — running
+migration 019. Nothing in Part A touches either. Nothing is merged, nothing is deployed, and no
+migration has been applied to any database. The unverified code is inert.
+
+**BEFORE MIGRATION 019 IS EVER RUN, this machinery must get an independent review.** That is the
+condition of parking it. Do not let a later session read "220/244 tests pass" as a substitute.
+
+### Part A / Part B — the split, now DECIDED (2026-08-19)
+Four verification rounds found real defects, but four and a half of the last five were in machinery
+added *during* the loop rather than in the feature it protects (table below). The way out is to stop
+treating one irreversible step as inseparable from the feature:
+
+- **Part A — everything reversible. THIS IS THE CURRENT WORK.** Apply 012/018/018a, generate the key,
+  build the dual-write route sweep, run the backfill. At the end, financial data is encrypted in the
+  `_enc` columns *and the plaintext is still beside it*. No irreversible step anywhere, so it needs
+  neither the gate nor the barrier. This is also where all the remaining work is.
+- **Part B — the one destructive step.** Migration 019. Can wait months. When it happens: take a
+  backup, **verify it restores**, then drop. A restorable backup covers every failure mode the gate
+  tries to prove away — including the concurrency ones — because a bad drop is simply restored and
+  retried. The gate becomes a pre-flight sanity check rather than the sole authorisation.
+
+- Last verdict:   **FAIL (Codex RE-VERIFY #3, at `a75c095`)** — all five findings fixed in `b4d5987`,
+                  which is unreviewed. DO NOT merge, deploy, or apply migrations 012/018/018a/019
+                  without a fresh decision.
+- Last red-team:  n/a — stage 6 not reached.
 - Handoff log:
   - 2026-08-11 Claude Code: Phase 12b + 13 + 14, migration 017, DEPLOYED
   - 2026-08-12 Claude Code: third validation sweep — CLEAN. Repo cleanup. No code change.
   - 2026-08-18 Claude Code: 9.5 re-audit + hardening, branch, NOT merged. Codex to verify.
-  - 2026-08-18 Codex: stage 4 VERIFY **FAIL** — reproducible false-PASS states in the sole gate,
-    unrecoverable subscription PK, migration order, ILIKE contract, custom-category gap.
+  - 2026-08-18 Codex: stage 4 VERIFY **FAIL** — false-PASS states in the gate, unrecoverable
+    subscription PK, migration order, ILIKE contract, custom-category gap.
   - 2026-08-18 Claude Code: stage 5 REVISE — all blocking items fixed, 21 new tests.
   - 2026-08-18 Codex: stage 4 RE-VERIFY **FAIL** — two new gate false-PASS probes, prefix-trie
-    leakage/24-char regression, stale security docs, category seeding trigger.
-  - 2026-08-18 Claude Code: stage 5 REVISE #2 — all five fixed, enforced write barrier added,
-    suite 161 -> 201.
+    leakage/24-char regression, stale docs, category seeding trigger.
+  - 2026-08-18 Claude Code: stage 5 REVISE #2 — enforced write barrier added, suite 161 -> 201.
   - 2026-08-18 Codex: stage 5 RE-VERIFY #2 **FAIL** at `793aa80` — barrier does not drain
-    pre-engagement transactions and omits TRUNCATE; 012-before-014 replay; dual signup/category and
-    bounded-prefix pagination gaps.
-  - 2026-08-18 Claude Code: stage 5 REVISE #3 — all seven fixed; barrier hole reproduced AND fixed
-    against real PostgreSQL 18.4. Suite 201 -> 220.
-  - 2026-08-18 Codex: stage 5 RE-VERIFY #3 **FAIL** at `a75c095` — pre-018a REPEATABLE READ snapshot
-    commits through the engaged barrier; caller-controlled continuity; category-repair TOCTOU;
-    test-only merchant paging and an unreconciled substring contract; overclaiming tests/docs.
-  - 2026-08-18 Claude Code: stage 5 REVISE #4 — all five fixed. Old-snapshot bypass reproduced and
-    closed on real PostgreSQL; merchant memory promoted from test model to production code with the
-    substring contract restored. Suite 220 -> 244, client build PASS. Nothing merged/deployed/applied.
-    **Codex re-verifies.**
+    pre-engagement transactions, omits TRUNCATE; 012-before-014 replay; dual-signup and paging gaps.
+  - 2026-08-18 Claude Code: stage 5 REVISE #3 — all seven fixed on real PostgreSQL. Suite 201 -> 220.
+  - 2026-08-18 Codex: stage 5 RE-VERIFY #3 **FAIL** at `a75c095` — pre-018a snapshot writes through
+    the engaged barrier; caller-controlled continuity; repair TOCTOU; test-only paging.
+  - 2026-08-18 Claude Code: stage 5 REVISE #4 — all five fixed. Suite 220 -> 244. `b4d5987`.
+  - 2026-08-19 Codex: **COULD NOT RUN** — output withheld twice as a "cybersecurity request",
+    including after rewording. No review performed; no commit; nothing changed.
+  - 2026-08-19 Alex: **decision — park the cutover machinery unverified, build Part A.**
 
 ## WHERE THE FINDINGS ARE COMING FROM  (read this before starting round 5)
 

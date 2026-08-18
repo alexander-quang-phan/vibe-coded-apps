@@ -66,7 +66,10 @@ import { pathToFileURL } from 'node:url';
 import { createHash } from 'node:crypto';
 import { decryptField, decryptRegistered } from '../lib/crypto.js';
 import { fieldsByTable, fieldKey } from '../lib/encryptedFields.js';
-import { blindValueFor, blindValueEquals } from './encrypt-backfill.mjs';
+// From lib/, NOT from the script this gate audits. The gate importing its own
+// scope from encrypt-backfill.mjs is exactly the defect the 2026-08-18 audit
+// found; the same reasoning applies to the blind-index helpers.
+import { blindValueFor, blindValueEquals } from '../lib/blindIndex.js';
 
 const PAGE = 500;
 

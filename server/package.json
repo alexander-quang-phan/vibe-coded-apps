@@ -2,14 +2,14 @@
   "name": "trim-server",
   "version": "0.0.1",
   "private": true,
-  "description": "Trim budgeting app — Express API",
+  "description": "Trim budgeting app \u2014 Express API",
   "main": "index.js",
   "type": "module",
   "scripts": {
     "dev": "node --watch index.js",
     "dev:mock": "node --watch scripts/devMock.js",
     "start": "node index.js",
-    "test": "node --test"
+    "test": "node --experimental-test-module-mocks --test"
   },
   "engines": {
     "node": ">=20"
