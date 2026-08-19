@@ -36,9 +36,17 @@ before migration 019 is ever run.**
   `presentRow` (27 tests), `test/helpers/routeHarness.js` + per-phase route suites,
   **`routes/budgets.js`**, **`routes/transactions.js`**, **`routes/goals.js`**, **`routes/wins.js`**,
   **`routes/dashboard.js`**, **`routes/analytics.js`**, **`routes/affordability.js`**,
-  **`routes/projections.js`** and **`routes/specialGroups.js`** swept, each with a route suite run at
-  all three phases. Suite **403**. Routes 1-4 are merged and deployed; 5-9 are on
-  `phase-9.5-part-a-batch-2`.
+  **`routes/projections.js`**, **`routes/specialGroups.js`** and **`routes/subscriptions.js`** swept,
+  each with a route suite run at all three phases. Suite **425**. Routes 1-4 are merged and deployed;
+  5-10 are on `phase-9.5-part-a-batch-2`.
+- **`subscriptions.js` is the only route the codec could not finish alone**, and the pattern is worth
+  copying if another ever needs it. `subscription_overrides.merchant_key` is encrypted AND is the
+  primary key, which migration 019 moves onto `merchant_key_hmac` — so the equality lookup and the
+  upsert's `onConflict` target both have to follow the phase. Two small helpers at the top of the
+  file (`whereMerchantKey`, `MERCHANT_KEY_CONFLICT`) do that; `encodeWrite` fills the hash in by
+  itself because the registry declares it. Getting it wrong is SILENT: the lookup finds nothing and
+  the upsert inserts a duplicate instead of updating, losing the user's dismissal. RED-checked — with
+  a phase-blind lookup, `off` still passes and `enc` fails two tests.
 - **Decode the RESPONSE too, not just the query.** `specialGroups.js` POST/PATCH built their JSON as
   `{ id: data.id, name: data.name }` straight off the query result. Sweeping the `select` was not
   enough — at phase `enc` the response carried `name: undefined`. This was the FIRST failure that
@@ -52,7 +60,7 @@ before migration 019 is ever run.**
   only half the job — five downstream reads still used the raw `*Res.data`, which at phase `enc`
   would have been `undefined` and turned every total into NaN. After sweeping a route, grep it for
   the original result variables and make sure nothing still reads them.
-- **Next, in rough order of risk:** `routes/subscriptions.js`, `routes/ask.js` + `lib/askContext.js`,
+- **Next, in rough order of risk:** `routes/ask.js` + `lib/askContext.js`,
   `lib/runRecurrences.js` (the 03:00 cron — it INSERTs transactions and MUST go through the codec),
   and the remaining reads in `routes/categories.js` / `routes/me.js`.
 - **The pattern to copy** is `routes/budgets.js`: keep the route's own column list as a constant,

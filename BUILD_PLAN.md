@@ -847,7 +847,10 @@ older than the 200-row window load. Verify by tapping into an old month in the r
 >   tables). Suite 244 -> 353. **Those four were merged to `main` and deployed to `trim-api` on
 >   2026-08-19** — inert, at phase `off`, with no migration applied. Then **`routes/dashboard.js`**
 >   and **`routes/analytics.js`**, then **`affordability.js`**, **`projections.js`** and
->   **`specialGroups.js`** (suite -> 403), all on `phase-9.5-part-a-batch-2`.
+>   **`specialGroups.js`** and **`subscriptions.js`** (suite -> 425), all on
+>   `phase-9.5-part-a-batch-2`. `subscriptions.js` is the only route needing phase-aware logic of its
+>   own: its encrypted `merchant_key` is the primary key that 019 moves onto `merchant_key_hmac`, so
+>   the lookup and the upsert conflict target follow the phase.
 > - **Next:**
 >   projections, specialGroups, subscriptions, ask + `lib/askContext.js`, the remaining reads in
 >   categories/me, and **`lib/runRecurrences.js`** — the 03:00 cron INSERTs transactions and must go

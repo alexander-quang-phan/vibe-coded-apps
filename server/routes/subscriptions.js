@@ -4,7 +4,39 @@ import { supabase } from '../lib/supabase.js';
 import { detectSubscriptions } from '../lib/subscriptions.js';
 import { manualMerchantKey } from '../lib/recurrences.js';
 
+import { selectFor, decodeRow, decodeRows, encodeWrite } from '../lib/encryptionCodec.js';
+import { CURRENT_PHASE, writesPlaintext } from '../lib/encryptionPhase.js';
+import { blindIndex } from '../lib/crypto.js';
+
 const router = Router();
+
+// Phase 9.5 Part A — the one route the codec alone cannot finish.
+//
+// `subscription_overrides.merchant_key` is not just encrypted, it is the table's
+// PRIMARY KEY, and migration 019 moves that key onto `merchant_key_hmac`. So both
+// the equality lookup and the upsert's conflict target have to follow the phase:
+// the plaintext column while it exists, the blind index once it does not.
+// `encodeWrite` fills in `merchant_key_hmac` automatically, because the registry
+// declares it as an index derived from `merchant_key`.
+const SUB_TX_COLUMNS = 'id, amount, type, description, date, category_id, recurrence_id';
+const SUB_OVERRIDE_COLUMNS = 'merchant_key, status, display_name, decided_at';
+const SUB_OVERRIDE_READ_COLUMNS = 'status, display_name, decided_at';
+const SUB_CAT_COLUMNS = 'id, name, icon, color';
+const SUB_REC_COLUMNS =
+  'id, category_id, type, amount, description, interval, next_run_at, last_run_at, cancelled_at, created_at';
+const SUB_REC_PATCH_COLUMNS = 'id, amount, cancelled_at';
+
+/** Match an override by its key: the plaintext column, or its hash after 019. */
+function whereMerchantKey(query, userId, merchantKey) {
+  return writesPlaintext(CURRENT_PHASE)
+    ? query.eq('merchant_key', merchantKey)
+    : query.eq('merchant_key_hmac', blindIndex('subscription_overrides.merchant_key_hmac', userId, merchantKey));
+}
+
+/** The upsert conflict target follows the primary key that migration 019 installs. */
+const MERCHANT_KEY_CONFLICT = writesPlaintext(CURRENT_PHASE)
+  ? 'user_id,merchant_key'
+  : 'user_id,merchant_key_hmac';
 
 const DESCRIPTION_KEY = /^[a-z0-9 ]{1,100}$/;
 const SYNTHETIC_KEY = /^auto:(?:[a-f0-9-]{36}|none):\d+:(?:monthly|annual)$/;
@@ -70,40 +102,46 @@ router.get('/', async (req, res, next) => {
     const [txRes, overridesRes, catsRes, recurrencesRes] = await Promise.all([
       supabase
         .from('transactions')
-        .select('id, amount, type, description, date, category_id, recurrence_id')
+        .select(selectFor('transactions', SUB_TX_COLUMNS))
         .eq('user_id', req.user.id)
         .eq('type', 'expense')
         .order('date', { ascending: true }),
       supabase
         .from('subscription_overrides')
-        .select('merchant_key, status, display_name, decided_at')
+        .select(selectFor('subscription_overrides', SUB_OVERRIDE_COLUMNS))
         .eq('user_id', req.user.id),
       supabase
         .from('categories')
-        .select('id, name, icon, color')
+        .select(selectFor('categories', SUB_CAT_COLUMNS))
         .eq('user_id', req.user.id),
       // Task 6.12a — manually-marked recurrences. Fetch every row (not just
       // active) so cancelled schedules still surface in their own section.
       supabase
         .from('recurrences')
-        .select(
-          'id, category_id, type, amount, description, interval, next_run_at, last_run_at, cancelled_at, created_at',
-        )
+        .select(selectFor('recurrences', SUB_REC_COLUMNS))
         .eq('user_id', req.user.id),
     ]);
 
     for (const r of [txRes, overridesRes, catsRes, recurrencesRes]) if (r.error) throw r.error;
 
-    const overridesByKey = new Map(overridesRes.data.map((o) => [o.merchant_key, o]));
-    const catsById = new Map(catsRes.data.map((c) => [c.id, c]));
+    // Decode once, at the boundary. `merchant_key` has to be decoded before it can
+    // key this map — after 019 the plaintext column is gone entirely.
+    const uid = req.user.id;
+    const txRows = decodeRows('transactions', uid, txRes.data);
+    const overrideRows = decodeRows('subscription_overrides', uid, overridesRes.data);
+    const catRows = decodeRows('categories', uid, catsRes.data);
+    const recurrenceRows = decodeRows('recurrences', uid, recurrencesRes.data);
+
+    const overridesByKey = new Map(overrideRows.map((o) => [o.merchant_key, o]));
+    const catsById = new Map(catRows.map((c) => [c.id, c]));
 
     // Manually-marked transactions carry a recurrence_id — exclude them from
     // the auto-detector input so, e.g., rent logged via the recurring opt-in
     // never ALSO shows up as a separate detected subscription (Decision #5
     // in the brief: no double-counting).
-    const autoInput = txRes.data.filter((t) => !t.recurrence_id);
+    const autoInput = txRows.filter((t) => !t.recurrence_id);
     const byRecurrenceId = new Map();
-    for (const t of txRes.data) {
+    for (const t of txRows) {
       if (!t.recurrence_id) continue;
       const arr = byRecurrenceId.get(t.recurrence_id) ?? [];
       arr.push(t);
@@ -128,7 +166,7 @@ router.get('/', async (req, res, next) => {
     // lastCharged, nextExpected, totalPaid, occurrences, categoryId,
     // category, status, displayName, decidedAt) plus `source: 'manual'` —
     // the client never needs to special-case fields between the two.
-    const manualSubscriptions = recurrencesRes.data.map((r) => {
+    const manualSubscriptions = recurrenceRows.map((r) => {
       const linked = byRecurrenceId.get(r.id) ?? [];
       const amount = Number(r.amount);
       const monthlyCost = round2(r.interval === 'monthly' ? amount : amount * (52 / 12));
@@ -195,19 +233,20 @@ async function patchManualRecurrence(req, res, merchantKey) {
 
   const { data, error } = await supabase
     .from('recurrences')
-    .update(payload)
+    .update(encodeWrite('recurrences', req.user.id, payload))
     .eq('id', recurrenceId)
     .eq('user_id', req.user.id)
-    .select('id, amount, cancelled_at')
+    .select(selectFor('recurrences', SUB_REC_PATCH_COLUMNS))
     .single();
   if (error) throw error;
 
+  const updated = decodeRow('recurrences', req.user.id, data);
   res.json({
     recurrence: {
-      merchantKey: manualMerchantKey(data.id),
-      status: data.cancelled_at ? 'cancelled' : 'active',
-      amount: Number(data.amount),
-      cancelledAt: data.cancelled_at,
+      merchantKey: manualMerchantKey(updated.id),
+      status: updated.cancelled_at ? 'cancelled' : 'active',
+      amount: Number(updated.amount),
+      cancelledAt: updated.cancelled_at,
     },
   });
 }
@@ -242,13 +281,16 @@ router.patch('/:merchantKey', async (req, res, next) => {
       }
     }
 
-    const { data: existing, error: readErr } = await supabase
-      .from('subscription_overrides')
-      .select('status, display_name, decided_at')
-      .eq('user_id', req.user.id)
-      .eq('merchant_key', merchantKey)
-      .maybeSingle();
+    const { data: existingRaw, error: readErr } = await whereMerchantKey(
+      supabase
+        .from('subscription_overrides')
+        .select(selectFor('subscription_overrides', SUB_OVERRIDE_READ_COLUMNS))
+        .eq('user_id', req.user.id),
+      req.user.id,
+      merchantKey,
+    ).maybeSingle();
     if (readErr) throw readErr;
+    const existing = decodeRow('subscription_overrides', req.user.id, existingRaw);
 
     const merged = {
       user_id: req.user.id,
@@ -261,18 +303,21 @@ router.patch('/:merchantKey', async (req, res, next) => {
 
     const { data, error } = await supabase
       .from('subscription_overrides')
-      .upsert(merged, { onConflict: 'user_id,merchant_key' })
-      .select('merchant_key, status, display_name, decided_at')
+      .upsert(encodeWrite('subscription_overrides', req.user.id, merged), {
+        onConflict: MERCHANT_KEY_CONFLICT,
+      })
+      .select(selectFor('subscription_overrides', SUB_OVERRIDE_COLUMNS))
       .single();
 
     if (error) throw error;
 
+    const saved = decodeRow('subscription_overrides', req.user.id, data);
     res.json({
       override: {
-        merchantKey: data.merchant_key,
-        status: data.status,
-        displayName: data.display_name,
-        decidedAt: data.decided_at,
+        merchantKey: saved.merchant_key,
+        status: saved.status,
+        displayName: saved.display_name,
+        decidedAt: saved.decided_at,
       },
     });
   } catch (err) {

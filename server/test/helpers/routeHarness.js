@@ -46,6 +46,7 @@ export function fakeSupabase(tables = {}) {
         _op: 'select',
         _payload: null,
         _single: null,
+        _conflict: null,
 
         select(cols) { q._select = cols; return q; },
         eq(c, v) { q._filters.push((r) => r[c] === v); return q; },
@@ -61,6 +62,12 @@ export function fakeSupabase(tables = {}) {
         limit(n) { q._limit = n; return q; },
         range(a, b) { q._limit = b - a + 1; q._offset = a; return q; },
         insert(payload) { q._op = 'insert'; q._payload = payload; return q; },
+        upsert(payload, opts) {
+          q._op = 'upsert'; q._payload = payload;
+          // PostgREST names the conflict columns; the fake matches on them.
+          q._conflict = String(opts?.onConflict ?? 'id').split(',').map((c) => c.trim());
+          return q;
+        },
         update(payload) { q._op = 'update'; q._payload = payload; return q; },
         delete() { q._op = 'delete'; return q; },
         single() { q._single = 'single'; return q; },
@@ -72,7 +79,17 @@ export function fakeSupabase(tables = {}) {
             const match = (r) => q._filters.every((f) => f(r));
             let rows;
 
-            if (q._op === 'insert') {
+            if (q._op === 'upsert') {
+              const list = Array.isArray(q._payload) ? q._payload : [q._payload];
+              rows = list.map((incoming) => {
+                const hit = store[table].find((r) =>
+                  q._conflict.every((c) => r[c] !== undefined && r[c] === incoming[c]));
+                if (hit) { Object.assign(hit, incoming); return hit; }
+                const added = { id: `gen-${store[table].length + 1}`, ...incoming };
+                store[table].push(added);
+                return added;
+              });
+            } else if (q._op === 'insert') {
               const list = Array.isArray(q._payload) ? q._payload : [q._payload];
               const added = list.map((r) => ({ id: `gen-${store[table].length + 1}`, ...r }));
               store[table].push(...added);
