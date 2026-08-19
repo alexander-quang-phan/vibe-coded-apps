@@ -31,18 +31,54 @@ The parked, unverified cutover machinery rode along to `main`. It is inert — n
 migrations are files until applied — but it IS on main now. The rule stands: **independent review
 before migration 019 is ever run.**
 
+### Part A — THE ROUTE SWEEP IS COMPLETE (2026-08-19)
+Every file that queries an encrypted table now goes through the codec, verified by an audit that
+reads `.from('…')` out of every file in `routes/` and `lib/` and checks it against the registry:
+
+    13 routes + lib/askContext.js + lib/runRecurrences.js  -> swept
+    lib/defaultCategories.js, lib/merchantMemory.js        -> phase-aware directly (predate the codec)
+    lib/userZone.js                                        -> reads `timezone` only, nothing encrypted
+
+Suite **450**, client build PASS, every route + the cron imports cleanly at all three phases.
+
+**What remains before encryption can actually be switched on** — none of it code:
+  1. Alex generates and backs up `DATA_ENCRYPTION_KEY` (only he may; AGENTS.md).
+  2. Apply migrations 012, 018, 018a (additive, reversible).
+  3. Set `ENCRYPTION_PHASE=dual`, redeploy, let it run — every write then writes both columns.
+  4. Run `node scripts/encrypt-backfill.mjs`.
+  5. **Part B only:** the gate, the barrier, migration 019. The parked machinery MUST be
+     independently reviewed first — see the PARKED note above.
+
 ### Part A progress — the route sweep
 - **Done:** `lib/blindIndex.js` (extracted from the backfill), `lib/encryptionCodec.js` +
   `presentRow` (27 tests), `test/helpers/routeHarness.js` + per-phase route suites,
-  **`routes/budgets.js`**, **`routes/transactions.js`**, **`routes/goals.js`** and
-  **`routes/wins.js`** swept, each with a route suite run at all three phases.
+  **`routes/budgets.js`**, **`routes/transactions.js`**, **`routes/goals.js`**, **`routes/wins.js`**,
+  **`routes/dashboard.js`**, **`routes/analytics.js`**, **`routes/affordability.js`**,
+  **`routes/projections.js`**, **`routes/specialGroups.js`** and **`routes/subscriptions.js`** swept,
+  each with a route suite run at all three phases. Suite **425**. Routes 1-4 are merged and deployed;
+  5-10 are on `phase-9.5-part-a-batch-2`.
+- **`subscriptions.js` is the only route the codec could not finish alone**, and the pattern is worth
+  copying if another ever needs it. `subscription_overrides.merchant_key` is encrypted AND is the
+  primary key, which migration 019 moves onto `merchant_key_hmac` — so the equality lookup and the
+  upsert's `onConflict` target both have to follow the phase. Two small helpers at the top of the
+  file (`whereMerchantKey`, `MERCHANT_KEY_CONFLICT`) do that; `encodeWrite` fills the hash in by
+  itself because the registry declares it. Getting it wrong is SILENT: the lookup finds nothing and
+  the upsert inserts a duplicate instead of updating, losing the user's dismissal. RED-checked — with
+  a phase-blind lookup, `off` still passes and `enc` fails two tests.
+- **Decode the RESPONSE too, not just the query.** `specialGroups.js` POST/PATCH built their JSON as
+  `{ id: data.id, name: data.name }` straight off the query result. Sweeping the `select` was not
+  enough — at phase `enc` the response carried `name: undefined`. This was the FIRST failure that
+  differed by phase rather than being a wrong test expectation, and the three-phase suites are what
+  caught it.
+- **`select('*')` needs no `selectFor`, only a decode.** `*` returns the `_enc` column too, so
+  `decodeRow` fills the plaintext name back in. `dashboard.js` reads `user_stats` that way and then
+  returns `stats.monthly_limit` — without the decode that was `Number(undefined)` = NaN, served as
+  the user's monthly cap with nothing throwing.
 - **A lesson from `wins.js`, worth repeating on every remaining route:** adding the decode block is
   only half the job — five downstream reads still used the raw `*Res.data`, which at phase `enc`
   would have been `undefined` and turned every total into NaN. After sweeping a route, grep it for
   the original result variables and make sure nothing still reads them.
-- **Next, in rough order of risk:** `routes/dashboard.js`, `routes/analytics.js`,
-  `routes/affordability.js`, `routes/projections.js`,
-  `routes/specialGroups.js`, `routes/subscriptions.js`, `routes/ask.js` + `lib/askContext.js`,
+- **Next, in rough order of risk:** `routes/ask.js` + `lib/askContext.js`,
   `lib/runRecurrences.js` (the 03:00 cron — it INSERTs transactions and MUST go through the codec),
   and the remaining reads in `routes/categories.js` / `routes/me.js`.
 - **The pattern to copy** is `routes/budgets.js`: keep the route's own column list as a constant,

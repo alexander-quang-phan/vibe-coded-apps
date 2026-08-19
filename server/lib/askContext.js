@@ -10,6 +10,7 @@
 
 import { sumSpecial } from './special.js';
 import { monthlyEquivalentLimit } from './budgetPeriod.js';
+import { selectFor, decodeRow, decodeRows } from './encryptionCodec.js';
 
 export const ASK_CONTEXT_DAYS = 90;
 const RECENT_TRANSACTIONS_CAP = 60;
@@ -200,28 +201,38 @@ export function buildAskContext({
   };
 }
 
+// Phase 9.5 Part A. Everything Ask Trim reasons over is encrypted: amounts,
+// descriptions, category and goal names. If any of it reached buildAskContext
+// undecoded, the model would be handed `v2:…` envelopes and would answer
+// confidently about nothing — the quietest possible failure.
+const ASK_CTX_CAT_COLUMNS = 'id, name, type';
+const ASK_CTX_TX_COLUMNS = 'amount, type, description, date, category_id, created_at, is_special';
+const ASK_CTX_BUDGET_COLUMNS = 'category_id, amount_limit, period';
+const ASK_CTX_GOAL_COLUMNS = 'id, name, emoji, target_amount, current_amount, target_date';
+const ASK_CTX_CONTRIB_COLUMNS = 'goal_id, amount, date';
+
 export async function loadAskContext({ supabase, userId, today }) {
   const cutoff = isoDaysAgo(today, ASK_CONTEXT_DAYS);
 
   const [statsR, catsR, txR, budgetsR, goalsR, contribsR] = await Promise.all([
     supabase.from('user_stats').select('*').eq('user_id', userId).maybeSingle(),
-    supabase.from('categories').select('id, name, type').eq('user_id', userId),
+    supabase.from('categories').select(selectFor('categories', ASK_CTX_CAT_COLUMNS)).eq('user_id', userId),
     supabase
       .from('transactions')
-      .select('amount, type, description, date, category_id, created_at, is_special')
+      .select(selectFor('transactions', ASK_CTX_TX_COLUMNS))
       .eq('user_id', userId)
       .gte('date', cutoff)
       .order('date', { ascending: false })
       .order('created_at', { ascending: false })
       .limit(500),
-    supabase.from('budgets').select('category_id, amount_limit, period').eq('user_id', userId),
+    supabase.from('budgets').select(selectFor('budgets', ASK_CTX_BUDGET_COLUMNS)).eq('user_id', userId),
     supabase
       .from('savings_goals')
-      .select('id, name, emoji, target_amount, current_amount, target_date')
+      .select(selectFor('savings_goals', ASK_CTX_GOAL_COLUMNS))
       .eq('user_id', userId),
     supabase
       .from('savings_contributions')
-      .select('goal_id, amount, date')
+      .select(selectFor('savings_contributions', ASK_CTX_CONTRIB_COLUMNS))
       .eq('user_id', userId)
       .gte('date', cutoff),
   ]);
@@ -230,14 +241,17 @@ export async function loadAskContext({ supabase, userId, today }) {
     if (r.error) throw r.error;
   }
 
+  // Decode at the boundary, before any of it reaches the prompt builder.
+  const stats = decodeRow('user_stats', userId, statsR.data);
+
   return buildAskContext({
     today,
     currency: statsR.data?.currency || 'GBP',
-    stats: statsR.data,
-    categories: catsR.data || [],
-    transactions: txR.data || [],
-    budgets: budgetsR.data || [],
-    goals: goalsR.data || [],
-    contributions: contribsR.data || [],
+    stats,
+    categories: decodeRows('categories', userId, catsR.data || []),
+    transactions: decodeRows('transactions', userId, txR.data || []),
+    budgets: decodeRows('budgets', userId, budgetsR.data || []),
+    goals: decodeRows('savings_goals', userId, goalsR.data || []),
+    contributions: decodeRows('savings_contributions', userId, contribsR.data || []),
   });
 }
