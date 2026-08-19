@@ -21,11 +21,24 @@
  *
  * These tests run the ACTUAL migration file, not a copy of it.
  *
- * HOW TO RUN
- *   - Nothing to do: `npm test` boots a temporary PostgreSQL automatically via
- *     the `embedded-postgres` devDependency and throws it away afterwards.
- *   - Or point it at your own: TEST_DATABASE_URL=postgres://... npm test
- *   - If neither is available the tests SKIP loudly rather than passing quietly.
+ * HOW TO RUN — these are OPT-IN, and they skip loudly by default.
+ *
+ *     cd server && npm install --no-save pg embedded-postgres && npm test
+ *
+ * or point them at any PostgreSQL you already have:
+ *
+ *     TEST_DATABASE_URL=postgres://... npm test
+ *
+ * WHY NOT A devDependency. They were, briefly. `embedded-postgres` ships a real
+ * PostgreSQL binary — **144 MB** — and Vercel installs devDependencies during a
+ * build, so declaring it here would have added that download to every single
+ * deploy of a five-user app, for a test the production server never runs. Caught
+ * while checking what a merge would actually ship, 2026-08-19.
+ *
+ * The trade is real and worth stating: a default `npm test` no longer exercises
+ * the barrier. That is acceptable only because the barrier is PARKED — it runs at
+ * exactly one moment, migration 019, which is Part B. Whoever reviews it before
+ * that moment must run the install line above; the handoff says so too.
  */
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
@@ -167,7 +180,11 @@ async function release() {
 const guard = () => {
   if (skipReason) {
     // Visible in the run, unlike a silent pass.
-    console.warn(`  SKIPPED (no PostgreSQL): ${skipReason}`);
+    console.warn(
+      `  SKIPPED — ${skipReason}.\n` +
+      '  These prove the migration-019 write barrier. To run them:\n' +
+      '      cd server && npm install --no-save pg embedded-postgres && npm test',
+    );
     return true;
   }
   return false;

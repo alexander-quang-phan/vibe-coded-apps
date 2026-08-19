@@ -189,12 +189,18 @@ database, migration, deploy, merge or secret access.
 | 6 | Medium — fresh-category visibility can race | **Valid** | `GET /api/categories` now seeds before it reads, so whichever of it and `GET /api/me` arrives first does the work and neither can cache an empty list. Test asserts the seeding call precedes the read in the source. |
 | 7 | Docs still contain current-looking stale 013 references | **Valid** | The sole-authorisation trap, the cron trap, the dual-write decision, the subscription-PK note, the file list and BUILD_PLAN's registry line all say 019 now. Genuinely historical mentions are kept and marked as history. |
 
-**Note on a new devDependency:** `test/writeBarrier.pg.test.js` needs a real database, so `pg` and
-`embedded-postgres` are now devDependencies. `embedded-postgres` downloads a PostgreSQL binary on
-`npm install` in `server/` (~1s here, cached afterwards) and the test boots and discards a cluster in
-about 2.5s. If that cost is unwelcome, the test skips loudly when the packages are absent and can be
-pointed at any database with `TEST_DATABASE_URL` instead — but then nobody runs it by default, and
-this is the only evidence that the Critical fix works.
+**The barrier tests are OPT-IN (changed 2026-08-19).** `pg` and `embedded-postgres` were briefly
+devDependencies. `embedded-postgres` ships a real PostgreSQL binary — **144 MB** — and Vercel installs
+devDependencies during a build, so that would have been added to every deploy of a five-user app for
+a test production never runs. Caught while checking what a merge would actually ship. To run the 13
+barrier tests:
+
+    cd server && npm install --no-save pg embedded-postgres && npm test
+
+Without them the suite reports **340 passed, 13 skipped**, and the skip message prints that command.
+The trade is real: a default `npm test` no longer exercises the barrier. That is only acceptable
+because the barrier is PARKED and runs at exactly one moment — migration 019, which is Part B.
+**Whoever reviews it before that moment must run the install line above.**
 
 ## Codex RE-VERIFY #2 FAIL -> new evidence
 
