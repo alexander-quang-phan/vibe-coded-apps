@@ -48,6 +48,13 @@ made for batch 1, because Codex remains unusable on this branch. If Codex ever b
 Part A is still worth a VERIFY pass — ask it as ordinary feature code, not as security machinery.
 
 ### WHAT ALEX DOES NEXT — the four manual steps, in order
+**Follow `docs/PHASE-9.5-PART-A-RUNBOOK.md`** (PDF beside it) — it expands each step below into the
+exact command or dashboard click, a verification, and an undo. Every figure in it was checked against
+the live database on 2026-08-19: migrations 012/018/018a have NEVER been applied (0 `_enc` columns,
+0 blind-index columns, 0 barrier triggers), and the database holds 7 users / 267 rows / 159
+transactions / 85 categories. A pre-flight snapshot was taken to
+`~/Trim-backups/trim-data-2026-08-19T05-15-52-043Z` via the new `server/scripts/snapshot-data.mjs`.
+
 None of these are code, and none of them can be done by a model (AGENTS.md reserves the key to Alex):
   1. Generate and **back up** `DATA_ENCRYPTION_KEY`. Losing it loses the data once 019 runs.
   2. Apply migrations **012, 018, 018a** in Supabase (additive and reversible).

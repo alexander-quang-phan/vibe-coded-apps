@@ -877,6 +877,12 @@ older than the 200-row window load. Verify by tapping into an old month in the r
 >        019. Found by the completeness audit, not by a test, because no test asserted the SHAPE of
 >        the query.
 >
+> - **THE RUNBOOK FOR THOSE STEPS IS `docs/PHASE-9.5-PART-A-RUNBOOK.md`** (+ a PDF beside it),
+>   written 2026-08-19 for Alex to follow himself: what each step does, the exact command or click,
+>   how to verify it, and how to undo it. Its numbers were checked against the live database, not
+>   copied from these docs. `server/scripts/snapshot-data.mjs` takes the pre-flight data backup
+>   (read-only, no pg_dump/psql/CLI/Docker needed, writes JSON to `~/Trim-backups/` outside the repo).
+>
 > - **What remains before encryption can be switched on — none of it code:** Alex generates and backs
 >   up `DATA_ENCRYPTION_KEY`; migrations 012/018/018a are applied; `ENCRYPTION_PHASE=dual` and a
 >   redeploy; the backfill runs. Then **Part B** — the gate, the barrier and migration 019 — which
