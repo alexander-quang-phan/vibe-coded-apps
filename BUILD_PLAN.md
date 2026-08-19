@@ -897,6 +897,11 @@ older than the 200-row window load. Verify by tapping into an old month in the r
 >    The trigger now takes `SELECT ... FOR SHARE` on the singleton flag, so engaging the barrier
 >    blocks until every admitted writer finishes. **`server/test/writeBarrier.pg.test.js`** runs the
 >    real migration against a throwaway embedded PostgreSQL and RED-fails against the old SQL.
+>    **These 13 tests are OPT-IN and skip by default** — `embedded-postgres` ships a 144 MB
+>    PostgreSQL binary and Vercel installs devDependencies during a build, so declaring it would have
+>    put that download in every deploy. Run them with
+>    `cd server && npm install --no-save pg embedded-postgres && npm test`; the skip message prints
+>    the same line. Anyone reviewing the barrier before Part B must run it.
 > 2. **`TRUNCATE` was not guarded** — a separate trigger event, and not counted by `pg_stat`'s tuple
 >    counters either, so it went through both defences. Added to every statement trigger.
 > 3. **Fresh migration replay was still invalid:** 012 altered `public.recurrences`, which 014
