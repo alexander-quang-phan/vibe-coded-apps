@@ -1,7 +1,7 @@
 # Chat Handoff — updated 2026-08-19 (Part A started; 9.5 cutover machinery PARKED, UNVERIFIED)
 
 ## DUAL-AGENT BATON  (both models: update this the MOMENT you finish work)
-- Current stage:  **stage 4 BUILD — Part A (the reversible half of Phase 9.5), Claude Code**
+- Current stage:  **stage 4 BUILD — Part A. First four routes MERGED AND DEPLOYED 2026-08-19.**
 - Model A is:     Claude Code (build + revise). Model B / verifier: **Codex — CURRENTLY UNAVAILABLE**
 - Up next:        **Claude Code** continues the Part A route sweep. Codex verifies Part A when it is
                   built — as ordinary feature code, not as security machinery.
@@ -14,6 +14,22 @@
                   the same request, and the derived foreign-currency amount — and it needed no
                   change to the codec. `goals.js` and `wins.js` followed. Suite **244 -> 353**,
                   client build PASS. **4 of ~15 route files swept — a mergeable batch.**
+
+### DEPLOYED 2026-08-19 — and what that did and did not do
+`main` now carries Part A's first four routes, and `trim-api` was deployed from it
+(commit `e9dfbc4`). The client was unchanged, so only the API was deployed.
+
+**It shipped INERT.** `ENCRYPTION_PHASE` is not set in Vercel — verified with `vercel env ls` before
+merging — so it resolves to `off`, where `selectFor`/`encodeWrite`/`decodeRow` are identity
+functions. No `_enc` column is touched, which is why no migration was needed. **Nothing in the
+database is encrypted and `DATA_ENCRYPTION_KEY` is still unset.**
+
+Verified live: `/api/health` 200; `/api/budgets`, `/api/transactions`, `/api/goals`, `/api/wins` all
+401 (auth intact, not 500); client 200.
+
+The parked, unverified cutover machinery rode along to `main`. It is inert — no route imports it and
+migrations are files until applied — but it IS on main now. The rule stands: **independent review
+before migration 019 is ever run.**
 
 ### Part A progress — the route sweep
 - **Done:** `lib/blindIndex.js` (extracted from the backfill), `lib/encryptionCodec.js` +
@@ -94,6 +110,9 @@ treating one irreversible step as inseparable from the feature:
   - 2026-08-19 Codex: **COULD NOT RUN** — output withheld twice as a "cybersecurity request",
     including after rewording. No review performed; no commit; nothing changed.
   - 2026-08-19 Alex: **decision — park the cutover machinery unverified, build Part A.**
+  - 2026-08-19 Claude Code: Part A routes 1-4 (budgets, transactions, goals, wins) + the codec.
+    Suite 244 -> 353. **Merged to main and deployed to trim-api** at Alex's go-ahead. Shipped inert
+    at phase `off`; no migration applied, nothing encrypted.
 
 ## WHERE THE FINDINGS ARE COMING FROM  (read this before starting round 5)
 
