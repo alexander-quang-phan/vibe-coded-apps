@@ -811,7 +811,7 @@ older than the 200-row window load. Verify by tapping into an old month in the r
 > (`lib/merchantMemory.js`, wired into `/suggest` behind the phase flag); `subscriptions.js`
 > `merchant_key` is not.
 
-### ▢ Task 9.5 Part A — the dual-write route sweep (IN PROGRESS, started 2026-08-19)
+### ▣ Task 9.5 Part A — the dual-write route sweep (CODE COMPLETE 2026-08-19)
 
 > **Why Part A exists as its own task.** Four rounds of cross-model verification on the migration-019
 > cutover machinery found real defects, but four and a half of the last five were in machinery added
@@ -851,10 +851,31 @@ older than the 200-row window load. Verify by tapping into an old month in the r
 >   `phase-9.5-part-a-batch-2`. `subscriptions.js` is the only route needing phase-aware logic of its
 >   own: its encrypted `merchant_key` is the primary key that 019 moves onto `merchant_key_hmac`, so
 >   the lookup and the upsert conflict target follow the phase.
-> - **Next:**
->   projections, specialGroups, subscriptions, ask + `lib/askContext.js`, the remaining reads in
->   categories/me, and **`lib/runRecurrences.js`** — the 03:00 cron INSERTs transactions and must go
->   through the codec or it writes rows the gate will reject.
+> - **THE SWEEP IS COMPLETE.** Every file that queries an encrypted table goes through the codec.
+>   Proven by an audit that reads `.from('…')` out of every file in `routes/` and `lib/` and checks
+>   it against the registry, rather than against a hand-kept list:
+>     - 13 routes + `lib/askContext.js` + `lib/runRecurrences.js` — swept;
+>     - `lib/defaultCategories.js` and `lib/merchantMemory.js` — phase-aware directly (they predate
+>       the codec);
+>     - `lib/userZone.js` — reads `timezone` only, which is not encrypted.
+>   Suite **450**, client build passes, every route and the cron import cleanly at all three phases.
+>
+> - **The three finds worth remembering**, none of which a reading would have caught:
+>     1. `lib/runRecurrences.js` — the 03:00 cron — had NO database-level coverage at all. At `dual`
+>        a plaintext-only insert would have left rows the gate refuses, blocking the cutover every
+>        night until somebody noticed; at `enc` it would simply have failed. Eight tests now, and
+>        RED-checked.
+>     2. `routes/ask.js` streamed the raw inserted row to the browser and passed prior history to
+>        the model undecoded — the user's own message as a `v2:…` envelope, and a transcript of
+>        ciphertext for Ask Trim to reason over.
+>     3. `lib/merchantMemory.js` selected `description` by name, a column that does not exist after
+>        019. Found by the completeness audit, not by a test, because no test asserted the SHAPE of
+>        the query.
+>
+> - **What remains before encryption can be switched on — none of it code:** Alex generates and backs
+>   up `DATA_ENCRYPTION_KEY`; migrations 012/018/018a are applied; `ENCRYPTION_PHASE=dual` and a
+>   redeploy; the backfill runs. Then **Part B** — the gate, the barrier and migration 019 — which
+>   must not proceed until the parked cutover machinery has an independent review (see CHAT_HANDOFF).
 
 > **Codex stage-4 VERIFY: FAIL (2026-08-18).** Eleven findings, including two reproduced false
 > PASSes in the gate itself (a 501-row composite-PK scan that verified 500; a value-only edit after
