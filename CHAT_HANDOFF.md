@@ -1,10 +1,13 @@
-# Chat Handoff — updated 2026-08-19 (Part A started; 9.5 cutover machinery PARKED, UNVERIFIED)
+# Chat Handoff — updated 2026-08-19 (Part A CODE-COMPLETE, MERGED AND DEPLOYED INERT; 9.5 cutover machinery PARKED, UNVERIFIED)
 
 ## DUAL-AGENT BATON  (both models: update this the MOMENT you finish work)
-- Current stage:  **stage 4 BUILD — Part A. First four routes MERGED AND DEPLOYED 2026-08-19.**
+- Current stage:  **stage 4 BUILD — Part A is CODE-COMPLETE. The WHOLE sweep is MERGED AND DEPLOYED
+                  (batch 1 `e9dfbc4`, batch 2 `62ab15f`, both 2026-08-19). No code work remains in
+                  Part A. What is left is Alex's four manual steps — see "WHAT ALEX DOES NEXT".**
 - Model A is:     Claude Code (build + revise). Model B / verifier: **Codex — CURRENTLY UNAVAILABLE**
-- Up next:        **Claude Code** continues the Part A route sweep. Codex verifies Part A when it is
-                  built — as ordinary feature code, not as security machinery.
+- Up next:        **Alex** — generate `DATA_ENCRYPTION_KEY`, apply 012/018/018a, set
+                  `ENCRYPTION_PHASE=dual`, run the backfill. Codex verifies Part A whenever it
+                  becomes usable — as ordinary feature code, not as security machinery.
 - Last actor did: Started Part A. Built the query-boundary codec (`lib/encryptionCodec.js`) and swept
                   the first TWO routes through it. Added a reusable route-test harness that mounts
                   the REAL router on Express and speaks HTTP to it over a fake PostgREST, and proved
@@ -14,6 +17,46 @@
                   the same request, and the derived foreign-currency amount — and it needed no
                   change to the codec. `goals.js` and `wins.js` followed. Suite **244 -> 353**,
                   client build PASS. **4 of ~15 route files swept — a mergeable batch.**
+
+### BATCH 2 MERGED AND DEPLOYED 2026-08-19 — Part A's route sweep is fully live (and still inert)
+
+`phase-9.5-part-a-batch-2` merged to `main` as `62ab15f` (`--no-ff`, matching batch 1) and `trim-api`
+deployed from it. **The client was untouched, so only the API was deployed.**
+
+Batch 2 carried the remaining eleven files: `dashboard`, `analytics`, `affordability`, `projections`,
+`specialGroups`, `subscriptions`, `ask`, `lib/askContext.js`, `me`, `categories`, and
+`lib/runRecurrences.js` (the 03:00 cron). **No migration file and no dependency change** — checked
+before merging, which also means `pg`/`embedded-postgres` did not ride along into the deploy.
+
+Evidence, all re-run on `main` after the merge rather than taken from the branch:
+  - `cd server && npm test` -> **450 passed, 0 failed** (the 13 real-PostgreSQL barrier tests ran too)
+  - `cd client && npm run build` -> **PASS**
+  - `vercel env ls production` on `trim-api` -> **`ENCRYPTION_PHASE` and `DATA_ENCRYPTION_KEY` are
+    both absent.** This is the single fact that makes the deploy inert; it was re-checked, not assumed.
+  - Live after deploy: `/api/health` **200**; `/api/dashboard`, `/analytics`, `/subscriptions`,
+    `/categories`, `/me`, `/ask`, `/affordability`, `/projections`, `/special-groups`,
+    `/transactions`, `/budgets`, `/goals`, `/wins` all **401**; client **200**.
+
+**What that verification does and does not prove.** The 401s prove every swept module imports and the
+auth middleware runs — not that the queries return correct data for a logged-in user. That is covered
+by the 450 tests at all three phases, and at phase `off` the codec is identity functions, so no
+behaviour should have changed. A logged-in click-through is still Alex's to do; Claude cannot sign in.
+
+**Still not independently verified.** Claude Code built batch 2 and Claude Code checked it, which
+breaks the dual-agent invariant. Merged on Alex's explicit decision (2026-08-19), the same call he
+made for batch 1, because Codex remains unusable on this branch. If Codex ever becomes available,
+Part A is still worth a VERIFY pass — ask it as ordinary feature code, not as security machinery.
+
+### WHAT ALEX DOES NEXT — the four manual steps, in order
+None of these are code, and none of them can be done by a model (AGENTS.md reserves the key to Alex):
+  1. Generate and **back up** `DATA_ENCRYPTION_KEY`. Losing it loses the data once 019 runs.
+  2. Apply migrations **012, 018, 018a** in Supabase (additive and reversible).
+  3. Set **`ENCRYPTION_PHASE=dual`** in Vercel on `trim-api` and redeploy. Every write then writes
+     plaintext AND ciphertext.
+  4. Run **`node scripts/encrypt-backfill.mjs`** to encrypt the rows that already exist.
+At the end of those four, financial data is encrypted with the plaintext still beside it — nothing
+irreversible has happened. **Part B (migration 019, the drop) can wait months**, and must not run
+until the parked cutover machinery gets an independent review.
 
 ### DEPLOYED 2026-08-19 — and what that did and did not do
 `main` now carries Part A's first four routes, and `trim-api` was deployed from it
@@ -146,6 +189,9 @@ treating one irreversible step as inseparable from the feature:
   - 2026-08-19 Codex: **COULD NOT RUN** — output withheld twice as a "cybersecurity request",
     including after rewording. No review performed; no commit; nothing changed.
   - 2026-08-19 Alex: **decision — park the cutover machinery unverified, build Part A.**
+  - 2026-08-19 Claude Code: Part A batch 2 — the remaining 11 files. Suite 353 -> 450. **Merged to
+    main (`62ab15f`) and deployed to trim-api** at Alex's go-ahead, again without Codex review.
+    Shipped inert at phase `off`. Part A is code-complete; only Alex's four manual steps remain.
   - 2026-08-19 Claude Code: Part A routes 1-4 (budgets, transactions, goals, wins) + the codec.
     Suite 244 -> 353. **Merged to main and deployed to trim-api** at Alex's go-ahead. Shipped inert
     at phase `off`; no migration applied, nothing encrypted.

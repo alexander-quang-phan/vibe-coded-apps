@@ -811,7 +811,7 @@ older than the 200-row window load. Verify by tapping into an old month in the r
 > (`lib/merchantMemory.js`, wired into `/suggest` behind the phase flag); `subscriptions.js`
 > `merchant_key` is not.
 
-### ▣ Task 9.5 Part A — the dual-write route sweep (CODE COMPLETE 2026-08-19)
+### ▣ Task 9.5 Part A — the dual-write route sweep (CODE COMPLETE, MERGED AND DEPLOYED 2026-08-19)
 
 > **Why Part A exists as its own task.** Four rounds of cross-model verification on the migration-019
 > cutover machinery found real defects, but four and a half of the last five were in machinery added
@@ -850,7 +850,12 @@ older than the 200-row window load. Verify by tapping into an old month in the r
 >   **`specialGroups.js`** and **`subscriptions.js`** (suite -> 425), all on
 >   `phase-9.5-part-a-batch-2`. `subscriptions.js` is the only route needing phase-aware logic of its
 >   own: its encrypted `merchant_key` is the primary key that 019 moves onto `merchant_key_hmac`, so
->   the lookup and the upsert conflict target follow the phase.
+>   the lookup and the upsert conflict target follow the phase. Finally `ask.js` + `lib/askContext.js`,
+>   `me.js`, `categories.js` and `lib/runRecurrences.js` (suite -> 450). **Batch 2 was merged to
+>   `main` as `62ab15f` and deployed to `trim-api` on 2026-08-19**, also inert at phase `off` — so
+>   the ENTIRE Part A sweep is now live and doing nothing, exactly as intended. Verified live:
+>   `/api/health` 200, all thirteen API routes 401 (auth intact, not 500), client 200, and
+>   `vercel env ls production` re-confirms `ENCRYPTION_PHASE` and `DATA_ENCRYPTION_KEY` are unset.
 > - **THE SWEEP IS COMPLETE.** Every file that queries an encrypted table goes through the codec.
 >   Proven by an audit that reads `.from('…')` out of every file in `routes/` and `lib/` and checks
 >   it against the registry, rather than against a hand-kept list:
