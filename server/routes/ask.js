@@ -13,7 +13,14 @@ import {
 import { dayInZone } from '../lib/month.js';
 import { userTimeZone } from '../lib/userZone.js';
 
+import { selectFor, decodeRow, decodeRows, encodeWrite } from '../lib/encryptionCodec.js';
+
 const router = Router();
+
+// Phase 9.5 Part A. `ask_messages.content` is encrypted — free-form chat that
+// could contain anything and that nothing queries.
+const ASK_MESSAGE_COLUMNS = 'id, role, content, created_at';
+const ASK_HISTORY_COLUMNS = 'role, content, created_at';
 
 const askSchema = z.object({
   message: z.string().trim().min(1).max(2000),
@@ -33,13 +40,14 @@ router.get('/history', async (req, res, next) => {
   try {
     const { data, error } = await supabase
       .from('ask_messages')
-      .select('id, role, content, created_at')
+      .select(selectFor('ask_messages', ASK_MESSAGE_COLUMNS))
       .eq('user_id', req.user.id)
       .order('created_at', { ascending: false })
       .limit(ASK_HISTORY_VISIBLE);
     if (error) throw error;
     // Return oldest-first so the client can append in render order.
-    res.json({ messages: (data || []).reverse() });
+    const messages = decodeRows('ask_messages', req.user.id, data || []).reverse();
+    res.json({ messages });
   } catch (err) {
     next(err);
   }
@@ -77,22 +85,25 @@ router.post('/', async (req, res, next) => {
     // the question in the transcript.
     const { data: userRow, error: userInsErr } = await supabase
       .from('ask_messages')
-      .insert({ user_id: req.user.id, role: 'user', content: message })
-      .select('id, role, content, created_at')
+      .insert(encodeWrite('ask_messages', req.user.id, { user_id: req.user.id, role: 'user', content: message }))
+      .select(selectFor('ask_messages', ASK_MESSAGE_COLUMNS))
       .single();
     if (userInsErr) throw userInsErr;
+    const userMessage = decodeRow('ask_messages', req.user.id, userRow);
 
     // Load prior history to send to the model (oldest first, excluding the
     // message we just inserted).
     const { data: priorRows, error: priorErr } = await supabase
       .from('ask_messages')
-      .select('role, content, created_at')
+      .select(selectFor('ask_messages', ASK_HISTORY_COLUMNS))
       .eq('user_id', req.user.id)
       .lt('created_at', userRow.created_at)
       .order('created_at', { ascending: false })
       .limit(ASK_HISTORY_TO_MODEL);
     if (priorErr) throw priorErr;
-    const history = (priorRows || []).reverse();
+    // Decode before the model sees it — otherwise Ask Trim is handed a
+    // transcript of `v2:…` envelopes and answers about nothing.
+    const history = decodeRows('ask_messages', req.user.id, priorRows || []).reverse();
 
     const context = await loadAskContext({
       supabase,
@@ -114,7 +125,8 @@ router.post('/', async (req, res, next) => {
     res.setHeader('Connection', 'keep-alive');
     res.setHeader('X-Accel-Buffering', 'no');
     res.flushHeaders?.();
-    sseWrite(res, { type: 'user_message', message: userRow });
+    // The DECODED row: sending `userRow` would stream ciphertext to the browser.
+    sseWrite(res, { type: 'user_message', message: userMessage });
 
     const controller = new AbortController();
     // Abort the Anthropic stream only when the client actually goes away.
@@ -179,17 +191,17 @@ router.post('/', async (req, res, next) => {
     if (assistantText.trim().length > 0) {
       const { data, error } = await supabase
         .from('ask_messages')
-        .insert({
+        .insert(encodeWrite('ask_messages', req.user.id, {
           user_id: req.user.id,
           role: 'assistant',
           content: assistantText.slice(0, 8000),
-        })
-        .select('id, role, content, created_at')
+        }))
+        .select(selectFor('ask_messages', ASK_MESSAGE_COLUMNS))
         .single();
       if (error) {
         console.error('[ask] failed to persist assistant message', error.message);
       } else {
-        assistantRow = data;
+        assistantRow = decodeRow('ask_messages', req.user.id, data);
       }
     }
 

@@ -7,6 +7,13 @@ import { suggestFromHistory } from '../lib/merchantMemory.js';
 import { merchantSearchTerm } from '../lib/merchant.js';
 import { CURRENT_PHASE, writesCiphertext } from '../lib/encryptionPhase.js';
 import { blindIndex } from '../lib/crypto.js';
+import { selectFor, decodeRow, decodeRows, encodeWrite } from '../lib/encryptionCodec.js';
+
+// Phase 9.5 Part A. `categories.name` is encrypted with a blind index for the
+// exact keyword lookup. `transactions.description` is encrypted too, which is
+// why /suggest already routes through lib/merchantMemory.js above.
+const CAT_COLUMNS = 'id, name, icon, color, type, is_default, sort_order';
+const CAT_MINI_COLUMNS = 'id, name, type, is_default';
 import { isSingleEmoji } from '../lib/emoji.js';
 
 const router = Router();
@@ -57,13 +64,13 @@ router.get('/', async (req, res, next) => {
 
     const { data, error } = await supabase
       .from('categories')
-      .select('id, name, icon, color, type, is_default, sort_order')
+      .select(selectFor('categories', CAT_COLUMNS))
       .eq('user_id', req.user.id)
       .order('sort_order', { ascending: true })
       .order('created_at', { ascending: true });
 
     if (error) throw error;
-    res.json({ categories: data });
+    res.json({ categories: decodeRows('categories', req.user.id, data) });
   } catch (err) {
     next(err);
   }
@@ -161,12 +168,12 @@ router.post('/', async (req, res, next) => {
 
     const { data, error } = await supabase
       .from('categories')
-      .insert({ user_id: req.user.id, name, icon, color, type, is_default: false })
-      .select('id, name, icon, color, type, is_default, sort_order')
+      .insert(encodeWrite('categories', req.user.id, { user_id: req.user.id, name, icon, color, type, is_default: false }))
+      .select(selectFor('categories', CAT_COLUMNS))
       .single();
 
     if (error) throw error;
-    res.status(201).json({ category: data });
+    res.status(201).json({ category: decodeRow('categories', req.user.id, data) });
   } catch (err) {
     next(err);
   }
@@ -189,15 +196,15 @@ router.patch('/:id', async (req, res, next) => {
 
     const { data, error } = await supabase
       .from('categories')
-      .update(payload)
+      .update(encodeWrite('categories', req.user.id, payload))
       .eq('id', id)
       .eq('user_id', req.user.id)
-      .select('id, name, icon, color, type, is_default, sort_order')
+      .select(selectFor('categories', CAT_COLUMNS))
       .maybeSingle();
 
     if (error) throw error;
     if (!data) return res.status(404).json({ error: 'Category not found' });
-    res.json({ category: data });
+    res.json({ category: decodeRow('categories', req.user.id, data) });
   } catch (err) {
     next(err);
   }
@@ -210,7 +217,7 @@ router.delete('/:id', async (req, res, next) => {
 
     const { data: cat, error: catErr } = await supabase
       .from('categories')
-      .select('id, name, type, is_default')
+      .select(selectFor('categories', CAT_MINI_COLUMNS))
       .eq('id', id)
       .eq('user_id', req.user.id)
       .maybeSingle();

@@ -3,6 +3,14 @@ import { z } from 'zod';
 import { supabase } from '../lib/supabase.js';
 import { titleForLevel, levelProgress } from '../lib/gamification.js';
 import { ensureDefaultCategories } from '../lib/defaultCategories.js';
+import { selectFor, decodeRow, encodeWrite } from '../lib/encryptionCodec.js';
+
+// Phase 9.5 Part A. `user_stats.monthly_limit` is encrypted. The two `select('*')`
+// reads stay as they are — `*` returns the `_enc` column too, and `decodeRow`
+// puts the plaintext name back — but the PATCH's explicit column list and its
+// write both have to go through the codec.
+const PREFS_COLUMNS =
+  'currency, simple_mode, display_name, monthly_limit, special_expenses_enabled, timezone';
 
 const router = Router();
 
@@ -44,6 +52,8 @@ router.get('/', async (req, res, next) => {
       if (insertErr) throw insertErr;
       stats = inserted;
     }
+    // `*` includes monthly_limit_enc; decode puts `monthly_limit` back.
+    stats = decodeRow('user_stats', req.user.id, stats);
 
     // Seed the 12 default categories if this user has none.
     //
@@ -108,20 +118,21 @@ router.patch('/', async (req, res, next) => {
 
     const { data, error } = await supabase
       .from('user_stats')
-      .update(payload)
+      .update(encodeWrite('user_stats', req.user.id, payload))
       .eq('user_id', req.user.id)
-      .select('currency, simple_mode, display_name, monthly_limit, special_expenses_enabled, timezone')
+      .select(selectFor('user_stats', PREFS_COLUMNS))
       .single();
     if (error) throw error;
 
+    const prefs = decodeRow('user_stats', req.user.id, data);
     res.json({
       preferences: {
-        currency: data.currency,
-        simpleMode: data.simple_mode,
-        displayName: data.display_name,
-        monthlyLimit: data.monthly_limit === null ? null : Number(data.monthly_limit),
-        specialExpensesEnabled: data.special_expenses_enabled,
-        timezone: data.timezone ?? null,
+        currency: prefs.currency,
+        simpleMode: prefs.simple_mode,
+        displayName: prefs.display_name,
+        monthlyLimit: prefs.monthly_limit === null ? null : Number(prefs.monthly_limit),
+        specialExpensesEnabled: prefs.special_expenses_enabled,
+        timezone: prefs.timezone ?? null,
       },
     });
   } catch (err) {

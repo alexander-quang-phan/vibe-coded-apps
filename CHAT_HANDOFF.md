@@ -31,6 +31,24 @@ The parked, unverified cutover machinery rode along to `main`. It is inert — n
 migrations are files until applied — but it IS on main now. The rule stands: **independent review
 before migration 019 is ever run.**
 
+### Part A — THE ROUTE SWEEP IS COMPLETE (2026-08-19)
+Every file that queries an encrypted table now goes through the codec, verified by an audit that
+reads `.from('…')` out of every file in `routes/` and `lib/` and checks it against the registry:
+
+    13 routes + lib/askContext.js + lib/runRecurrences.js  -> swept
+    lib/defaultCategories.js, lib/merchantMemory.js        -> phase-aware directly (predate the codec)
+    lib/userZone.js                                        -> reads `timezone` only, nothing encrypted
+
+Suite **450**, client build PASS, every route + the cron imports cleanly at all three phases.
+
+**What remains before encryption can actually be switched on** — none of it code:
+  1. Alex generates and backs up `DATA_ENCRYPTION_KEY` (only he may; AGENTS.md).
+  2. Apply migrations 012, 018, 018a (additive, reversible).
+  3. Set `ENCRYPTION_PHASE=dual`, redeploy, let it run — every write then writes both columns.
+  4. Run `node scripts/encrypt-backfill.mjs`.
+  5. **Part B only:** the gate, the barrier, migration 019. The parked machinery MUST be
+     independently reviewed first — see the PARKED note above.
+
 ### Part A progress — the route sweep
 - **Done:** `lib/blindIndex.js` (extracted from the backfill), `lib/encryptionCodec.js` +
   `presentRow` (27 tests), `test/helpers/routeHarness.js` + per-phase route suites,

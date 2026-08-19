@@ -35,6 +35,12 @@
 import { decryptRegistered } from './crypto.js';
 import { merchantQueryPrefix, merchantMatches, merchantContains } from './merchant.js';
 import { blindIndex } from './crypto.js';
+import { selectFor } from './encryptionCodec.js';
+
+// The columns this lookup needs, in plaintext terms. `selectFor` turns them into
+// what the phase actually has: asking for `description` by name after migration
+// 019 would be a query against a column that no longer exists.
+const LOOKUP_COLUMNS = 'id, category_id, description';
 
 /** How many history rows the suggestion is allowed to weigh. Task 6.9's number. */
 export const MATCH_LIMIT = 200;
@@ -90,7 +96,7 @@ export async function prefixMatches(supabase, { userId, typed, limit = MATCH_LIM
   for (;;) {
     let q = supabase
       .from('transactions')
-      .select('id, category_id, description, description_enc')
+      .select(selectFor('transactions', LOOKUP_COLUMNS))
       .eq('user_id', userId)
       .contains('merchant_prefix_hmacs', [want])
       .order('id', { ascending: true })
@@ -124,7 +130,7 @@ export async function prefixMatches(supabase, { userId, typed, limit = MATCH_LIM
 export async function substringMatches(supabase, { userId, typed, limit = MATCH_LIMIT, scan = FALLBACK_SCAN_LIMIT }) {
   const { data, error } = await supabase
     .from('transactions')
-    .select('id, category_id, description, description_enc')
+    .select(selectFor('transactions', LOOKUP_COLUMNS))
     .eq('user_id', userId)
     .order('date', { ascending: false })
     .limit(scan);

@@ -6,6 +6,7 @@
 // exception to "scope every query by req.user.id", not an oversight.
 import { supabase } from './supabase.js';
 import { advanceToFuture, dueRecurrences, utcDayOfMonth } from './recurrences.js';
+import { selectFor, decodeRows, encodeWrite } from './encryptionCodec.js';
 
 function todayISO() {
   return new Date().toISOString().slice(0, 10);
@@ -34,6 +35,16 @@ const RECURRENCE_COLUMNS =
  * best-effort reverting the claim so the next run retries the occurrence
  * instead of silently losing it.
  */
+// Phase 9.5 Part A. THE most important write in the app to get right: this runs
+// unattended at 03:00 and inserts a real transaction. If it wrote plaintext only
+// while the deployment is in `dual`, the migration-019 gate would find rows with
+// no ciphertext and refuse the cutover — every night, silently, until someone
+// looked. At `enc` it would be worse: `description` no longer exists as a column,
+// so every nightly run would simply fail.
+//
+// `row` arrives DECODED from runRecurrences() below, so `row.amount` and
+// `row.description` are plaintext here; `encodeWrite` re-encrypts them for the
+// transaction, and derives the merchant blind index from the description.
 async function processOne(row, today) {
   const anchorDay = utcDayOfMonth(row.created_at);
   const newNextRunAt = advanceToFuture(row.next_run_at, row.interval, anchorDay, today);
@@ -55,16 +66,18 @@ async function processOne(row, today) {
   // applyLogEvent here. If a future session "fixes" this, it breaks the
   // whole point of the streak: it measures the daily habit of logging by
   // hand, and auto-created rent at 3am would make that meaningless.
-  const { error: txErr } = await supabase.from('transactions').insert({
-    user_id: row.user_id,
-    category_id: row.category_id,
-    amount: row.amount,
-    type: row.type,
-    description: row.description,
-    date: today,
-    is_recurring: true,
-    recurrence_id: row.id,
-  });
+  const { error: txErr } = await supabase.from('transactions').insert(
+    encodeWrite('transactions', row.user_id, {
+      user_id: row.user_id,
+      category_id: row.category_id,
+      amount: row.amount,
+      type: row.type,
+      description: row.description,
+      date: today,
+      is_recurring: true,
+      recurrence_id: row.id,
+    }),
+  );
 
   if (txErr) {
     // Insert failed after we'd already claimed — best-effort revert so this
@@ -89,12 +102,15 @@ export async function runRecurrences() {
 
   const { data: rows, error } = await supabase
     .from('recurrences')
-    .select(RECURRENCE_COLUMNS)
+    .select(selectFor('recurrences', RECURRENCE_COLUMNS))
     .is('cancelled_at', null)
     .lte('next_run_at', today);
   if (error) throw error;
 
-  const due = dueRecurrences(rows ?? [], today);
+  // Decode before anything reads amount/description. Each row carries its own
+  // user_id, which is what decodeRows needs to derive the per-user key — this
+  // sweep is across ALL users, not one request.
+  const due = dueRecurrences(decodeRows('recurrences', null, rows ?? []), today);
 
   let created = 0;
   let skipped = 0;
