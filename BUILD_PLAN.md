@@ -846,8 +846,9 @@ older than the 200-row window load. Verify by tapping into an old month in the r
 >   encrypted columns across two tables) and **`routes/wins.js`** (read-only over four encrypted
 >   tables). Suite 244 -> 353. **Those four were merged to `main` and deployed to `trim-api` on
 >   2026-08-19** — inert, at phase `off`, with no migration applied. Then **`routes/dashboard.js`**
->   and **`routes/analytics.js`** (suite -> 381), on `phase-9.5-part-a-batch-2`.
-> - **Next:** affordability,
+>   and **`routes/analytics.js`**, then **`affordability.js`**, **`projections.js`** and
+>   **`specialGroups.js`** (suite -> 403), all on `phase-9.5-part-a-batch-2`.
+> - **Next:**
 >   projections, specialGroups, subscriptions, ask + `lib/askContext.js`, the remaining reads in
 >   categories/me, and **`lib/runRecurrences.js`** — the 03:00 cron INSERTs transactions and must go
 >   through the codec or it writes rows the gate will reject.

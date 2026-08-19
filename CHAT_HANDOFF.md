@@ -35,9 +35,15 @@ before migration 019 is ever run.**
 - **Done:** `lib/blindIndex.js` (extracted from the backfill), `lib/encryptionCodec.js` +
   `presentRow` (27 tests), `test/helpers/routeHarness.js` + per-phase route suites,
   **`routes/budgets.js`**, **`routes/transactions.js`**, **`routes/goals.js`**, **`routes/wins.js`**,
-  **`routes/dashboard.js`** and **`routes/analytics.js`** swept, each with a route suite run at all
-  three phases. Suite **381**. Routes 1-4 are merged and deployed; 5-6 are on
+  **`routes/dashboard.js`**, **`routes/analytics.js`**, **`routes/affordability.js`**,
+  **`routes/projections.js`** and **`routes/specialGroups.js`** swept, each with a route suite run at
+  all three phases. Suite **403**. Routes 1-4 are merged and deployed; 5-9 are on
   `phase-9.5-part-a-batch-2`.
+- **Decode the RESPONSE too, not just the query.** `specialGroups.js` POST/PATCH built their JSON as
+  `{ id: data.id, name: data.name }` straight off the query result. Sweeping the `select` was not
+  enough — at phase `enc` the response carried `name: undefined`. This was the FIRST failure that
+  differed by phase rather than being a wrong test expectation, and the three-phase suites are what
+  caught it.
 - **`select('*')` needs no `selectFor`, only a decode.** `*` returns the `_enc` column too, so
   `decodeRow` fills the plaintext name back in. `dashboard.js` reads `user_stats` that way and then
   returns `stats.monthly_limit` — without the decode that was `Number(undefined)` = NaN, served as
@@ -46,8 +52,7 @@ before migration 019 is ever run.**
   only half the job — five downstream reads still used the raw `*Res.data`, which at phase `enc`
   would have been `undefined` and turned every total into NaN. After sweeping a route, grep it for
   the original result variables and make sure nothing still reads them.
-- **Next, in rough order of risk:** `routes/affordability.js`, `routes/projections.js`,
-  `routes/specialGroups.js`, `routes/subscriptions.js`, `routes/ask.js` + `lib/askContext.js`,
+- **Next, in rough order of risk:** `routes/subscriptions.js`, `routes/ask.js` + `lib/askContext.js`,
   `lib/runRecurrences.js` (the 03:00 cron — it INSERTs transactions and MUST go through the codec),
   and the remaining reads in `routes/categories.js` / `routes/me.js`.
 - **The pattern to copy** is `routes/budgets.js`: keep the route's own column list as a constant,

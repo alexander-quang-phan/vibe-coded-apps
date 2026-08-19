@@ -6,7 +6,17 @@ import { resolveTotalBudget } from '../lib/overallBudget.js';
 import { monthBounds } from '../lib/month.js';
 import { userTimeZone } from '../lib/userZone.js';
 
+import { selectFor, decodeRow, decodeRows } from '../lib/encryptionCodec.js';
+
 const router = Router();
+
+// Phase 9.5 Part A. Read-only; every response field is named, so decoding at the
+// boundary is the whole job.
+const AFF_BUDGET_COLUMNS = 'category_id, amount_limit';
+const AFF_TX_COLUMNS = 'amount, category_id, is_special';
+const AFF_GOAL_COLUMNS = 'id, name, emoji, target_amount, current_amount, target_date, created_at';
+const AFF_CONTRIB_COLUMNS = 'amount, created_at';
+const AFF_STATS_COLUMNS = 'special_expenses_enabled, monthly_limit';
 
 const checkSchema = z.object({
   amount: z.number().positive().finite().max(1_000_000_000),
@@ -51,37 +61,45 @@ router.post('/', async (req, res, next) => {
     const [budgetsRes, txRes, goalsRes, contribsRes, statsRes] = await Promise.all([
       supabase
         .from('budgets')
-        .select('category_id, amount_limit')
+        .select(selectFor('budgets', AFF_BUDGET_COLUMNS))
         .eq('user_id', req.user.id)
         .eq('period', 'monthly'),
       supabase
         .from('transactions')
-        .select('amount, category_id, is_special')
+        .select(selectFor('transactions', AFF_TX_COLUMNS))
         .eq('user_id', req.user.id)
         .eq('type', 'expense')
         .gte('date', firstISO)
         .lt('date', nextFirstISO),
       supabase
         .from('savings_goals')
-        .select('id, name, emoji, target_amount, current_amount, target_date, created_at')
+        .select(selectFor('savings_goals', AFF_GOAL_COLUMNS))
         .eq('user_id', req.user.id),
       supabase
         .from('savings_contributions')
-        .select('amount, created_at')
+        .select(selectFor('savings_contributions', AFF_CONTRIB_COLUMNS))
         .eq('user_id', req.user.id)
         .gte('created_at', ninetyDaysAgo),
       supabase
         .from('user_stats')
-        .select('special_expenses_enabled, monthly_limit')
+        .select(selectFor('user_stats', AFF_STATS_COLUMNS))
         .eq('user_id', req.user.id)
         .single(),
     ]);
     for (const r of [budgetsRes, txRes, goalsRes, contribsRes, statsRes]) if (r.error) throw r.error;
 
-    const specialEnabled = !!statsRes.data.special_expenses_enabled;
+    // Decode once, at the boundary; every calculation below is unchanged.
+    const uid = req.user.id;
+    const budgetRows = decodeRows('budgets', uid, budgetsRes.data);
+    const txRows = decodeRows('transactions', uid, txRes.data);
+    const goalRows = decodeRows('savings_goals', uid, goalsRes.data);
+    const contribRows = decodeRows('savings_contributions', uid, contribsRes.data);
+    const stats = decodeRow('user_stats', uid, statsRes.data);
+
+    const specialEnabled = !!stats.special_expenses_enabled;
     // `specialEnabled && !includeSpecial` — the flag only excludes while the
     // preference is on AND the user is viewing the excl. total.
-    const countable = excludeSpecial(txRes.data, specialEnabled && !includeSpecial);
+    const countable = excludeSpecial(txRows, specialEnabled && !includeSpecial);
 
     const spendByCat = new Map();
     let totalSpent = 0;
@@ -96,7 +114,7 @@ router.post('/', async (req, res, next) => {
     let categoryRemaining = null;
     let categoryLimit = 0;
     if (categoryId) {
-      const budget = budgetsRes.data.find((b) => b.category_id === categoryId);
+      const budget = budgetRows.find((b) => b.category_id === categoryId);
       if (budget) {
         categoryLimit = Number(budget.amount_limit);
         const spent = spendByCat.get(categoryId) ?? 0;
@@ -110,8 +128,8 @@ router.post('/', async (req, res, next) => {
     // the category budgets measured against budgeted spend only, exactly as
     // before. Shared with projections.js so both agree — they used to differ.
     const resolved = resolveTotalBudget({
-      monthlyLimit: statsRes.data.monthly_limit,
-      monthlyBudgets: budgetsRes.data,
+      monthlyLimit: stats.monthly_limit,
+      monthlyBudgets: budgetRows,
       spendByCat,
     });
     const totalLimit = resolved.limit ?? 0;
@@ -121,7 +139,7 @@ router.post('/', async (req, res, next) => {
 
     // Goal impact — soonest-target_date open goal, falling back to
     // earliest-created open goal. Needs recent contributions to know the pace.
-    const openGoals = goalsRes.data.filter(
+    const openGoals = goalRows.filter(
       (g) => Number(g.current_amount) < Number(g.target_amount),
     );
     let goal = null;
@@ -135,7 +153,7 @@ router.post('/', async (req, res, next) => {
       );
       const picked = dated[0] ?? fallback[0];
 
-      const contributed = contribsRes.data.reduce((sum, c) => sum + Number(c.amount), 0);
+      const contributed = contribRows.reduce((sum, c) => sum + Number(c.amount), 0);
       if (contributed > 0) {
         const dailyRate = contributed / 90;
         goalImpactDays = Math.max(1, Math.round(amount / dailyRate));

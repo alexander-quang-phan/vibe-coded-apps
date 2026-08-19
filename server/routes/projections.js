@@ -5,7 +5,15 @@ import { resolveTotalBudget, buildPace } from '../lib/overallBudget.js';
 import { dayInZone, addMonths, daysInMonth, dayOfMonth } from '../lib/month.js';
 import { userTimeZone } from '../lib/userZone.js';
 
+import { selectFor, decodeRow, decodeRows } from '../lib/encryptionCodec.js';
+
 const router = Router();
+
+// Phase 9.5 Part A. Read-only and fully aggregated.
+const PROJ_TX_CAT_COLUMNS = 'amount, category_id, is_special';
+const PROJ_TX_COLUMNS = 'amount, is_special';
+const PROJ_BUDGET_COLUMNS = 'category_id, amount_limit';
+const PROJ_STATS_COLUMNS = 'monthly_limit, special_expenses_enabled';
 
 const COLD_START_MIN_DAYS = 3;
 
@@ -62,26 +70,26 @@ router.get('/month', async (req, res, next) => {
         .from('transactions')
         // category_id is needed so the pace maths can measure spend on the
         // same basis as the limit it's compared against (Phase 10 A4).
-        .select('amount, category_id, is_special')
+        .select(selectFor('transactions', PROJ_TX_CAT_COLUMNS))
         .eq('user_id', req.user.id)
         .eq('type', 'expense')
         .gte('date', firstISO)
         .lt('date', nextFirstISO),
       supabase
         .from('transactions')
-        .select('amount, is_special')
+        .select(selectFor('transactions', PROJ_TX_COLUMNS))
         .eq('user_id', req.user.id)
         .eq('type', 'expense')
         .gte('date', lastMonthFirstISO)
         .lt('date', firstISO),
       supabase
         .from('budgets')
-        .select('category_id, amount_limit')
+        .select(selectFor('budgets', PROJ_BUDGET_COLUMNS))
         .eq('user_id', req.user.id)
         .eq('period', 'monthly'),
       supabase
         .from('user_stats')
-        .select('monthly_limit, special_expenses_enabled')
+        .select(selectFor('user_stats', PROJ_STATS_COLUMNS))
         .eq('user_id', req.user.id)
         .single(),
     ]);
@@ -90,9 +98,14 @@ router.get('/month', async (req, res, next) => {
       if (r.error) throw r.error;
     }
 
-    const specialEnabled = !!statsRes.data.special_expenses_enabled;
-    const thisMonthTx = excludeSpecial(thisMonthRes.data, specialEnabled);
-    const lastMonthTx = excludeSpecial(lastMonthRes.data, specialEnabled);
+    // Decode once, at the boundary; every calculation below is unchanged.
+    const uid = req.user.id;
+    const stats = decodeRow('user_stats', uid, statsRes.data);
+    const budgetRows = decodeRows('budgets', uid, budgetsRes.data);
+
+    const specialEnabled = !!stats.special_expenses_enabled;
+    const thisMonthTx = excludeSpecial(decodeRows('transactions', uid, thisMonthRes.data), specialEnabled);
+    const lastMonthTx = excludeSpecial(decodeRows('transactions', uid, lastMonthRes.data), specialEnabled);
 
     const spendSoFar = thisMonthTx.reduce((sum, t) => sum + Number(t.amount), 0);
     const lastMonthSpend = lastMonthTx.reduce(
@@ -110,8 +123,8 @@ router.get('/month', async (req, res, next) => {
       spendByCat.set(t.category_id, (spendByCat.get(t.category_id) ?? 0) + Number(t.amount));
     }
     const resolved = resolveTotalBudget({
-      monthlyLimit: statsRes.data.monthly_limit,
-      monthlyBudgets: budgetsRes.data,
+      monthlyLimit: stats.monthly_limit,
+      monthlyBudgets: budgetRows,
       spendByCat,
     });
     const monthlyBudget = resolved.limit;

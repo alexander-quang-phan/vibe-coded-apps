@@ -2,7 +2,16 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { supabase } from '../lib/supabase.js';
 
+import { selectFor, decodeRow, decodeRows, encodeWrite } from '../lib/encryptionCodec.js';
+
 const router = Router();
+
+// Phase 9.5 Part A. `special_groups.name` is encrypted, and the totals are built
+// from `transactions.amount`. Responses are assembled field by field, so decoding
+// at the boundary is enough.
+const GROUP_COLUMNS = 'id, name, archived_at, created_at';
+const GROUP_PATCH_COLUMNS = 'id, name, archived_at';
+const GROUP_TX_COLUMNS = 'amount, date, special_group_id, is_special';
 
 const UUID_RE = /^[0-9a-f-]{36}$/i;
 
@@ -38,12 +47,12 @@ router.get('/', async (req, res, next) => {
     const [groupsRes, txRes] = await Promise.all([
       supabase
         .from('special_groups')
-        .select('id, name, archived_at, created_at')
+        .select(selectFor('special_groups', GROUP_COLUMNS))
         .eq('user_id', req.user.id)
         .order('created_at', { ascending: false }),
       supabase
         .from('transactions')
-        .select('amount, date, special_group_id, is_special')
+        .select(selectFor('transactions', GROUP_TX_COLUMNS))
         .eq('user_id', req.user.id)
         .eq('type', 'expense')
         .eq('is_special', true)
@@ -52,7 +61,8 @@ router.get('/', async (req, res, next) => {
     for (const r of [groupsRes, txRes]) if (r.error) throw r.error;
 
     const byGroup = new Map();
-    for (const t of txRes.data) {
+    const groupRows = decodeRows('special_groups', req.user.id, groupsRes.data);
+    for (const t of decodeRows('transactions', req.user.id, txRes.data)) {
       const g = byGroup.get(t.special_group_id) ?? { total: 0, count: 0, dates: [] };
       g.total += Number(t.amount);
       g.count += 1;
@@ -60,7 +70,7 @@ router.get('/', async (req, res, next) => {
       byGroup.set(t.special_group_id, g);
     }
 
-    const groups = groupsRes.data.map((g) => {
+    const groups = groupRows.map((g) => {
       const agg = byGroup.get(g.id);
       const dates = agg ? [...agg.dates].sort() : [];
       return {
@@ -88,15 +98,18 @@ router.post('/', async (req, res, next) => {
     }
     const { data, error } = await supabase
       .from('special_groups')
-      .insert({ user_id: req.user.id, name: parsed.data.name })
-      .select('id, name, archived_at, created_at')
+      .insert(encodeWrite('special_groups', req.user.id, { user_id: req.user.id, name: parsed.data.name }))
+      .select(selectFor('special_groups', GROUP_COLUMNS))
       .single();
     if (error) throw error;
+    // Decode before reading `.name`: at phase enc the plaintext column does not
+    // exist, and the response would carry `undefined`.
+    const created = decodeRow('special_groups', req.user.id, data);
     res.status(201).json({
       group: {
-        id: data.id,
-        name: data.name,
-        archivedAt: data.archived_at,
+        id: created.id,
+        name: created.name,
+        archivedAt: created.archived_at,
         total: 0,
         count: 0,
         firstDate: null,
@@ -124,15 +137,16 @@ router.patch('/:id', async (req, res, next) => {
 
     const { data, error } = await supabase
       .from('special_groups')
-      .update(payload)
+      .update(encodeWrite('special_groups', req.user.id, payload))
       .eq('id', id)
       .eq('user_id', req.user.id)
-      .select('id, name, archived_at')
+      .select(selectFor('special_groups', GROUP_PATCH_COLUMNS))
       .maybeSingle();
     if (error) throw error;
     if (!data) return res.status(404).json({ error: 'Group not found' });
 
-    res.json({ group: { id: data.id, name: data.name, archivedAt: data.archived_at } });
+    const updated = decodeRow('special_groups', req.user.id, data);
+    res.json({ group: { id: updated.id, name: updated.name, archivedAt: updated.archived_at } });
   } catch (err) {
     next(err);
   }
