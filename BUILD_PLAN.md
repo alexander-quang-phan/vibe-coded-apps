@@ -837,11 +837,13 @@ older than the 200-row window load. Verify by tapping into an old month in the r
 > `--experimental-test-module-mocks`.
 >
 > - **Done:** `lib/blindIndex.js` (extracted from the backfill, so the gate no longer imports helpers
->   from the script it audits), `lib/encryptionCodec.js` (27 tests), the route harness, and
->   **`routes/budgets.js`** — chosen first because it touches four encrypted columns across four
->   tables. Suite 244 -> 294.
-> - **Next:** `routes/transactions.js` (16 call sites, and the only route carrying a blind index, so
->   it is where the design gets its real test), then goals, wins, dashboard, analytics, affordability,
+>   from the script it audits), `lib/encryptionCodec.js` (27 tests), the route harness,
+>   **`routes/budgets.js`** (four encrypted columns across four tables) and
+>   **`routes/transactions.js`** — 16 call sites, three encrypted columns, the merchant blind index,
+>   a second encrypted table (`recurrences`) written in the same request, and the derived
+>   foreign-currency amount. **It needed no change to the codec**, which is the first real evidence
+>   the boundary abstraction holds. Suite 244 -> 325.
+> - **Next:** goals, wins, dashboard, analytics, affordability,
 >   projections, specialGroups, subscriptions, ask + `lib/askContext.js`, the remaining reads in
 >   categories/me, and **`lib/runRecurrences.js`** — the 03:00 cron INSERTs transactions and must go
 >   through the codec or it writes rows the gate will reject.

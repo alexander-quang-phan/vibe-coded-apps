@@ -5,8 +5,25 @@ import { applyLogEvent } from '../lib/gamification.js';
 import { parseTransactionText } from '../lib/parser.js';
 import { nextRunDate, manualMerchantKey } from '../lib/recurrences.js';
 import { convertToBase } from '../lib/fx.js';
+import { selectFor, decodeRow, encodeWrite, presentRow, presentRows } from '../lib/encryptionCodec.js';
 
 const router = Router();
+
+// Phase 9.5 Part A. The column lists the ROUTE cares about, unchanged from before
+// the sweep. `selectFor` turns each into what the current phase needs, and
+// `presentRow`/`presentRows` turn stored rows back into exactly this shape — so no
+// ciphertext, blind index or user_id can reach the client. At the default
+// ENCRYPTION_PHASE=off both are the identity function.
+//
+// transactions is the route that exercises the design hardest: three encrypted
+// columns, one of them (`description`) carrying the merchant blind index that
+// merchant memory reads. Every write below goes through `encodeWrite`, which is
+// what makes it impossible to change a description and forget its index.
+const TX_LIST_COLUMNS =
+  'id, amount, type, description, date, category_id, is_recurring, is_special, special_group_id, recurrence_id, original_amount, original_currency, fx_rate, created_at';
+const TX_WRITE_COLUMNS =
+  'id, amount, type, description, date, category_id, is_special, special_group_id, is_recurring, recurrence_id, original_amount, original_currency, fx_rate, created_at';
+const REC_COLUMNS = 'id, category_id, type, amount, description, interval, next_run_at';
 
 const isoDate = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Expected YYYY-MM-DD');
 
@@ -116,9 +133,7 @@ router.get('/', async (req, res, next) => {
 
     let query = supabase
       .from('transactions')
-      .select(
-        'id, amount, type, description, date, category_id, is_recurring, is_special, special_group_id, recurrence_id, original_amount, original_currency, fx_rate, created_at',
-      )
+      .select(selectFor('transactions', TX_LIST_COLUMNS))
       .eq('user_id', req.user.id);
 
     if (month) {
@@ -131,7 +146,7 @@ router.get('/', async (req, res, next) => {
       .limit(limit);
 
     if (error) throw error;
-    res.json({ transactions: data });
+    res.json({ transactions: presentRows('transactions', req.user.id, data, TX_LIST_COLUMNS) });
   } catch (err) {
     next(err);
   }
@@ -229,7 +244,7 @@ router.post('/', async (req, res, next) => {
       const initialNextRunAt = nextRunDate(txDate, parsed.data.recurring.interval, anchorDay);
       const { data: rec, error: recErr } = await supabase
         .from('recurrences')
-        .insert({
+        .insert(encodeWrite('recurrences', req.user.id, {
           user_id: req.user.id,
           category_id: categoryId,
           type,
@@ -240,16 +255,18 @@ router.post('/', async (req, res, next) => {
           description: description || null,
           interval: parsed.data.recurring.interval,
           next_run_at: initialNextRunAt,
-        })
-        .select('id, category_id, type, amount, description, interval, next_run_at')
+        }))
+        .select(selectFor('recurrences', REC_COLUMNS))
         .single();
       if (recErr) throw recErr;
-      recurrence = rec;
+      // Decoded, not presented: the code below reads recurrence.amount and
+      // recurrence.next_run_at internally before building the response.
+      recurrence = decodeRow('recurrences', req.user.id, rec);
     }
 
     const { data: tx, error: txErr } = await supabase
       .from('transactions')
-      .insert({
+      .insert(encodeWrite('transactions', req.user.id, {
         user_id: req.user.id,
         category_id: categoryId,
         amount: storedAmount,
@@ -268,10 +285,8 @@ router.post('/', async (req, res, next) => {
         special_group_id: parsed.data.specialGroupId ?? null,
         is_recurring: !!recurrence,
         recurrence_id: recurrence?.id ?? null,
-      })
-      .select(
-        'id, amount, type, description, date, category_id, is_special, special_group_id, is_recurring, recurrence_id, original_amount, original_currency, fx_rate, created_at',
-      )
+      }))
+      .select(selectFor('transactions', TX_WRITE_COLUMNS))
       .single();
     if (txErr) {
       // The transaction is what the user actually asked to log — if it fails
@@ -307,7 +322,7 @@ router.post('/', async (req, res, next) => {
     console.log('[tx:create]', { userId: req.user.id, txId: tx.id });
 
     res.status(201).json({
-      transaction: tx,
+      transaction: presentRow('transactions', req.user.id, tx, TX_WRITE_COLUMNS),
       delta,
       recurrence: recurrence
         ? {
@@ -478,14 +493,14 @@ router.patch('/:id', async (req, res, next) => {
 
     const { data, error } = await supabase
       .from('transactions')
-      .update(payload)
+      .update(encodeWrite('transactions', req.user.id, payload))
       .eq('id', id)
       .eq('user_id', req.user.id)
-      .select('id, amount, type, description, date, category_id, is_special, special_group_id, is_recurring, recurrence_id, original_amount, original_currency, fx_rate, created_at')
+      .select(selectFor('transactions', TX_WRITE_COLUMNS))
       .maybeSingle();
     if (error) throw error;
     if (!data) return res.status(404).json({ error: 'Transaction not found' });
-    res.json({ transaction: data });
+    res.json({ transaction: presentRow('transactions', req.user.id, data, TX_WRITE_COLUMNS) });
   } catch (err) {
     next(err);
   }

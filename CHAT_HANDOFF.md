@@ -6,18 +6,19 @@
 - Up next:        **Claude Code** continues the Part A route sweep. Codex verifies Part A when it is
                   built — as ordinary feature code, not as security machinery.
 - Last actor did: Started Part A. Built the query-boundary codec (`lib/encryptionCodec.js`) and swept
-                  the FIRST route through it (`routes/budgets.js`, which touches three encrypted
-                  columns across three tables). Added a reusable route-test harness that mounts the
-                  REAL router on Express and speaks HTTP to it over a fake PostgREST, and proved the
-                  budgets route returns **byte-identical JSON at all three phases** (off/dual/enc).
-                  Suite **244 -> 294**, client build PASS. 1 of ~15 route files swept.
+                  the first TWO routes through it. Added a reusable route-test harness that mounts
+                  the REAL router on Express and speaks HTTP to it over a fake PostgREST, and proved
+                  both routes return **byte-identical JSON at all three phases** (off/dual/enc).
+                  `routes/transactions.js` is the one that tested the design hardest — three
+                  encrypted columns, the merchant blind index, a second encrypted table written in
+                  the same request, and the derived foreign-currency amount — and it needed no
+                  change to the codec. Suite **244 -> 325**, client build PASS. 2 of ~15 route files.
 
 ### Part A progress — the route sweep
 - **Done:** `lib/blindIndex.js` (extracted from the backfill), `lib/encryptionCodec.js` +
   `presentRow` (27 tests), `test/helpers/routeHarness.js` + per-phase route suites,
-  `routes/budgets.js` swept.
-- **Next, in rough order of risk:** `routes/transactions.js` (16 call sites, the big one — amount,
-  original_amount, description + the merchant blind index), `routes/goals.js`, `routes/wins.js`,
+  **`routes/budgets.js`** and **`routes/transactions.js`** swept (10 route tests each, x3 phases).
+- **Next, in rough order of risk:** `routes/goals.js`, `routes/wins.js`,
   `routes/dashboard.js`, `routes/analytics.js`, `routes/affordability.js`, `routes/projections.js`,
   `routes/specialGroups.js`, `routes/subscriptions.js`, `routes/ask.js` + `lib/askContext.js`,
   `lib/runRecurrences.js` (the 03:00 cron — it INSERTs transactions and MUST go through the codec),
