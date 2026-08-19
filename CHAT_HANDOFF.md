@@ -12,14 +12,20 @@
                   `routes/transactions.js` is the one that tested the design hardest — three
                   encrypted columns, the merchant blind index, a second encrypted table written in
                   the same request, and the derived foreign-currency amount — and it needed no
-                  change to the codec. Suite **244 -> 325**, client build PASS. 2 of ~15 route files.
+                  change to the codec. `goals.js` and `wins.js` followed. Suite **244 -> 353**,
+                  client build PASS. **4 of ~15 route files swept — a mergeable batch.**
 
 ### Part A progress — the route sweep
 - **Done:** `lib/blindIndex.js` (extracted from the backfill), `lib/encryptionCodec.js` +
   `presentRow` (27 tests), `test/helpers/routeHarness.js` + per-phase route suites,
-  **`routes/budgets.js`** and **`routes/transactions.js`** swept (10 route tests each, x3 phases).
-- **Next, in rough order of risk:** `routes/goals.js`, `routes/wins.js`,
-  `routes/dashboard.js`, `routes/analytics.js`, `routes/affordability.js`, `routes/projections.js`,
+  **`routes/budgets.js`**, **`routes/transactions.js`**, **`routes/goals.js`** and
+  **`routes/wins.js`** swept, each with a route suite run at all three phases.
+- **A lesson from `wins.js`, worth repeating on every remaining route:** adding the decode block is
+  only half the job — five downstream reads still used the raw `*Res.data`, which at phase `enc`
+  would have been `undefined` and turned every total into NaN. After sweeping a route, grep it for
+  the original result variables and make sure nothing still reads them.
+- **Next, in rough order of risk:** `routes/dashboard.js`, `routes/analytics.js`,
+  `routes/affordability.js`, `routes/projections.js`,
   `routes/specialGroups.js`, `routes/subscriptions.js`, `routes/ask.js` + `lib/askContext.js`,
   `lib/runRecurrences.js` (the 03:00 cron — it INSERTs transactions and MUST go through the codec),
   and the remaining reads in `routes/categories.js` / `routes/me.js`.

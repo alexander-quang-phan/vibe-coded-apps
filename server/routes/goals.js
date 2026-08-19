@@ -2,8 +2,17 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { supabase } from '../lib/supabase.js';
 import { isSingleEmoji } from '../lib/emoji.js';
+import { selectFor, decodeRow, decodeRows, encodeWrite } from '../lib/encryptionCodec.js';
 
 const router = Router();
+
+// Phase 9.5 Part A. `savings_goals.name`, `.target_amount` and `.current_amount`
+// are encrypted, as is `savings_contributions.amount` and `.note`.
+//
+// This route needs no `presentRow`: every response already goes through `shape()`,
+// which picks named fields rather than returning the database row. Decoding before
+// `shape()` is enough, and no ciphertext can reach the client by construction.
+const GOAL_COLUMNS = 'id, name, emoji, target_amount, current_amount, target_date, created_at';
 
 const isoDate = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Expected YYYY-MM-DD');
 
@@ -57,11 +66,11 @@ router.get('/', async (req, res, next) => {
   try {
     const { data, error } = await supabase
       .from('savings_goals')
-      .select('id, name, emoji, target_amount, current_amount, target_date, created_at')
+      .select(selectFor('savings_goals', GOAL_COLUMNS))
       .eq('user_id', req.user.id)
       .order('created_at', { ascending: true });
     if (error) throw error;
-    res.json({ goals: data.map(shape) });
+    res.json({ goals: decodeRows('savings_goals', req.user.id, data).map(shape) });
   } catch (err) {
     next(err);
   }
@@ -76,17 +85,17 @@ router.post('/', async (req, res, next) => {
     const { name, emoji, targetAmount, targetDate } = parsed.data;
     const { data, error } = await supabase
       .from('savings_goals')
-      .insert({
+      .insert(encodeWrite('savings_goals', req.user.id, {
         user_id: req.user.id,
         name,
         emoji: emoji || null,
         target_amount: targetAmount,
         target_date: targetDate || null,
-      })
-      .select('id, name, emoji, target_amount, current_amount, target_date, created_at')
+      }))
+      .select(selectFor('savings_goals', GOAL_COLUMNS))
       .single();
     if (error) throw error;
-    res.status(201).json({ goal: shape(data) });
+    res.status(201).json({ goal: shape(decodeRow('savings_goals', req.user.id, data)) });
   } catch (err) {
     next(err);
   }
@@ -110,14 +119,14 @@ router.patch('/:id', async (req, res, next) => {
 
     const { data, error } = await supabase
       .from('savings_goals')
-      .update(payload)
+      .update(encodeWrite('savings_goals', req.user.id, payload))
       .eq('id', id)
       .eq('user_id', req.user.id)
-      .select('id, name, emoji, target_amount, current_amount, target_date, created_at')
+      .select(selectFor('savings_goals', GOAL_COLUMNS))
       .maybeSingle();
     if (error) throw error;
     if (!data) return res.status(404).json({ error: 'Goal not found' });
-    res.json({ goal: shape(data) });
+    res.json({ goal: shape(decodeRow('savings_goals', req.user.id, data)) });
   } catch (err) {
     next(err);
   }
@@ -154,28 +163,32 @@ router.post('/:id/contributions', async (req, res, next) => {
 
     const { data: goal, error: goalErr } = await supabase
       .from('savings_goals')
-      .select('id, name, emoji, target_amount, current_amount, target_date, created_at')
+      .select(selectFor('savings_goals', GOAL_COLUMNS))
       .eq('id', id)
       .eq('user_id', req.user.id)
       .maybeSingle();
     if (goalErr) throw goalErr;
     if (!goal) return res.status(404).json({ error: 'Goal not found' });
+    // Decode BEFORE the arithmetic below reads current_amount / target_amount.
+    const current = decodeRow('savings_goals', req.user.id, goal);
 
-    const beforePct = Number(goal.target_amount) > 0 ? Number(goal.current_amount) / Number(goal.target_amount) : 0;
-    const newAmount = Number(goal.current_amount) + amount;
-    const afterPct = Number(goal.target_amount) > 0 ? newAmount / Number(goal.target_amount) : 0;
+    const beforePct = Number(current.target_amount) > 0 ? Number(current.current_amount) / Number(current.target_amount) : 0;
+    const newAmount = Number(current.current_amount) + amount;
+    const afterPct = Number(current.target_amount) > 0 ? newAmount / Number(current.target_amount) : 0;
 
     const { error: contribErr } = await supabase
       .from('savings_contributions')
-      .insert({ goal_id: id, user_id: req.user.id, amount, note: note || null });
+      .insert(encodeWrite('savings_contributions', req.user.id, {
+        goal_id: id, user_id: req.user.id, amount, note: note || null,
+      }));
     if (contribErr) throw contribErr;
 
     const { data: updated, error: updErr } = await supabase
       .from('savings_goals')
-      .update({ current_amount: newAmount })
+      .update(encodeWrite('savings_goals', req.user.id, { current_amount: newAmount }))
       .eq('id', id)
       .eq('user_id', req.user.id)
-      .select('id, name, emoji, target_amount, current_amount, target_date, created_at')
+      .select(selectFor('savings_goals', GOAL_COLUMNS))
       .single();
     if (updErr) throw updErr;
 
@@ -185,7 +198,7 @@ router.post('/:id/contributions', async (req, res, next) => {
     const milestone = crossed.length > 0 ? crossed[crossed.length - 1] : null;
 
     res.status(201).json({
-      goal: shape(updated),
+      goal: shape(decodeRow('savings_goals', req.user.id, updated)),
       milestone,
       justCompleted: beforePct < 1 && afterPct >= 1,
     });

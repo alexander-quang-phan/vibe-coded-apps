@@ -4,7 +4,19 @@ import { excludeSpecial } from '../lib/special.js';
 import { dayInZone } from '../lib/month.js';
 import { userTimeZone } from '../lib/userZone.js';
 
+import { selectFor, decodeRows } from '../lib/encryptionCodec.js';
+
 const router = Router();
+
+// Phase 9.5 Part A. Read-only route over four encrypted tables. Everything is
+// aggregated into a `wins` array of named fields, so nothing here returns a
+// database row and no `presentRow` is needed — decoding before the arithmetic is
+// enough.
+const WINS_TX_COLUMNS = 'id, amount, type, category_id, date, created_at, is_special';
+const WINS_CAT_COLUMNS = 'id, name, icon, color, type';
+const WINS_BUDGET_COLUMNS = 'id, category_id, amount_limit, period';
+const WINS_GOAL_COLUMNS = 'id, name, emoji, target_amount, current_amount';
+const WINS_CONTRIB_COLUMNS = 'id, goal_id, amount, date, created_at';
 const DAY_MS = 86_400_000;
 const WEEKS_PER_MONTH = 4.345;
 
@@ -50,26 +62,26 @@ router.get('/', async (req, res, next) => {
         .single(),
       supabase
         .from('transactions')
-        .select('id, amount, type, category_id, date, created_at, is_special')
+        .select(selectFor('transactions', WINS_TX_COLUMNS))
         .eq('user_id', req.user.id)
         .gte('date', weekStartISO)
         .lte('date', todayISO)
         .limit(500),
       supabase
         .from('categories')
-        .select('id, name, icon, color, type')
+        .select(selectFor('categories', WINS_CAT_COLUMNS))
         .eq('user_id', req.user.id),
       supabase
         .from('budgets')
-        .select('id, category_id, amount_limit, period')
+        .select(selectFor('budgets', WINS_BUDGET_COLUMNS))
         .eq('user_id', req.user.id),
       supabase
         .from('savings_goals')
-        .select('id, name, emoji, target_amount, current_amount')
+        .select(selectFor('savings_goals', WINS_GOAL_COLUMNS))
         .eq('user_id', req.user.id),
       supabase
         .from('savings_contributions')
-        .select('id, goal_id, amount, date, created_at')
+        .select(selectFor('savings_contributions', WINS_CONTRIB_COLUMNS))
         .eq('user_id', req.user.id)
         .gte('created_at', eventCutoff.toISOString())
         .order('created_at', { ascending: false })
@@ -80,15 +92,23 @@ router.get('/', async (req, res, next) => {
       if (result.error) throw result.error;
     }
 
+    // Decode once, here at the boundary; every calculation below is unchanged.
+    const uid = req.user.id;
+    const txRows = decodeRows('transactions', uid, txRes.data);
+    const catRows = decodeRows('categories', uid, catsRes.data);
+    const budgetRows = decodeRows('budgets', uid, budgetsRes.data);
+    const goalRows = decodeRows('savings_goals', uid, goalsRes.data);
+    const contribRows = decodeRows('savings_contributions', uid, contribsRes.data);
+
     const stats = statsRes.data;
     const currency = stats.currency ?? 'GBP';
-    const categoriesById = new Map(catsRes.data.map((c) => [c.id, c]));
-    const goalsById = new Map(goalsRes.data.map((g) => [g.id, g]));
+    const categoriesById = new Map(catRows.map((c) => [c.id, c]));
+    const goalsById = new Map(goalRows.map((g) => [g.id, g]));
     const events = [];
 
     const specialEnabled = !!stats.special_expenses_enabled;
     const expensesByCategory = new Map();
-    for (const tx of excludeSpecial(txRes.data, specialEnabled)) {
+    for (const tx of excludeSpecial(txRows, specialEnabled)) {
       if (tx.type !== 'expense') continue;
       expensesByCategory.set(
         tx.category_id,
@@ -96,7 +116,7 @@ router.get('/', async (req, res, next) => {
       );
     }
 
-    const budgetWins = budgetsRes.data
+    const budgetWins = budgetRows
       .map((budget) => {
         const category = categoriesById.get(budget.category_id);
         const spent = expensesByCategory.get(budget.category_id) ?? 0;
@@ -108,7 +128,7 @@ router.get('/', async (req, res, next) => {
           type: 'under_budget',
           title: `You stayed under budget on ${category.name} this week`,
           body: `${formatMoney(saved, currency)} saved`,
-          at: latestDateForCategory(txRes.data, budget.category_id, todayISO),
+          at: latestDateForCategory(txRows, budget.category_id, todayISO),
           icon: category.icon ?? '💚',
           rank: saved,
         };
@@ -142,9 +162,9 @@ router.get('/', async (req, res, next) => {
     }
 
     const runningGoalAmounts = new Map(
-      goalsRes.data.map((goal) => [goal.id, Number(goal.current_amount)]),
+      goalRows.map((goal) => [goal.id, Number(goal.current_amount)]),
     );
-    for (const contribution of contribsRes.data) {
+    for (const contribution of contribRows) {
       const goal = goalsById.get(contribution.goal_id);
       if (!goal) continue;
       const target = Number(goal.target_amount);

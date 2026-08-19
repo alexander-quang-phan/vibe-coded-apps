@@ -842,8 +842,10 @@ older than the 200-row window load. Verify by tapping into an old month in the r
 >   **`routes/transactions.js`** — 16 call sites, three encrypted columns, the merchant blind index,
 >   a second encrypted table (`recurrences`) written in the same request, and the derived
 >   foreign-currency amount. **It needed no change to the codec**, which is the first real evidence
->   the boundary abstraction holds. Suite 244 -> 325.
-> - **Next:** goals, wins, dashboard, analytics, affordability,
+>   the boundary abstraction holds. Then **`routes/goals.js`** (savings goals and contributions, five
+>   encrypted columns across two tables) and **`routes/wins.js`** (read-only over four encrypted
+>   tables). Suite 244 -> 353. Four routes is a mergeable batch.
+> - **Next:** dashboard, analytics, affordability,
 >   projections, specialGroups, subscriptions, ask + `lib/askContext.js`, the remaining reads in
 >   categories/me, and **`lib/runRecurrences.js`** — the 03:00 cron INSERTs transactions and must go
 >   through the codec or it writes rows the gate will reject.
