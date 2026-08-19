@@ -10,6 +10,8 @@
 //      is `auto:<categoryId|none>:<bucket>:<cadence>` so re-runs land in the
 //      same key and inherit the user-given name from the override.
 
+import { normaliseMerchant, prettifyMerchant } from './merchant.js';
+
 const MIN_OCCURRENCES = 3;
 const MONTHLY_DAYS = 30;
 const ANNUAL_DAYS = 365;
@@ -17,32 +19,10 @@ const DAY_TOLERANCE = 5;
 const AMOUNT_TOLERANCE = 0.10;
 const AMOUNT_BUCKET_SIZE = 5;
 
-export function normaliseMerchant(description) {
-  if (!description) return null;
-  const cleaned = description
-    .toLowerCase()
-    .replace(/['’]/g, '')
-    .replace(/[^a-z0-9]+/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
-  if (!cleaned) return null;
-  const words = cleaned.split(' ').filter(Boolean).slice(0, 2);
-  if (words.length === 0) return null;
-  return words.join(' ');
-}
-
-export function prettifyMerchant(description, fallbackKey) {
-  const source = description ?? fallbackKey ?? '';
-  const words = source
-    .replace(/['’]/g, '')
-    .replace(/[^a-zA-Z0-9]+/g, ' ')
-    .trim()
-    .split(/\s+/)
-    .filter(Boolean)
-    .slice(0, 2);
-  if (words.length === 0) return fallbackKey ?? '';
-  return words.map((w) => w[0].toUpperCase() + w.slice(1).toLowerCase()).join(' ');
-}
+// Moved to lib/merchant.js 2026-08-18 — see that file for why there can only be
+// one normalisation now that merchant memory searches a hash of it. Re-exported
+// so existing importers and tests are unaffected.
+export { normaliseMerchant, normaliseMerchantFirstWord, prettifyMerchant } from './merchant.js';
 
 function diffDays(laterISO, earlierISO) {
   const a = new Date(`${laterISO}T00:00:00Z`).getTime();

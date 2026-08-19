@@ -1,0 +1,364 @@
+/**
+ * Keeps lib/encryptedFields.js, migration 012 and migration 019 in step.
+ *
+ * Both of the worst defects the 2026-08-18 audit found were DRIFT, not logic:
+ *
+ *   - migration 016 added transactions.original_amount a month after 012 froze
+ *     its column list, so a money column existed that no list knew about — and
+ *     because amount = original_amount * fx_rate, the "encrypted" amount was
+ *     recoverable by multiplication.
+ *   - the draft migration 019 in the plan document still dropped five columns
+ *     from the ORIGINAL scope whose `_enc` twins were never created, so running
+ *     it would have destroyed every description, category name, goal name,
+ *     contribution note and subscription label in the database.
+ *
+ * Neither is catchable by reading one file. These tests read all three.
+ */
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { readFileSync, readdirSync } from 'node:fs';
+import { ENCRYPTED_FIELDS, BLIND_INDEXES, fieldsByTable } from '../lib/encryptedFields.js';
+import { BARRIER_TABLE, COUNTERS_RPC } from '../scripts/verify-encryption.mjs';
+
+/**
+ * Strip `--` comments before parsing. Both migrations DISCUSS columns and even
+ * quote the dangerous July rename in their headers, so parsing the raw text
+ * makes the prose look like DDL. (Caught by this file's own rename test.)
+ */
+const stripComments = (text) => text.replace(/--[^\n]*/g, '');
+const sql = (f) => stripComments(readFileSync(new URL(`../migrations/${f}`, import.meta.url), 'utf8'));
+const M012 = sql('012_encryption_columns.sql');
+const M018 = sql('018_encryption_text_columns.sql');
+const M013 = sql('019_encryption_drop_plaintext.sql'); // renumbered 013 -> 019
+// 012 (money) and 018 (free text + blind indexes) are both additive, both
+// unapplied, and applied in the same step. For "does every column exist?" they
+// are one migration.
+const ADDITIVE = `${M012}\n${M018}`;
+
+/** `alter table public.X ... add column if not exists Y text` pairs in a migration. */
+function addedColumns(text) {
+  const out = new Set();
+  for (const stmt of text.split(';')) {
+    const t = stmt.match(/alter\s+table\s+public\.(\w+)/i);
+    if (!t) continue;
+    for (const m of stmt.matchAll(/add\s+column\s+if\s+not\s+exists\s+(\w+)/gi)) out.add(`${t[1]}.${m[1]}`);
+  }
+  return out;
+}
+
+function droppedColumns(text) {
+  const out = new Set();
+  for (const stmt of text.split(';')) {
+    const t = stmt.match(/alter\s+table\s+public\.(\w+)/i);
+    if (!t) continue;
+    for (const m of stmt.matchAll(/drop\s+column\s+(?:if\s+exists\s+)?(\w+)/gi)) out.add(`${t[1]}.${m[1]}`);
+  }
+  return out;
+}
+
+test('the additive migrations create an _enc column for every registered field', () => {
+  const added = addedColumns(ADDITIVE);
+  const missing = ENCRYPTED_FIELDS
+    .map((f) => `${f.table}.${f.enc}`)
+    .filter((c) => !added.has(c));
+  assert.deepEqual(missing, [], `registered but never created by migration 012: ${missing.join(', ')}`);
+});
+
+test('the additive migrations create nothing that is not registered', () => {
+  const registered = new Set([
+    ...ENCRYPTED_FIELDS.map((f) => `${f.table}.${f.enc}`),
+    ...BLIND_INDEXES.map((b) => `${b.table}.${b.column}`),
+  ]);
+  const orphans = [...addedColumns(ADDITIVE)].filter((c) => !registered.has(c));
+  assert.deepEqual(orphans, [], `created by a migration but absent from lib/encryptedFields.js: ${orphans.join(', ')}`);
+});
+
+test('every blind index has a column in the additive migrations', () => {
+  const added = addedColumns(ADDITIVE);
+  const missing = BLIND_INDEXES.map((b) => `${b.table}.${b.column}`).filter((c) => !added.has(c));
+  assert.deepEqual(missing, [], `blind index registered but never created: ${missing.join(', ')}`);
+});
+
+test('every blind index is derived from a column that is actually encrypted or dropped', () => {
+  // A blind index over a column that stays in plaintext is pointless — the
+  // plaintext is right there. Each `from` must itself be encrypted, or be the
+  // subscription primary key that 013 replaces.
+  const encrypted = new Set(ENCRYPTED_FIELDS.map((f) => `${f.table}.${f.column}`));
+  const dropped = droppedColumns(M013);
+  for (const b of BLIND_INDEXES) {
+    const src = `${b.table}.${b.from}`;
+    assert.ok(
+      encrypted.has(src) || dropped.has(src),
+      `${b.table}.${b.column} indexes ${src}, which is neither encrypted nor dropped — the plaintext stays readable beside it`,
+    );
+  }
+});
+
+test('the subscription primary key moves off the plaintext merchant key', () => {
+  // merchant_key holds the merchant name AND an amount bucket, and it is the PK,
+  // so it survives every _enc column. 013 must repoint the key before dropping it.
+  assert.match(M013, /add constraint subscription_overrides_pkey primary key \(user_id, merchant_key_hmac\)/);
+  assert.ok(droppedColumns(M013).has('subscription_overrides.merchant_key'));
+});
+
+test('migration 019 drops every plaintext column whose ciphertext twin exists', () => {
+  const dropped = droppedColumns(M013);
+  const missing = ENCRYPTED_FIELDS
+    .map((f) => `${f.table}.${f.column}`)
+    .filter((c) => !dropped.has(c));
+  assert.deepEqual(missing, [], `encrypted but plaintext never dropped: ${missing.join(', ')}`);
+});
+
+test('migration 019 drops NOTHING that has no encrypted or hashed replacement', () => {
+  // The exact defect in the July draft: it dropped transactions.description,
+  // categories.name, savings_goals.name, savings_contributions.note and
+  // subscription_overrides.display_name, none of which 012 ever twinned.
+  //
+  // A dropped column is safe if EITHER an _enc twin holds its value, OR a blind
+  // index replaces it. subscription_overrides.merchant_key is the second kind:
+  // it is a lookup key, not readable content, so merchant_key_hmac replaces it
+  // rather than encrypting it. Nothing else may be dropped.
+  const registered = new Set([
+    ...ENCRYPTED_FIELDS.map((f) => `${f.table}.${f.column}`),
+    ...BLIND_INDEXES.map((b) => `${b.table}.${b.from}`),
+  ]);
+  const unsafe = [...droppedColumns(M013)].filter((c) => !registered.has(c));
+  assert.deepEqual(
+    unsafe,
+    [],
+    `migration 019 would DESTROY columns with no encrypted replacement: ${unsafe.join(', ')}`,
+  );
+});
+
+test('migration 019 renames nothing', () => {
+  // A rename turns a numeric column into text under a still-running old server,
+  // which then writes bare plaintext into the column the new code reads as
+  // ciphertext. Keeping the _enc suffix forever is what makes the cutover safe.
+  const renames = [...M013.matchAll(/rename\s+column\s+(\w+)\s+to\s+(\w+)/gi)].map((m) => `${m[1]} -> ${m[2]}`);
+  assert.deepEqual(renames, [], `migration 019 must not rename columns: ${renames.join(', ')}`);
+});
+
+test('every registered table has a primary key the backfill can page on', () => {
+  for (const t of fieldsByTable()) {
+    assert.ok(Array.isArray(t.pk) && t.pk.length >= 1, `${t.table} has no usable primary key`);
+  }
+});
+
+test('descriptions are encrypted and searchable, not one or the other', () => {
+  // The whole point of the blind index: encrypting description without it would
+  // silently break merchant memory forever.
+  const tx = ENCRYPTED_FIELDS.filter((f) => f.table === 'transactions').map((f) => f.column);
+  assert.ok(tx.includes('description'), 'transactions.description must be encrypted');
+  const idx = BLIND_INDEXES.filter((b) => b.table === 'transactions' && b.from === 'description');
+  assert.ok(idx.length >= 1, 'encrypting description without a blind index breaks merchant memory');
+});
+
+test('the fx reconstruction hole is closed: amount and original_amount are both encrypted', () => {
+  // amount = original_amount * fx_rate. Encrypting only one of the two leaves
+  // the other recoverable, which is exactly the state migration 016 created.
+  const tx = ENCRYPTED_FIELDS.filter((f) => f.table === 'transactions').map((f) => f.column);
+  assert.ok(tx.includes('amount'), 'transactions.amount must be encrypted');
+  assert.ok(tx.includes('original_amount'), 'transactions.original_amount must be encrypted or amount is derivable');
+});
+
+
+// --- ordering and post-drop invariants (Codex stage-4 VERIFY, 2026-08-18) ----
+
+test('the destructive migration sorts LAST among the encryption migrations', () => {
+  // As 013 it sorted BEFORE 018, so applying migrations in filename order — the
+  // obvious instinct — would have dropped the plaintext before 018 created the
+  // columns meant to replace it. Prose said "run me last"; the filename said the
+  // opposite, and the filename is what gets followed.
+  const names = readdirSync(new URL('../migrations/', import.meta.url)).filter((f) => f.endsWith('.sql')).sort();
+  const additive = names.filter((n) => /encryption_(columns|text_columns)/.test(n));
+  const destructive = names.find((n) => /encryption_drop_plaintext/.test(n));
+  assert.ok(destructive, 'the drop migration must exist');
+  for (const a of additive) {
+    assert.ok(a < destructive, `${a} must sort before ${destructive}, or the drop runs first`);
+  }
+  assert.equal(names[names.length - 1], destructive, 'the drop must be the last migration of all');
+});
+
+test('every NOT NULL plaintext column has its invariant restored on the _enc column', () => {
+  // 012/018 create the _enc columns NULLABLE, because the backfill fills them one
+  // row at a time. Once the plaintext is dropped, the database stops guaranteeing
+  // that a transaction has an amount unless 019 re-applies it.
+  const setNotNull = new Set(
+    [...M013.matchAll(/alter\s+table\s+public\.(\w+)\s+alter\s+column\s+(\w+)\s+set\s+not\s+null/gi)]
+      .map((m) => `${m[1]}.${m[2]}`),
+  );
+  const missing = ENCRYPTED_FIELDS
+    .filter((f) => f.notNull)
+    .map((f) => `${f.table}.${f.enc}`)
+    .filter((c) => !setNotNull.has(c));
+  assert.deepEqual(missing, [], `NOT NULL lost on: ${missing.join(', ')}`);
+});
+
+test('nullable columns are NOT given a NOT NULL they never had', () => {
+  const setNotNull = new Set(
+    [...M013.matchAll(/alter\s+table\s+public\.(\w+)\s+alter\s+column\s+(\w+)\s+set\s+not\s+null/gi)]
+      .map((m) => `${m[1]}.${m[2]}`),
+  );
+  const wrong = ENCRYPTED_FIELDS
+    .filter((f) => !f.notNull)
+    .map((f) => `${f.table}.${f.enc}`)
+    .filter((c) => setNotNull.has(c));
+  assert.deepEqual(wrong, [], `these were nullable and must stay nullable: ${wrong.join(', ')}`);
+});
+
+test('the subscription merchant key keeps an ENCRYPTED source, not only a hash', () => {
+  // A hash is one-way. With only merchant_key_hmac, a master-key rotation could
+  // never recompute the primary key and the table would be unrebuildable.
+  const enc = ENCRYPTED_FIELDS.find((f) => f.table === 'subscription_overrides' && f.column === 'merchant_key');
+  assert.ok(enc, 'merchant_key must have an encrypted, recoverable copy');
+  assert.ok(BLIND_INDEXES.some((b) => b.table === 'subscription_overrides' && b.from === 'merchant_key'));
+});
+
+test('custom category names are encrypted', () => {
+  // routes/categories.js:127 lets a user POST any name and :159 rename one, so
+  // "only the 12 seeded defaults" was false.
+  assert.ok(ENCRYPTED_FIELDS.some((f) => f.table === 'categories' && f.column === 'name'));
+  assert.ok(BLIND_INDEXES.some((b) => b.table === 'categories' && b.from === 'name'),
+    'the keyword lookup does .eq(name, …) in the database and needs an index');
+});
+
+
+// --- the enforced write barrier (Codex stage-4 RE-VERIFY finding 2) ----------
+
+const M018A = sql('018a_encryption_write_barrier.sql');
+
+test('the write barrier guards every table that has an encrypted column', () => {
+  // A table left unguarded is a table the app can still write during the window
+  // migration 019 runs in — and a write that lands inside an already-scanned page
+  // moves neither the row count nor the digest, so nothing else would see it.
+  // Read the declared list itself, not any quoted word in the file — a test that
+  // passes because it scanned the prose is not a test.
+  const block = M018A.match(/guarded\s+text\[\]\s*:=\s*array\[([\s\S]*?)\]/i);
+  assert.ok(block, 'the migration must declare its guarded tables as one array');
+  const guarded = new Set([...block[1].matchAll(/'(\w+)'/g)].map((m) => m[1]));
+  assert.ok(guarded.size >= 10, `only parsed ${guarded.size} guarded tables`);
+  const missing = fieldsByTable().map((j) => j.table).filter((t) => !guarded.has(t));
+  assert.deepEqual(missing, [], `no write barrier on: ${missing.join(', ')}`);
+});
+
+test('the barrier migration sorts between the additive ones and the drop', () => {
+  const names = readdirSync(new URL('../migrations/', import.meta.url)).filter((f) => f.endsWith('.sql')).sort();
+  const barrier = names.find((n) => /encryption_write_barrier/.test(n));
+  const text = names.find((n) => /encryption_text_columns/.test(n));
+  const destructive = names.find((n) => /encryption_drop_plaintext/.test(n));
+  assert.ok(barrier, 'the write barrier migration must exist');
+  assert.ok(text < barrier, `${text} must sort before ${barrier}`);
+  assert.ok(barrier < destructive, `${barrier} must sort before ${destructive}`);
+});
+
+test('the gate looks for the exact barrier objects the migration creates', () => {
+  // Same class of drift as the registry: the gate reading a table name the
+  // migration never created would fail closed forever, and reading one it renamed
+  // would fail OPEN if the read were ever made lenient.
+  assert.match(M018A, new RegExp(`create table if not exists public\\.${BARRIER_TABLE}\\b`, 'i'));
+  assert.match(M018A, new RegExp(`create or replace function public\\.${COUNTERS_RPC}\\b`, 'i'));
+});
+
+test('the barrier blocks writes at statement level and can always be released', () => {
+  // Row-level would cost a lookup per row on every write forever. And the flag
+  // table must never GUARD itself, or engaging the barrier would lock away the
+  // ability to release it. (It does carry a trigger now — the generation bump —
+  // but that one blocks nothing; the behavioural proof is in writeBarrier.pg.test.js.)
+  assert.match(M018A, /for each statement execute function public\.reject_writes_during_cutover/i);
+  const guardsItself = [...M018A.matchAll(/create trigger[\s\S]*?;/gi)]
+    .filter((m) => /on public\.encryption_cutover/i.test(m[0]))
+    .filter((m) => /reject_writes_during_cutover/i.test(m[0]));
+  assert.deepEqual(guardsItself, [], 'the flag table must not guard itself');
+});
+
+test('the barrier fails CLOSED when it cannot read its own flag', () => {
+  // A REPEATABLE READ snapshot older than the flag row sees no row at all. The
+  // first version treated that as "no barrier" and allowed the write.
+  // [Codex stage-5 RE-VERIFY #3 finding 1, 2026-08-18]
+  assert.match(M018A, /if\s+not\s+found\s+or\s+is_engaged\s+is\s+null\s+then/i);
+  assert.match(M018A, /for\s+share/i, 'the flag read must take a share lock');
+  assert.match(M018A, /or\s+truncate\s+on\s+public/i, 'TRUNCATE is a separate trigger event');
+});
+
+test('barrier continuity is database-owned, not caller-supplied', () => {
+  // engaged_at is nullable and was written by whoever ran the UPDATE, so a
+  // release/re-engage that kept the same value was invisible to the gate.
+  // [Codex stage-5 RE-VERIFY #3 finding 2, 2026-08-18]
+  assert.match(M018A, /generation\s+bigint\s+not\s+null/i);
+  assert.match(M018A, /new\.generation\s*:=\s*old\.generation\s*\+\s*1/i);
+  assert.match(M018A, /new\.engaged_at\s*:=\s*case\s+when\s+new\.engaged/i,
+    'engaged_at must be derived by the database, not accepted from the caller');
+});
+
+test('the counter RPC is not exposed to anon or authenticated', () => {
+  assert.match(M018A, /revoke execute on function public\.encryption_write_counters\(\) from anon, authenticated, public/i);
+  assert.match(M018A, /grant execute on function public\.encryption_write_counters\(\) to service_role/i);
+});
+
+
+// --- migration replay ordering (Codex stage-5 RE-VERIFY #2 finding 3) --------
+
+test('no migration touches a table an earlier statement has not created', () => {
+  // NOT a replay proof, and it must not be described as one. It reads literal
+  // CREATE TABLE / ALTER TABLE / CREATE INDEX / CREATE POLICY / CREATE TRIGGER
+  // targets only: it does not resolve `execute format(...)` trigger targets, and
+  // it does not attempt foreign keys, functions or grants. The only way to prove
+  // a replay is to run one. [Codex stage-5 RE-VERIFY #3 finding 5, 2026-08-18]
+  // 012_encryption_columns.sql used to `alter table public.recurrences`, which
+  // 014_recurrences.sql creates. On the live database that was invisible — 014
+  // had been applied for weeks before anyone tried to apply 012 — but a fresh
+  // replay in filename order, which is the documented and obvious way to rebuild,
+  // failed on a table that did not exist yet.
+  //
+  // The previous ordering test only asserted that the destructive migration sorts
+  // last, so it could not see this. This checks the whole dependency graph.
+  const dir = new URL('../migrations/', import.meta.url);
+  const names = readdirSync(dir).filter((f) => f.endsWith('.sql')).sort();
+
+  const created = new Map(); // table -> migration that creates it
+  const problems = [];
+
+  for (const name of names) {
+    const text = stripComments(readFileSync(new URL(name, dir), 'utf8'));
+
+    // Walk CREATEs and ALTERs in the order they actually appear. Doing all the
+    // ALTERs first would flag every migration that creates a table and then
+    // alters it lower down — which 001, 004, 007, 014, 015 and 018a all do.
+    const events = [
+      ...[...text.matchAll(/create\s+table\s+(?:if\s+not\s+exists\s+)?public\.(\w+)/gi)]
+        .map((m) => ({ at: m.index, kind: 'create', table: m[1] })),
+      ...[...text.matchAll(/alter\s+table\s+(?:if\s+exists\s+)?public\.(\w+)/gi)]
+        .map((m) => ({ at: m.index, kind: 'alter', table: m[1] })),
+      // Indexes, policies and triggers name a table too, and an index created
+      // before its table is the same replay failure as an ALTER.
+      ...[...text.matchAll(/create\s+(?:unique\s+)?index[\s\S]{0,120}?\son\s+public\.(\w+)/gi)]
+        .map((m) => ({ at: m.index, kind: 'index', table: m[1] })),
+      ...[...text.matchAll(/create\s+policy[\s\S]{0,200}?\son\s+public\.(\w+)/gi)]
+        .map((m) => ({ at: m.index, kind: 'policy', table: m[1] })),
+      ...[...text.matchAll(/create\s+trigger[\s\S]{0,200}?\son\s+public\.(\w+)/gi)]
+        .map((m) => ({ at: m.index, kind: 'trigger', table: m[1] })),
+    ].sort((a, b) => a.at - b.at);
+
+    for (const e of events) {
+      if (e.kind === 'create') {
+        if (!created.has(e.table)) created.set(e.table, name);
+      } else if (!created.has(e.table)) {
+        problems.push(`${name} ${e.kind}s public.${e.table}, which no earlier statement creates`);
+      }
+    }
+  }
+
+  assert.deepEqual(problems, [], problems.join('\n'));
+});
+
+test('recurrences.amount_enc is created by a migration that sorts after 014', () => {
+  // The specific case above, pinned by name so the fix cannot be quietly undone.
+  const names = readdirSync(new URL('../migrations/', import.meta.url)).filter((f) => f.endsWith('.sql')).sort();
+  const creates014 = names.find((n) => /014_recurrences/.test(n));
+  const owner = names.find((n) => /add\s+column\s+if\s+not\s+exists\s+amount_enc/i.test(
+    stripComments(readFileSync(new URL(`../migrations/${n}`, import.meta.url), 'utf8'))
+      .split(/alter\s+table\s+public\.recurrences/i)[1] ?? '',
+  ));
+  assert.ok(owner, 'some migration must create recurrences.amount_enc');
+  assert.ok(owner > creates014, `${owner} must sort after ${creates014}`);
+});

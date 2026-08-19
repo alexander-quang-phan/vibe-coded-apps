@@ -1,6 +1,8 @@
 -- Trim — Task 6.12a: manually-marked recurring transactions (schema).
 --
--- Migration number note: 013 is reserved in BUILD_PLAN.md's Phase 9 plan for
+-- Migration number note (HISTORICAL — 013 no longer exists; the encryption drop
+-- is 019, renumbered 2026-08-18 so filename order is also a safe apply order):
+-- 013 was reserved in BUILD_PLAN.md's Phase 9 plan for
 -- the encryption plaintext-drop (irreversible, gated on Alex's explicit
 -- confirmation, and not yet written to disk). Nothing on disk currently uses
 -- 013, but taking it here would collide with that documented reservation, so

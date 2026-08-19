@@ -1,12 +1,36 @@
 /**
  * Phase 9.5 — at-rest encryption of users' financial data.
- * AES-256-GCM; per-user key derived from DATA_ENCRYPTION_KEY via HKDF so a
- * value copied into another user's row will not decrypt. Stored format:
- * v1:<iv b64>:<auth tag b64>:<ciphertext b64>  (in text columns).
+ *
+ * AES-256-GCM. Two independent bindings, so a stored value only decrypts in the
+ * exact place it was written:
+ *   - WHOSE it is:  the key is HKDF(master, info: `user:<id>`), so a value moved
+ *                   into another user's row will not decrypt.
+ *   - WHERE it sits: `table.column` is passed to GCM as additional authenticated
+ *                   data, so a value moved to another column or table will not
+ *                   decrypt either.
+ *
+ * Stored format: v2:<iv b64>:<auth tag b64>:<ciphertext b64>  (in text columns).
  * Losing DATA_ENCRYPTION_KEY = losing every user's data. See SECURITY.md.
  *
+ * Why v2, and why now (2026-08-18): v1 authenticated only the user. An audit
+ * reproduced a ciphertext written for `savings_goals.target_amount` decrypting
+ * cleanly as `current_amount`, and a `budgets.amount_limit` value decrypting as
+ * `transactions.amount`. That is not the headline threat — anyone who can write
+ * to the database can already overwrite a plaintext numeric today — but AAD is
+ * nearly free to add and can ONLY be added before the first row is encrypted:
+ * afterwards it means re-encrypting every row under a new envelope. Nothing has
+ * ever been encrypted (migration 012 is unapplied, no route imports this module),
+ * so this is the last cost-free moment to get the envelope right.
+ *
+ * NOT bound: the row id. Every table's `id` is `default gen_random_uuid()`, so
+ * the server does not know it until after the INSERT returns. Binding to it would
+ * mean generating uuids server-side on every insert path — a wider change than
+ * the threat justifies. Consequence, stated plainly: a ciphertext can still be
+ * copied between two rows of the SAME user and SAME column. That is strictly less
+ * freedom than an attacker with database write access already has.
+ *
  * Fail-closed rules (this module guards financial data — never guess):
- * - Anything that is not a well-formed v1 envelope throws. We never return a
+ * - Anything that is not a well-formed v2 envelope throws. We never return a
  *   partially-trusted value, and we never fall back to treating stored bytes
  *   as plaintext.
  * - The GCM auth tag must be exactly 16 bytes. Node will otherwise accept a
@@ -16,11 +40,16 @@
  * - Amounts must decrypt to a finite number. `Number('')` is 0 and
  *   `Number('abc')` is NaN, and neither throws, so a mangled amount column
  *   would otherwise become a silent 0-value transaction or poison every total.
+ * - No error message ever contains a stored or decrypted value. Errors reach
+ *   server/index.js:120, which logs `err.message` into Vercel's logs — echoing
+ *   the value there would copy the plaintext this module exists to hide into a
+ *   second, unencrypted store.
  */
-import { createCipheriv, createDecipheriv, hkdfSync, randomBytes } from 'node:crypto';
+import { createCipheriv, createDecipheriv, createHmac, hkdfSync, randomBytes } from 'node:crypto';
+import { requireField, requireBlindIndex } from './encryptedFields.js';
 
-const VERSION = 'v1';
-const HKDF_SALT = 'trim-data-v1';
+const VERSION = 'v2';
+const HKDF_SALT = 'trim-data-v1'; // unchanged: this salts the KEY, not the envelope
 const KEY_BYTES = 32; // AES-256
 const IV_BYTES = 12; // GCM standard nonce
 const TAG_BYTES = 16; // full-length GCM tag; anything shorter is rejected
@@ -49,68 +78,176 @@ function masterKey() {
   if (key.toString('base64') !== raw) {
     throw new Error('DATA_ENCRYPTION_KEY is not canonical base64 — re-copy it from your backup');
   }
+  // Deliberately NOT cached at module load: re-reading env on every call is what
+  // lets one process hold two key generations at once, which is how a rotation
+  // script reads old rows and writes new ones without a key id in the envelope.
   return key;
 }
 
 function userKey(userId) {
+  if (!userId) throw new Error('encrypt/decrypt called without a userId');
   return Buffer.from(hkdfSync('sha256', masterKey(), HKDF_SALT, `user:${userId}`, KEY_BYTES));
 }
 
-export function encryptField(userId, plaintext) {
+/**
+ * The GCM additional authenticated data. Not secret and not stored — it is
+ * re-derived on read from where the value was found, so a value that has moved
+ * fails authentication. Validated against the registry so a typo'd field name is
+ * a loud error, not a value nobody can ever decrypt.
+ */
+function aad(field) {
+  requireField(field);
+  return Buffer.from(field, 'utf8');
+}
+
+export function encryptField(field, userId, plaintext) {
+  requireField(field); // before the null check, so a typo cannot pass silently
   if (plaintext === null || plaintext === undefined) return null;
   const iv = randomBytes(IV_BYTES);
   const cipher = createCipheriv('aes-256-gcm', userKey(userId), iv, { authTagLength: TAG_BYTES });
+  cipher.setAAD(aad(field));
   const ct = Buffer.concat([cipher.update(String(plaintext), 'utf8'), cipher.final()]);
   return [VERSION, iv.toString('base64'), cipher.getAuthTag().toString('base64'), ct.toString('base64')].join(':');
 }
 
-export function decryptField(userId, stored) {
+export function decryptField(field, userId, stored) {
+  // Validate the field name BEFORE anything else. A typo must be a loud
+  // "unknown field" error whatever the stored value looks like — otherwise a
+  // mistyped column reports "malformed ciphertext" and sends the reader hunting
+  // for data corruption that does not exist.
+  requireField(field);
   if (stored === null || stored === undefined) return null;
   const parts = String(stored).split(':');
   // Version first: gives the clearest error for bare plaintext left behind by a
-  // half-finished backfill, and for a future v2 envelope read by old code.
-  if (parts[0] !== VERSION) throw new Error(`Unknown ciphertext version: ${parts[0]}`);
+  // half-finished backfill, and for a future v3 envelope read by old code.
+  // The version itself is NEVER echoed — for bare plaintext, parts[0] IS the
+  // user's data (a whole 8000-char Ask Trim message, in the worst case).
+  if (parts[0] !== VERSION) {
+    throw new Error(`Unknown ciphertext version in ${field} (expected ${VERSION}; value withheld)`);
+  }
   if (parts.length !== 4) {
-    throw new Error(`Malformed ciphertext: expected 4 colon-separated parts, got ${parts.length}`);
+    throw new Error(`Malformed ciphertext in ${field}: expected 4 colon-separated parts, got ${parts.length}`);
   }
   const [, ivB64, tagB64, ctB64] = parts;
 
   const iv = Buffer.from(ivB64, 'base64');
   if (iv.length !== IV_BYTES) {
-    throw new Error(`Malformed ciphertext: IV must be ${IV_BYTES} bytes, got ${iv.length}`);
+    throw new Error(`Malformed ciphertext in ${field}: IV must be ${IV_BYTES} bytes, got ${iv.length}`);
   }
   // Assert BEFORE setAuthTag. `authTagLength` below makes Node enforce this too,
   // but the explicit check is what documents the invariant and survives a
   // future refactor that drops the option.
   const tag = Buffer.from(tagB64, 'base64');
   if (tag.length !== TAG_BYTES) {
-    throw new Error(`Malformed ciphertext: auth tag must be ${TAG_BYTES} bytes, got ${tag.length}`);
+    throw new Error(`Malformed ciphertext in ${field}: auth tag must be ${TAG_BYTES} bytes, got ${tag.length}`);
   }
 
   const decipher = createDecipheriv('aes-256-gcm', userKey(userId), iv, { authTagLength: TAG_BYTES });
+  decipher.setAAD(aad(field));
   decipher.setAuthTag(tag);
   return Buffer.concat([decipher.update(Buffer.from(ctB64, 'base64')), decipher.final()]).toString('utf8');
 }
 
-export function encryptAmount(userId, amount) {
+export function encryptAmount(field, userId, amount) {
+  requireField(field);
   if (amount === null || amount === undefined) return null;
   // Reject '' and NaN rather than encrypting them: `Number('')` is 0, so an
   // empty amount field would otherwise round-trip into a real 0-value row.
   const text = String(amount).trim();
   if (text === '' || !Number.isFinite(Number(text))) {
-    throw new Error(`encryptAmount: refusing to encrypt a non-finite amount (type ${typeof amount})`);
+    throw new Error(`encryptAmount(${field}): refusing to encrypt a non-finite amount (type ${typeof amount})`);
   }
-  return encryptField(userId, String(amount));
+  return encryptField(field, userId, String(amount));
 }
 
-export function decryptAmount(userId, stored) {
-  const s = decryptField(userId, stored);
+export function decryptAmount(field, userId, stored) {
+  const s = decryptField(field, userId, stored);
   if (s === null) return null;
   // Fail closed. Note `Number('')` is 0, which PASSES Number.isFinite — so a
   // blank must be rejected explicitly or an emptied amount column silently
   // becomes a real 0-value transaction. `Number('abc')` is NaN, which the
   // isFinite check catches.
   const n = s.trim() === '' ? NaN : Number(s);
-  if (!Number.isFinite(n)) throw new Error('decryptAmount: decrypted value is not a finite number');
+  if (!Number.isFinite(n)) throw new Error(`decryptAmount(${field}): decrypted value is not a finite number`);
   return n;
+}
+
+/**
+ * Blind index — a deterministic, keyed hash used to look a value up WITHOUT
+ * storing it or being able to read it back.
+ *
+ * This exists because `transactions.description` is encrypted but merchant
+ * memory (routes/categories.js) has to find "other transactions from this
+ * merchant" IN THE DATABASE. You cannot ILIKE a ciphertext, and fetching every
+ * row to decrypt it does not scale or stay a database query. So the row also
+ * carries HMAC(normalised merchant), and the lookup hashes the search term the
+ * same way and matches on equality.
+ *
+ * Properties, stated plainly because a blind index is a real privacy trade:
+ *
+ * - It is DETERMINISTIC by construction. Two transactions at the same merchant
+ *   carry the same hash, so anyone reading the table learns which rows share a
+ *   merchant, and how many there are — but not which merchant.
+ * - The key is PER-USER (`blind:<id>`, a different HKDF info label from the
+ *   encryption key's `user:<id>`), so the same shop under two users produces
+ *   different hashes. Without that, one leaked backup would let someone
+ *   correlate spending across every user at once.
+ * - It does NOT resist a dictionary attack by someone holding the master key:
+ *   hash "tesco" under a user's index key and compare. That is not a new
+ *   weakness — the same person can already decrypt the description outright.
+ *   It IS resistant for the threat this feature targets: a leaked backup or a
+ *   dashboard glance, neither of which has the key.
+ * - The field name is mixed into the hash, so indexes from different columns
+ *   are not comparable with each other.
+ *
+ * Returns null for a null/empty value, so "no merchant" is not itself a
+ * searchable bucket that groups every blank-description row together.
+ */
+export function blindIndex(field, userId, value) {
+  requireBlindIndex(field);
+  // Without this, a missing userId derives the index key from the literal string
+  // "blind:undefined" — one shared key across every row that hit the bug. Those
+  // rows become mutually comparable, so anyone reading the table could tell which
+  // of them share a merchant ACROSS users, which is the exact property the
+  // per-user key exists to prevent. userKey() has always thrown here; this did
+  // not. [Codex stage-4 VERIFY, 2026-08-18]
+  if (!userId) throw new Error('blindIndex called without a userId');
+  if (value === null || value === undefined) return null;
+  const text = String(value);
+  if (text === '') return null;
+  const key = Buffer.from(hkdfSync('sha256', masterKey(), HKDF_SALT, `blind:${userId}`, KEY_BYTES));
+  return createHmac('sha256', key).update(`${field}|${text}`, 'utf8').digest('base64');
+}
+
+/**
+ * Encrypt/decrypt according to the field's registered `kind`.
+ *
+ * The registry has always carried `kind: 'amount' | 'text'`, but nothing enforced
+ * it — every path called encryptField/decryptField directly, so an amount could
+ * round-trip through the text codec and skip the finite-number checks entirely.
+ * That meant the backfill and the migration-013 gate certified amounts under
+ * WEAKER rules than the runtime enforces: a column decrypting to "" or "abc"
+ * passed the gate, then became 0 or NaN in the app after the plaintext was
+ * dropped. [Codex stage-4 VERIFY, 2026-08-18]
+ *
+ * Use these instead of the raw pair anywhere the field comes from the registry.
+ */
+/**
+ * Blind index over a LIST of values — the typeahead prefix set. Returns null
+ * rather than an empty array for "nothing to index", so a blank description does
+ * not become its own searchable bucket.
+ */
+export function blindIndexMany(field, userId, values) {
+  if (!Array.isArray(values) || values.length === 0) return null;
+  return values.map((v) => blindIndex(field, userId, v)).filter((v) => v !== null);
+}
+
+export function encryptRegistered(field, userId, value) {
+  const { kind } = requireField(field);
+  return kind === 'amount' ? encryptAmount(field, userId, value) : encryptField(field, userId, value);
+}
+
+export function decryptRegistered(field, userId, stored) {
+  const { kind } = requireField(field);
+  return kind === 'amount' ? decryptAmount(field, userId, stored) : decryptField(field, userId, stored);
 }

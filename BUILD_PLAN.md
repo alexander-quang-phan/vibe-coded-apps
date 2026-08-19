@@ -726,26 +726,221 @@ older than the 200-row window load. Verify by tapping into an old month in the r
 
 ### ▢ Task 9.5 — Encryption at rest (LAST — destructive migration at the end)
 
-> **Re-scoped and de-risked 2026-08-09.** An adversarial audit (report:
-> `docs/2026-08-09-encryption-readiness-audit.md`) confirmed defects 1 and 3 from the July review
-> are genuinely fixed, but found the verification GATE unsound. Landed since:
-> - **Scope decision (Alex):** encrypt the MONEY, leave searchable text in plaintext.
->   `transactions.description` is `.ilike()`d in the database by merchant memory — encrypting it
->   would break that feature permanently. Migration 012 re-scoped accordingly (never applied, so
->   edited in place) and `recurrences.amount` added — that table postdates the original plan.
-> - **Backfill rollback:** a verification failure (or a transient read blip) used to leave a row
->   committed-but-unverified, which the idempotency filter then hid from every re-run while the
->   script printed "Backfill complete". Now rolled back to NULL so a re-run repairs it.
-> - **`--dry-run` typo guard:** unknown flags are refused instead of performing a live run.
-> - **`scripts/verify-encryption.mjs`:** the completeness gate 013 must depend on — queries the
->   database for plaintext-without-ciphertext and spot-checks that stored bytes decrypt. Exit 0
->   is the only thing that authorises 013, replacing a manual click-through.
-> - **First tests the backfill has ever had** (9), including two regression tests proven to fail
->   when the rollback is removed.
+> **Re-audited and hardened 2026-08-18.** A six-lens adversarial re-audit (report:
+> `docs/2026-08-18-encryption-reaudit.md`) re-derived the 18 findings the August run lost when its
+> verification pass died on a session limit. 36 findings, 24 verified (15 survived, 9 refuted),
+> **12 still unverified** — the operational and test-quality skeptics died on a session limit too,
+> so those 12 are leads, not defects, and are recorded in full so they cannot be lost again.
 >
-> **Still outstanding before this can run:** 18 audit findings never got verified (the run died on
-> a session limit); Alex must generate + back up `DATA_ENCRYPTION_KEY`; the ~7-route sweep and
-> migration 013 are unwritten.
+> Two findings were data-destroying and are now fixed:
+> - **The draft migration 019 in the plan document would have destroyed five columns.** It was
+>   written in July against the original scope and still dropped `transactions.description`,
+>   `categories.name`, `savings_goals.name`, `savings_contributions.note` and
+>   `subscription_overrides.display_name` — all removed from scope on 2026-08-09, so their `_enc`
+>   twins were never created. Each `drop column` succeeds and the following `rename` fails on a
+>   column that does not exist. The draft has been REMOVED from the plan and replaced by a real
+>   `server/migrations/019_encryption_drop_plaintext.sql` (written as 013 at the time; renumbered
+>   to 019 during Codex's first VERIFY so that filename order is also a safe apply order).
+> - **Encrypting `amount` never hid foreign-currency amounts.** Migration 016 added
+>   `original_amount` and `fx_rate` as plaintext numerics a month after 012 froze its column list,
+>   and `amount = original_amount * fx_rate`. Every EUR expense was recoverable by one
+>   multiplication. `original_amount` is now encrypted; `fx_rate` stays plaintext deliberately
+>   (a public rate, and it keeps the `fx_rate > 0` CHECK enforceable).
+>
+> Landed 2026-08-18:
+> - **`server/lib/encryptedFields.js`** — the ONE list. Migrations 012/018/018a/019, the backfill and the
+>   gate all derive from it, and `test/encryptionScope.test.js` fails the build if they drift.
+>   This is the fix for the whole class of bug above: both data-destroying findings were drift
+>   between four hand-maintained lists.
+> - **Envelope v2 with AAD.** `table.column` is now GCM additional authenticated data, so a
+>   ciphertext moved to another column or table no longer decrypts. Proven RED/GREEN: under v1 a
+>   `savings_goals.target_amount` value decrypted cleanly as `current_amount`. This could ONLY be
+>   added before the first row is encrypted — afterwards it means re-encrypting everything.
+> - **Errors no longer echo user data.** `decryptField` used to interpolate everything before the
+>   first colon into its message, and `index.js:120` logs `err.message` — so bare plaintext in an
+>   `_enc` column would have been copied into Vercel's logs.
+> - **The gate was rewritten.** It could return PASS on a database it would then destroy: it asked
+>   only "plaintext present, ciphertext NULL?" and was blind to a row where both were present and
+>   DISAGREED — what every missed UPDATE path produces. It now checks all four states, reads
+>   EVERY row (five users; sampling bought nothing but false confidence), fails closed on an
+>   absent count, and re-counts afterwards to detect writes during its own run. **First 11 tests
+>   it has ever had.**
+> - **Backfill:** verification now compares against the database's CURRENT plaintext rather than
+>   its own stale snapshot (a row edited mid-run was being "verified" as the old value); an empty
+>   table is reported as suspicious rather than as success; a dashless `dry-run` typo no longer
+>   performs a live write pass; unreachable composite-PK dead code removed.
+> - **SECURITY.md** finally documents encryption at all — including `DATA_ENCRYPTION_KEY` custody,
+>   which appeared in no operational document despite two scripts pointing readers there.
+>
+> Suite 86 -> **116**, client builds clean.
+>
+> **Scope expanded 2026-08-18 (Alex: "encrypt descriptions too"), and the cutover confirmed.**
+> Amounts alone left the dashboard showing WHAT was bought while hiding only how much. Now
+> encrypted as well: `transactions.description`, `recurrences.description`, `savings_goals.name`,
+> `savings_contributions.note`, `special_groups.name`, `subscription_overrides.display_name`.
+> `categories.name` was left plaintext here on the reasoning that it is "only the 12 seeded
+> defaults" — **that was wrong and is now corrected**: `POST /api/categories` accepts any name and
+> `PATCH` renames one, so it is encrypted too, with a blind index for its exact-equality lookup.
+>
+> - **Blind index** (`server/lib/crypto.js` `blindIndex()`): a per-user keyed HMAC stored beside the
+>   ciphertext so merchant memory keeps working. Started as two scalar hashes
+>   (`transactions.merchant_hmac` / `.merchant_hmac_1`); both were **replaced** by
+>   `transactions.merchant_prefix_hmacs`, a `text[]` of one hash per prefix, because merchant memory
+>   is a TYPEAHEAD and an exact-match hash would have lit the category chip only once the merchant
+>   was typed in full. Proven against the old behaviour in `test/merchantMemory.test.js`.
+> - **`lib/merchant.js`** — the ONE normalisation. There were two and they disagreed on apostrophes
+>   (`"sainsburys local"` vs `"sainsbury s"`), so merchant memory had silently never matched an
+>   apostrophe merchant. A blind index makes that class of drift fatal, so it is now shared.
+> - **`subscription_overrides.merchant_key`** was the PRIMARY KEY and held the merchant name, or a
+>   synthetic key embedding an amount bucket (`auto:<cat>:25:monthly`) — leaking both merchants and
+>   roughly their cost in a column no amount encryption touched. Replaced by `merchant_key_hmac`;
+>   migration 019 moves the primary key onto it.
+> - **Composite-PK paging restored** in the backfill (with tests this time) — `subscription_overrides`
+>   is why it has to exist.
+> - **Migration 018** adds every new column and the lookup indexes. Additive and re-runnable, applied
+>   in the same step as 012.
+>
+> Suite **116 -> 133**.
+>
+> **Still outstanding (updated 2026-08-19):** the route sweep is **STARTED, 1 of ~15 route files
+> done**. Nothing is encrypted in the running app and nothing can be until Alex generates and backs
+> up `DATA_ENCRYPTION_KEY` and the migrations are applied — `ENCRYPTION_PHASE` defaults to `off`,
+> where every path writes and reads exactly the columns it always did.
+>
+> Of the two routes coupled to plaintext search: `categories.js` merchant memory is **ported**
+> (`lib/merchantMemory.js`, wired into `/suggest` behind the phase flag); `subscriptions.js`
+> `merchant_key` is not.
+
+### ▢ Task 9.5 Part A — the dual-write route sweep (IN PROGRESS, started 2026-08-19)
+
+> **Why Part A exists as its own task.** Four rounds of cross-model verification on the migration-019
+> cutover machinery found real defects, but four and a half of the last five were in machinery added
+> *during* that loop rather than in the feature it protects. Splitting the phase at the irreversible
+> line means the whole remaining feature can be built, shipped and used with **no irreversible step
+> anywhere** — the plaintext stays beside the ciphertext until Part B (migration 019), which can wait
+> months. Decided with Alex on 2026-08-19; the reasoning is in CHAT_HANDOFF.md.
+>
+> **The shape.** `server/lib/encryptionCodec.js` is a codec at the query boundary, so the ~180
+> arithmetic sites are untouched: `selectFor()` rewrites a query's column list, `decodeRows()` hands
+> the route a plaintext-shaped row whatever is stored, `encodeWrite()` produces the columns to write,
+> and `presentRow()` returns only the columns the route asked for — without which routes doing
+> `res.json({ budget: data })` would have started shipping ciphertext and `user_id` to the browser.
+> Everything derives from `lib/encryptedFields.js`; there are no per-table lists.
+>
+> **At `ENCRYPTION_PHASE=off` the codec is a no-op in both directions**, asserted as the first test in
+> its file. That is what makes Part A shippable and provable in production before any key exists.
+>
+> **Verification pattern.** `test/helpers/routeHarness.js` mounts the REAL router on a real Express
+> server and speaks HTTP to it over a fake PostgREST. Each swept route gets a suite that runs at all
+> three phases and asserts identical JSON, the right columns landing in the table per phase, and that
+> no `_enc` / `_hmac` / `v2:` / user id ever appears in a response. `npm test` therefore runs with
+> `--experimental-test-module-mocks`.
+>
+> - **Done:** `lib/blindIndex.js` (extracted from the backfill, so the gate no longer imports helpers
+>   from the script it audits), `lib/encryptionCodec.js` (27 tests), the route harness,
+>   **`routes/budgets.js`** (four encrypted columns across four tables) and
+>   **`routes/transactions.js`** — 16 call sites, three encrypted columns, the merchant blind index,
+>   a second encrypted table (`recurrences`) written in the same request, and the derived
+>   foreign-currency amount. **It needed no change to the codec**, which is the first real evidence
+>   the boundary abstraction holds. Then **`routes/goals.js`** (savings goals and contributions, five
+>   encrypted columns across two tables) and **`routes/wins.js`** (read-only over four encrypted
+>   tables). Suite 244 -> 353. Four routes is a mergeable batch.
+> - **Next:** dashboard, analytics, affordability,
+>   projections, specialGroups, subscriptions, ask + `lib/askContext.js`, the remaining reads in
+>   categories/me, and **`lib/runRecurrences.js`** — the 03:00 cron INSERTs transactions and must go
+>   through the codec or it writes rows the gate will reject.
+
+> **Codex stage-4 VERIFY: FAIL (2026-08-18).** Eleven findings, including two reproduced false
+> PASSes in the gate itself (a 501-row composite-PK scan that verified 500; a value-only edit after
+> the read pass that the count-based drift check could not see). All fixed; suite 133 -> 161.
+>
+> **Codex stage-4 RE-VERIFY: FAIL (2026-08-18).** 161/161 and the client build both passed, but two
+> NEW false-PASS states were reproduced in the gate, plus three correctness/doc defects. All five
+> fixed in this revision; suite **161 -> 201**:
+>
+> 1. **The drift digest omitted `user_id`, and the second pass's failures were thrown away.** The
+>    decryption key is derived from the owner, so changing only `user_id` left the digest
+>    byte-identical while every ciphertext stopped decrypting — and the caller compared digests only.
+>    The digest now covers every validation input with length-prefixed framing (so no value can forge
+>    a delimiter), and pass two's failures and row counts feed the verdict.
+> 2. **`checked === total` never proved the scan saw the final table.** Delete an already-scanned row
+>    and insert a plaintext-only row whose key sorts inside that same offset window, and both passes
+>    observe an identical row stream, digest and count while the new row is read by neither. No
+>    number of independent HTTP reads closes that. Quiescence is now ENFORCED:
+>    **`migrations/018a_encryption_write_barrier.sql`** installs statement-level triggers that reject
+>    every write to the ten guarded tables while the cutover flag is engaged, plus a
+>    `pg_stat`-backed write-counter RPC. The gate refuses to run unless the barrier is engaged,
+>    fails if it was released or re-engaged mid-run, and fails on any counter movement.
+> 3. **The prefix array published a per-user prefix trie**, not the "which rows share a merchant" the
+>    docs claimed — exact longest-common-prefix, strict-prefix families, and exact merchant length.
+>    The cap is now **8 characters** (`MAX_PREFIX`), so the trie is bounded and length saturates.
+> 4. **The 24-character bound was asymmetric** — stored prefixes stopped at 24 while the read path
+>    hashed the uncapped query, so matching worked at 24 characters and silently died at 25. One
+>    `merchantQueryPrefix()` now serves the read side, and `merchantMatches()` re-tests candidates on
+>    the decrypted text so queries past the cap stay EXACT rather than approximate.
+> 5. **Migration 019 dropped `categories.name` while `handle_new_user()` still inserted it** — the
+>    next signup would have raised inside the trigger and rolled back the auth.users insert, so
+>    nobody could create an account. 019 now replaces the function *before* the drop, and the
+>    route-side seeding the spec always required is built: **`server/lib/defaultCategories.js`**,
+>    called from `GET /api/me`, idempotent, phase-aware via the new
+>    **`server/lib/encryptionPhase.js`** (`off` default = today's behaviour exactly). Migration 018
+>    adds a partial unique index so two tabs on a new account cannot double-seed.
+
+> **Codex stage-5 RE-VERIFY #2: FAIL (2026-08-18).** 201/201 and the client build passed, and the
+> digest fix was accepted, but the new write barrier had a Critical hole plus four more defects. All
+> seven fixed; suite **201 -> 220**:
+>
+> 1. **The barrier did not drain writers admitted before it was engaged.** Reproduced on real
+>    PostgreSQL 18.4: a transaction that inserted a plaintext-only row and stayed open was invisible
+>    to the gate's scans AND to `pg_stat` (cumulative stats exclude in-progress transactions), the
+>    gate returned PASS, and the row then committed — because COMMIT re-fires no statement trigger.
+>    The trigger now takes `SELECT ... FOR SHARE` on the singleton flag, so engaging the barrier
+>    blocks until every admitted writer finishes. **`server/test/writeBarrier.pg.test.js`** runs the
+>    real migration against a throwaway embedded PostgreSQL and RED-fails against the old SQL.
+>    **These 13 tests are OPT-IN and skip by default** — `embedded-postgres` ships a 144 MB
+>    PostgreSQL binary and Vercel installs devDependencies during a build, so declaring it would have
+>    put that download in every deploy. Run them with
+>    `cd server && npm install --no-save pg embedded-postgres && npm test`; the skip message prints
+>    the same line. Anyone reviewing the barrier before Part B must run it.
+> 2. **`TRUNCATE` was not guarded** — a separate trigger event, and not counted by `pg_stat`'s tuple
+>    counters either, so it went through both defences. Added to every statement trigger.
+> 3. **Fresh migration replay was still invalid:** 012 altered `public.recurrences`, which 014
+>    creates. `recurrences.amount_enc` moved to 018, plus a general test that no migration alters a
+>    table an earlier statement has not created.
+> 4. **Dual-phase signups wrote plaintext-only category names.** The `handle_new_user()` replacement
+>    moved from 019 forward into 018a, and `ensureDefaultCategories()` now repairs missing
+>    `name_enc`/`name_hmac` during the dual window instead of returning "already present".
+> 5. **The 200-row history cap could discard every true match.** The read path pages candidates in a
+>    stable order until 200 rows pass the exact test or the candidates run out.
+> 6. **`GET /api/categories` could cache an empty list** for a brand-new account; it now seeds before
+>    it reads, like `GET /api/me`.
+> 7. Stale operational references to the deleted migration 013 corrected throughout.
+
+> **Codex stage-5 RE-VERIFY #3: FAIL (2026-08-18).** 220/220 including 9 real-PostgreSQL tests, and
+> the client build, all passed — but a fresh real-Postgres probe got a write through the engaged
+> barrier. All five findings fixed; suite **220 -> 244**:
+>
+> 1. **A REPEATABLE READ snapshot older than the barrier could still commit.** The trigger reads the
+>    flag through the CALLING transaction's snapshot, so a transaction that began before 018a was
+>    applied saw no flag row — and the deliberate "missing row = allow" branch let it write. It now
+>    raises on absent-or-invisible. Regression opens the snapshot BEFORE applying 018a, in a scratch
+>    database, and is RED-checked.
+> 2. **Barrier continuity was caller-controlled.** `engaged_at` could be written back unchanged
+>    across a release/re-engage. Added a database-owned `generation` bumped by a trigger, with
+>    `engaged_at` derived; the gate compares generations.
+> 3. **Category repair was TOCTOU and not self-healing.** It now scopes each update by the exact
+>    plaintext it read, verifies the write landed, and judges stale/half-written/undecryptable
+>    states rather than only `name_enc IS NULL`. The defaults probe looks for default categories, so
+>    a custom POST can no longer suppress the twelve.
+> 4. **Merchant memory's paging existed only in a unit test, and the substring contract had been
+>    quietly dropped.** `server/lib/merchantMemory.js` is now real code — keyset paging, short-page
+>    and error handling, a reported candidate ceiling — wired into `/suggest` behind
+>    `ENCRYPTION_PHASE`. Mid-word ("esco" → Tesco) and later-word ("Express" → Tesco Express)
+>    matching are RESTORED via a bounded decrypt-and-scan fallback; the only remaining deviation is
+>    that the fallback looks at the most recent 500 transactions.
+> 5. **Tests and docs overclaimed.** The migration-dependency test now reads index/policy/trigger
+>    targets and says plainly it is not a replay proof; SECURITY.md discloses the bounded trie in
+>    full; the trigger-moves-in-018a and both-routes-seed corrections are made everywhere.
 
 **Chat prompt:**
 ```
@@ -756,7 +951,7 @@ Vercel, and backed it up in ~/Keys/ — walk him through this first. Then: lib/c
 node:test tests FIRST (npm test passes), additive migration 012, encrypt-backfill.mjs whose
 verification RE-READS each written row from the database (an in-memory round-trip is not a
 verification — see the plan's warning box), dual-write route sweep, full click-through on encrypted
-data, and ONLY THEN — with Alex's explicit confirmation in that session — migration 013
+data, and ONLY THEN — with Alex's explicit confirmation in that session — migration 019
 dropping plaintext (irreversible) + the category-seeding move from the SQL trigger to
 GET /api/me. Update SECURITY.md with the spec's honest-limits block verbatim.
 ```
@@ -770,7 +965,7 @@ database to verify) but has **not been run**. Still gated on Alex,
 all requiring his explicit go-ahead: generating `DATA_ENCRYPTION_KEY` and backing it up,
 applying migration 012, running the backfill against real data, the full route sweep
 (dual-write reads/writes through the `_enc` columns), the click-through verification, and
-migration 013 (irreversible plaintext drop + category-seeding trigger change).
+migration 019 (irreversible plaintext drop + category-seeding trigger change).
 
 ---
 

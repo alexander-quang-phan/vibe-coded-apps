@@ -2,6 +2,11 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { supabase } from '../lib/supabase.js';
 import { suggestCategoryName } from '../lib/categoryKeywords.js';
+import { ensureDefaultCategories } from '../lib/defaultCategories.js';
+import { suggestFromHistory } from '../lib/merchantMemory.js';
+import { merchantSearchTerm } from '../lib/merchant.js';
+import { CURRENT_PHASE, writesCiphertext } from '../lib/encryptionPhase.js';
+import { blindIndex } from '../lib/crypto.js';
 import { isSingleEmoji } from '../lib/emoji.js';
 
 const router = Router();
@@ -43,6 +48,13 @@ const PROTECTED_DEFAULT_NAMES = new Set(['Other', 'Other Income']);
 
 router.get('/', async (req, res, next) => {
   try {
+    // Seed BEFORE reading. The client fires this and GET /api/me independently
+    // and renders as soon as they resolve, so for a brand-new account this could
+    // otherwise return — and cache — an empty list while /api/me was still
+    // seeding. Idempotent, so whichever request gets here first does the work.
+    // [Codex stage-5 RE-VERIFY #2 finding 6, 2026-08-18]
+    await ensureDefaultCategories(supabase, req.user.id);
+
     const { data, error } = await supabase
       .from('categories')
       .select('id, name, icon, color, type, is_default, sort_order')
@@ -68,50 +80,65 @@ router.get('/suggest', async (req, res, next) => {
       return res.json({ categoryId: null, confidence: 'none', source: 'none' });
     }
 
-    // Match on the first two words, mirroring the subscription detector's
-    // merchant normalisation.
-    const term = desc
-      .toLowerCase()
-      .replace(/[^a-z0-9 ]+/g, ' ')
-      .replace(/\s+/g, ' ')
-      .trim()
-      .split(' ')
-      .slice(0, 2)
-      .join(' ');
+    // ONE normalisation, from lib/merchant.js. This route used to carry its own
+    // inline copy that stripped apostrophes differently from lib/subscriptions.js
+    // ("sainsbury s" vs "sainsburys"), so merchant memory had silently never
+    // matched an apostrophe merchant.
+    const term = merchantSearchTerm(desc);
     if (!term) {
       return res.json({ categoryId: null, confidence: 'none', source: 'none' });
     }
 
-    const { data: matches, error } = await supabase
-      .from('transactions')
-      .select('category_id')
-      .eq('user_id', req.user.id)
-      .ilike('description', `%${term}%`)
-      .limit(200);
-    if (error) throw error;
-
-    if (matches && matches.length > 0) {
-      const counts = new Map();
-      for (const m of matches) {
-        counts.set(m.category_id, (counts.get(m.category_id) ?? 0) + 1);
+    if (writesCiphertext(CURRENT_PHASE)) {
+      // Descriptions are ciphertext, so the database cannot answer `%term%`.
+      // lib/merchantMemory.js keeps the behaviour identical: the blind index
+      // narrows (keyset-paged, exact-tested), and a bounded recent-history scan
+      // covers the mid-word and later-word matches the index cannot express.
+      const fromHistory = await suggestFromHistory(supabase, { userId: req.user.id, typed: desc });
+      if (fromHistory.categoryId) {
+        return res.json({
+          categoryId: fromHistory.categoryId,
+          confidence: fromHistory.confidence,
+          source: 'history',
+        });
       }
-      const [categoryId, count] = [...counts.entries()].sort((a, b) => b[1] - a[1])[0];
-      return res.json({
-        categoryId,
-        confidence: count >= 3 ? 'high' : 'medium',
-        source: 'history',
-      });
+    } else {
+      const { data: matches, error } = await supabase
+        .from('transactions')
+        .select('category_id')
+        .eq('user_id', req.user.id)
+        .ilike('description', `%${term}%`)
+        .limit(200);
+      if (error) throw error;
+
+      if (matches && matches.length > 0) {
+        const counts = new Map();
+        for (const m of matches) {
+          counts.set(m.category_id, (counts.get(m.category_id) ?? 0) + 1);
+        }
+        const [categoryId, count] = [...counts.entries()].sort((a, b) => b[1] - a[1])[0];
+        return res.json({
+          categoryId,
+          confidence: count >= 3 ? 'high' : 'medium',
+          source: 'history',
+        });
+      }
     }
 
     const keywordName = suggestCategoryName(desc);
     if (keywordName) {
-      const { data: cat, error: catErr } = await supabase
+      // After 019 `categories.name` does not exist; the blind index answers the
+      // same exact-equality lookup. Before it, the plaintext is still the truth
+      // (a dual-phase row may not have been repaired yet).
+      let byName = supabase
         .from('categories')
         .select('id')
         .eq('user_id', req.user.id)
-        .eq('name', keywordName)
-        .eq('type', 'expense')
-        .maybeSingle();
+        .eq('type', 'expense');
+      byName = CURRENT_PHASE === 'enc'
+        ? byName.eq('name_hmac', blindIndex('categories.name_hmac', req.user.id, keywordName))
+        : byName.eq('name', keywordName);
+      const { data: cat, error: catErr } = await byName.maybeSingle();
       if (catErr) throw catErr;
       if (cat) {
         return res.json({ categoryId: cat.id, confidence: 'medium', source: 'keyword' });
