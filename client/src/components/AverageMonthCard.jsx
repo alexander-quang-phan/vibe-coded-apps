@@ -6,25 +6,17 @@ import { cn } from '@/lib/utils';
 
 const WINDOWS = [3, 6, 12];
 const WINDOW_KEY = 'trim:avgWindow';
-const SPECIAL_KEY = 'trim:avgIncludeSpecial';
 
-// Deliberately NOT the Dashboard hero's trim:heroIncludeSpecial. The hero toggles
-// this month's net; this toggles an N-month expense average. Flipping one should
-// not silently change a page the user is not looking at.
+// The incl./excl.-special choice is NOT owned here any more. It moves every
+// figure on the Analytics page, so the page owns it (see Analytics.jsx) and
+// passes it down; this card only reads it. The averaging window stays local —
+// it changes nothing outside this card.
 function readWindow() {
   try {
     const stored = Number(localStorage.getItem(WINDOW_KEY));
     return WINDOWS.includes(stored) ? stored : 6;
   } catch {
     return 6; // private mode / storage disabled
-  }
-}
-
-function readIncludeSpecial() {
-  try {
-    return localStorage.getItem(SPECIAL_KEY) !== 'false';
-  } catch {
-    return true;
   }
 }
 
@@ -57,18 +49,18 @@ function windowLabel(from, to) {
  * What a normal month costs, over the last N COMPLETED months. The month in
  * progress is shown alongside for comparison but never averaged in — see
  * server/lib/runningAverage.js for why.
+ *
+ * `includeSpecial` is the Analytics page's page-wide choice. When there is no
+ * special spend in the chosen window the two bases are equal, so the card simply
+ * shows the same figure either way.
  */
-export function AverageMonthCard({ average, currency, onAddToMonth }) {
+export function AverageMonthCard({ average, currency, includeSpecial = true, onAddToMonth }) {
   const [months, setMonths] = useState(readWindow);
-  const [includeSpecial, setIncludeSpecial] = useState(readIncludeSpecial);
 
   if (!average) return null;
 
   const picked = average.windows.find((w) => w.months === months) ?? average.windows[0];
-  // Only worth offering when there IS special spend in this window to take out —
-  // the same rule the Dashboard hero uses.
-  const canToggle = picked.inclSpecial !== picked.exclSpecial;
-  const excluding = canToggle && !includeSpecial;
+  const excluding = !includeSpecial;
 
   const figure = excluding ? picked.exclSpecial : picked.inclSpecial;
   // Compare like with like: an excl.-special average next to an incl.-special
@@ -82,12 +74,6 @@ export function AverageMonthCard({ average, currency, onAddToMonth }) {
   function chooseWindow(n) {
     setMonths(n);
     remember(WINDOW_KEY, n);
-  }
-
-  function toggleSpecial() {
-    const next = !includeSpecial;
-    setIncludeSpecial(next);
-    remember(SPECIAL_KEY, next);
   }
 
   return (
@@ -120,16 +106,6 @@ export function AverageMonthCard({ average, currency, onAddToMonth }) {
                 </button>
               ))}
             </div>
-            {canToggle ? (
-              <button
-                type="button"
-                onClick={toggleSpecial}
-                aria-pressed={excluding}
-                className="rounded-full border border-border/70 bg-background/40 px-2.5 py-0.5 text-[11px] font-medium text-muted-foreground transition-colors hover:border-amber-400/50 hover:text-amber-400"
-              >
-                {excluding ? 'excl. special' : 'incl. special'}
-              </button>
-            ) : null}
           </div>
         </div>
 
@@ -140,6 +116,7 @@ export function AverageMonthCard({ average, currency, onAddToMonth }) {
         <p className="mt-1 text-xs text-muted-foreground">
           {windowLabel(picked.from, picked.to)} · this month so far{' '}
           <span className="nums">{formatMoney(thisMonth, currency)}</span>
+          {excluding ? ' · excl. special' : ''}
         </p>
 
         {gaps.length > 0 ? (

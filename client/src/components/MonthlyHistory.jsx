@@ -6,8 +6,10 @@ import { cn } from '@/lib/utils';
 
 /** Phase 9.4 — one row per month, newest first; rows link to the
  *  Transactions page filtered to that month. */
-export function MonthlyHistory({ series, currency, showSpecial }) {
-  // Trim leading pre-signup months only — zero months inside an active history stay.
+export function MonthlyHistory({ series, currency, showSpecial, excludeSpecial = false }) {
+  // Trim leading pre-signup months only — zero months inside an active history
+  // stay. Deliberately measured on the all-in figures, so the list of months
+  // does not grow or shrink when the page's incl./excl. chip is flipped.
   const firstWithData = series.findIndex((m) => m.income > 0 || m.expenses > 0);
   const months = firstWithData === -1 ? [] : series.slice(firstWithData).reverse();
   if (months.length === 0) return null;
@@ -20,7 +22,12 @@ export function MonthlyHistory({ series, currency, showSpecial }) {
           Monthly history
         </h3>
         <div className="mt-3 divide-y divide-border/60">
-          {months.map((m) => (
+          {months.map((m) => {
+            // `expenses - special` is exact — the server sends both the all-in
+            // figure and the slice to remove.
+            const spent = excludeSpecial ? Number((m.expenses - m.special).toFixed(2)) : m.expenses;
+            const net = excludeSpecial ? Number((m.income - spent).toFixed(2)) : m.net;
+            return (
             <Link
               key={m.ym}
               to={`/transactions?month=${m.ym}`}
@@ -33,13 +40,13 @@ export function MonthlyHistory({ series, currency, showSpecial }) {
                 ) : null}
               </span>
               <span className="nums flex-1 text-right text-muted-foreground">
-                −{formatMoney(m.expenses, currency)}
+                −{formatMoney(spent, currency)}
               </span>
               <span className="nums hidden flex-1 text-right text-muted-foreground sm:block">
                 +{formatMoney(m.income, currency)}
               </span>
-              <span className={cn('nums w-24 shrink-0 text-right font-medium', m.net >= 0 ? 'text-primary' : 'text-amber-600 dark:text-amber-400')}>
-                {formatMoney(m.net, currency)}
+              <span className={cn('nums w-24 shrink-0 text-right font-medium', net >= 0 ? 'text-primary' : 'text-amber-600 dark:text-amber-400')}>
+                {formatMoney(net, currency)}
               </span>
               {showSpecial ? (
                 <span className="nums hidden w-20 shrink-0 items-center justify-end gap-1 text-right text-xs text-amber-600 dark:text-amber-400 sm:flex">
@@ -51,7 +58,8 @@ export function MonthlyHistory({ series, currency, showSpecial }) {
                 </span>
               ) : null}
             </Link>
-          ))}
+            );
+          })}
         </div>
       </CardContent>
     </Card>

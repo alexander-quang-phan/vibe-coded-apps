@@ -1157,6 +1157,58 @@ day in the USER's zone; anything comparing against it must be derived from `lib/
 
 ---
 
+## Phase 15 — the special-expenses chip moves the whole Analytics page (2026-09-05, shipped 2026-09-22)
+
+Alex's report: flipping incl./excl. special on Analytics left **last month's numbers unchanged** —
+and, with them, the chart, the category bars and the history table. Only the average card moved,
+because the chip lived inside that card and nothing else could see it.
+
+- [x] **15.1** `/api/analytics` serves both bases in one response: `mom.thisMonthSpecial`,
+      `mom.lastMonthSpecial`, `mom.deltaPctExclSpecial`, and `topCategoriesExclSpecial` — its own
+      top five, because taking special spend out can change *which* five categories are on top.
+      Mirrored into `scripts/devMock.js`.
+- [x] **15.2** The chip moved from `AverageMonthCard` to `pages/Analytics.jsx`, beside the heading,
+      the way Dashboard owns its hero's. One flip now moves the average, this/last month, the
+      change %, the chart's expense line, the category bars and every history row. An amber line
+      under the heading states that the page is filtered.
+- [x] **15.3** 3 route tests × 3 encryption phases (suite 450 → 459); client build PASS; clicked
+      through against `npm run dev:mock` on both bases and with the pref off.
+
+- [x] **15.4 (2026-09-22)** `scripts/devMock.js` rounded the change % to 2dp while
+      `routes/analytics.js` used 1dp — the same data read `+12.57%` in dev and `+12.6%` in
+      production. The mock's `pctChange` now matches the route.
+- [x] **15.5 (2026-09-22) — actually shipped.** 15.1–15.3 were written on 2026-09-05 and then sat
+      **uncommitted for 17 days**; `main`'s last commit was 2026-08-19, so Alex kept seeing the bug
+      in the live app and reported it again. Confirmed by fetching the deployed bundle from
+      `trim-budget.vercel.app`: it contained the old in-card chip and none of the new fields.
+      Re-verified from scratch before committing — suite **459 pass / 0 fail**, client build PASS,
+      and the real `pages/Analytics.jsx` rendered against the mock's actual payload with the cache
+      pre-seeded (an agent has no Supabase login). Every figure moved on one click:
+
+      | | incl. special | excl. special |
+      |---|---|---|
+      | Average month (6m) | £678.65 | £638.65 |
+      | This month | £1,647.36 | £1,467.36 |
+      | **Last month** | **£1,543.47** | **£1,303.47** |
+      | Change | +6.7% | +12.6% |
+      | Top categories | Rent, **Shopping £274.49**, Bills, Groceries, Food | Rent, Bills, Groceries, Food, **Shopping £94.49** |
+      | History — Aug spent / net | −£1,543.47 / £906.53 | −£1,303.47 / £1,146.53 |
+      | History — Sep spent / net | −£1,647.36 / £802.64 | −£1,467.36 / £982.64 |
+
+      Also verified: the choice survives a reload (`trim:avgIncludeSpecial`), and with the pref
+      **off** — even with a remembered "excl." choice — there is no chip, no amber note, no star
+      column and every figure is all-in, exactly as Phase 9.2 promises.
+
+**One chip, one basis, whole page.** A figure on this page that ignores the chip is the bug this
+phase fixed — two measures side by side with nothing saying which is which. Anything added to
+Analytics later must read the page's `excluding` flag, not invent its own.
+
+**And the half that actually mattered:** this phase was "code-complete" for 17 days while the bug
+was still live for Alex. Built + tests green is not shipped. See `BUGS-FIXED.md`, created this
+session, which this project had been missing.
+
+---
+
 ## Deferred further (flagged in FEATURES.md, don't start without explicit ask)
 
 **Deferred during Phase 6 plan review (2026-05-08):**

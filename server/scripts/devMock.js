@@ -781,6 +781,7 @@ app.get('/api/analytics', (req, res) => {
   const thisYm = ymKey(now);
   const lastYm = ymKey(new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - 1, 1)));
   const catTotals = new Map();
+  const catSpecial = new Map();
 
   for (const t of transactions) {
     const ym = t.date.slice(0, 7);
@@ -792,6 +793,9 @@ app.get('/api/analytics', (req, res) => {
     if (t.is_special && specialEnabled && t.type !== 'income') bucket.special += amt;
     if (ym === thisYm && t.type === 'expense') {
       catTotals.set(t.category_id, (catTotals.get(t.category_id) ?? 0) + amt);
+      if (t.is_special && specialEnabled) {
+        catSpecial.set(t.category_id, (catSpecial.get(t.category_id) ?? 0) + amt);
+      }
     }
   }
   for (const s of series) {
@@ -800,16 +804,31 @@ app.get('/api/analytics', (req, res) => {
     s.net = round2(s.income - s.expenses);
     s.special = round2(s.special);
   }
-  const topCategories = [...catTotals.entries()]
-    .map(([categoryId, total]) => {
-      const c = catById(categoryId);
-      return { categoryId, name: c?.name ?? 'Unknown', icon: c?.icon ?? null, color: c?.color ?? null, total: round2(total) };
-    })
-    .sort((a, b) => b.total - a.total)
-    .slice(0, 5);
+  const topFive = (totals) =>
+    [...totals.entries()]
+      .map(([categoryId, total]) => {
+        const c = catById(categoryId);
+        return { categoryId, name: c?.name ?? 'Unknown', icon: c?.icon ?? null, color: c?.color ?? null, total: round2(total) };
+      })
+      .sort((a, b) => b.total - a.total)
+      .slice(0, 5);
+  const topCategories = topFive(catTotals);
+  const catTotalsExclSpecial = new Map();
+  for (const [categoryId, total] of catTotals) {
+    const rest = total - (catSpecial.get(categoryId) ?? 0);
+    if (round2(rest) > 0) catTotalsExclSpecial.set(categoryId, rest);
+  }
+  const topCategoriesExclSpecial = topFive(catTotalsExclSpecial);
 
   const thisMonth = byYm.get(thisYm)?.expenses ?? 0;
   const lastMonth = byYm.get(lastYm)?.expenses ?? 0;
+  const thisMonthSpecial = byYm.get(thisYm)?.special ?? 0;
+  const lastMonthSpecial = byYm.get(lastYm)?.special ?? 0;
+  // 1 decimal place, matching routes/analytics.js exactly. The mock used to
+  // round the change to 2dp while the real route used 1dp, so dev showed
+  // +12.57% where production showed +12.6% for the same data.
+  const pctChange = (now, prev) =>
+    prev > 0 ? Number((((now - prev) / prev) * 100).toFixed(1)) : null;
 
   // Mirrors routes/analytics.js exactly, reusing the same pure lib.
   const windows = [3, 6, 12]
@@ -827,10 +846,17 @@ app.get('/api/analytics', (req, res) => {
     series,
     average,
     topCategories,
+    topCategoriesExclSpecial,
     mom: {
       thisMonth,
       lastMonth,
-      deltaPct: lastMonth > 0 ? round2(((thisMonth - lastMonth) / lastMonth) * 100) : null,
+      deltaPct: pctChange(thisMonth, lastMonth),
+      thisMonthSpecial,
+      lastMonthSpecial,
+      deltaPctExclSpecial: pctChange(
+        round2(thisMonth - thisMonthSpecial),
+        round2(lastMonth - lastMonthSpecial),
+      ),
     },
   });
 });

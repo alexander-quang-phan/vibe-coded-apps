@@ -223,4 +223,108 @@ export function runDashboardAnalyticsRouteSuite(phase) {
       await http.close();
     }
   });
+
+  // --- analytics: both special bases in one response ---------------------------
+  //
+  // The Analytics page's incl./excl.-special chip moves EVERY figure on the page
+  // and must not refetch to do it, so the route serves both bases at once. These
+  // assert the excl. side genuinely differs: a test that only checked the new
+  // fields exist would pass on a response that echoed the incl. numbers back.
+
+  const CAT2 = '22222222-2222-4222-8222-222222222222';
+
+  /** 'YYYY-MM', n months from the current one. */
+  const ymOffset = (delta) => {
+    const now = new Date();
+    const d = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + delta, 1));
+    return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}`;
+  };
+
+  async function seedBothBases(specialEnabled = true) {
+    const { encodeWrite } = await import('../../lib/encryptionCodec.js');
+    const tables = await seed(phase);
+    const lastM = ymOffset(-1);
+    const row = (id, amount, date, categoryId, isSpecial) => ({
+      id, user_id: U, category_id: categoryId, type: 'expense', date,
+      is_special: isSpecial, original_currency: null, fx_rate: null,
+      created_at: `${date}T10:00:00Z`,
+      ...encodeWrite('transactions', U, { amount, description: id, original_amount: null }, phase),
+    });
+
+    tables.user_stats[0].special_expenses_enabled = specialEnabled;
+    tables.transactions[1].is_special = true; // the £40 Groceries row, this month
+    tables.categories.push({
+      id: CAT2, user_id: U, icon: '✈️', color: '#38bdf8', type: 'expense',
+      ...encodeWrite('categories', U, { name: 'Travel' }, phase),
+    });
+    tables.transactions.push(
+      // A category whose whole month is special — it must leave the excl. list,
+      // which is exactly what a client-side filter of the incl. top five cannot do.
+      row('t4', 200, `${thisMonth()}-07`, CAT2, true),
+      row('t5', 50, `${lastM}-10`, CAT, false),
+      row('t6', 50, `${lastM}-11`, CAT, true),
+    );
+    return tables;
+  }
+
+  test(`${label} analytics serves last month on both special bases`, async () => {
+    const { http } = await boot('analytics', await seedBothBases());
+    try {
+      const { status, body } = await http.get('/');
+      assert.equal(status, 200, JSON.stringify(body));
+
+      // Incl. special — the honest all-in figures, unchanged by this work.
+      assert.equal(body.mom.thisMonth, 340, '100 + 40 + 200');
+      assert.equal(body.mom.lastMonth, 100, '50 + 50');
+      assert.equal(body.mom.deltaPct, 240);
+
+      // The slices the client subtracts, and the change on that basis.
+      assert.equal(body.mom.thisMonthSpecial, 240, '40 + 200');
+      assert.equal(body.mom.lastMonthSpecial, 50);
+      assert.equal(body.mom.deltaPctExclSpecial, 100, '100 against 50, not 340 against 100');
+
+      const current = body.series.find((s) => s.ym === thisMonth());
+      assert.equal(current.expenses, 340);
+      assert.equal(current.special, 240);
+      const previous = body.series.find((s) => s.ym === ymOffset(-1));
+      assert.equal(previous.expenses, 100);
+      assert.equal(previous.special, 50, 'last month carries its own special slice');
+
+      assertNoSilentNaN(body);
+    } finally {
+      await http.close();
+    }
+  });
+
+  test(`${label} analytics excl.-special top five is its own list, not a filter`, async () => {
+    const { http } = await boot('analytics', await seedBothBases());
+    try {
+      const { body } = await http.get('/');
+
+      const incl = body.topCategories.map((c) => [c.name, c.total]);
+      assert.deepEqual(incl, [['Travel', 200], ['Groceries', 140]]);
+
+      const excl = body.topCategoriesExclSpecial.map((c) => [c.name, c.total]);
+      assert.deepEqual(excl, [['Groceries', 100]], 'an all-special category leaves the list');
+      assertNoSilentNaN(body);
+    } finally {
+      await http.close();
+    }
+  });
+
+  test(`${label} analytics: with the pref off both bases are the same`, async () => {
+    // Phase 9.2's promise — the flags go dormant, nothing is excluded anywhere.
+    const { http } = await boot('analytics', await seedBothBases(false));
+    try {
+      const { body } = await http.get('/');
+      assert.equal(body.mom.thisMonthSpecial, 0);
+      assert.equal(body.mom.lastMonthSpecial, 0);
+      assert.equal(body.mom.deltaPctExclSpecial, body.mom.deltaPct);
+      assert.deepEqual(body.topCategoriesExclSpecial, body.topCategories);
+      assert.ok(body.series.every((s) => s.special === 0), 'every special bucket stays 0');
+      assertNoSilentNaN(body);
+    } finally {
+      await http.close();
+    }
+  });
 }

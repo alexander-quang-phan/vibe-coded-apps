@@ -23,9 +23,16 @@ function monthLabel(ym) {
 }
 
 // GET /api/analytics?months=6
-// Returns: { series: [{ ym, label, income, expenses, net }],
+// Returns: { series: [{ ym, label, income, expenses, net, special }],
 //            topCategories: [{ categoryId, name, icon, color, total }],
-//            mom: { thisMonth, lastMonth, deltaPct } }
+//            topCategoriesExclSpecial: same shape, special spend taken out,
+//            mom: { thisMonth, lastMonth, deltaPct,
+//                   thisMonthSpecial, lastMonthSpecial, deltaPctExclSpecial } }
+//
+// Every expense figure is served on BOTH bases — including special spend and
+// excluding it — because the Analytics page's incl./excl. chip switches the
+// whole page at once and must never refetch to do it. `expenses` stays the
+// honest all-in number; `special` is the slice the client subtracts.
 router.get('/', async (req, res, next) => {
   try {
     const months = Math.min(Math.max(parseInt(req.query.months, 10) || 6, 1), 24);
@@ -76,6 +83,10 @@ router.get('/', async (req, res, next) => {
     const lastYm = addMonths(thisYm, -1);
 
     const catTotalsThisMonth = new Map();
+    // The special slice of each category, so the excl.-special top five can be
+    // built here. It cannot be derived on the client: `topCategories` is already
+    // sliced to five, and taking special spend out can change WHICH five those are.
+    const catSpecialThisMonth = new Map();
 
     for (const t of txRows) {
       // The date column is already a calendar day string — slicing it is exact,
@@ -92,6 +103,12 @@ router.get('/', async (req, res, next) => {
 
       if (ym === thisYm && t.type === 'expense') {
         catTotalsThisMonth.set(t.category_id, (catTotalsThisMonth.get(t.category_id) ?? 0) + amount);
+        if (t.is_special && specialEnabled) {
+          catSpecialThisMonth.set(
+            t.category_id,
+            (catSpecialThisMonth.get(t.category_id) ?? 0) + amount,
+          );
+        }
       }
     }
 
@@ -102,28 +119,48 @@ router.get('/', async (req, res, next) => {
       s.special = Number(s.special.toFixed(2));
     }
 
-    const topCategories = [...catTotalsThisMonth.entries()]
-      .map(([categoryId, total]) => {
-        const cat = catsById.get(categoryId);
-        return {
-          categoryId,
-          name: cat?.name ?? 'Unknown',
-          icon: cat?.icon ?? null,
-          color: cat?.color ?? null,
-          total: Number(total.toFixed(2)),
-        };
-      })
-      .sort((a, b) => b.total - a.total)
-      .slice(0, 5);
+    const topFive = (totals) =>
+      [...totals.entries()]
+        .map(([categoryId, total]) => {
+          const cat = catsById.get(categoryId);
+          return {
+            categoryId,
+            name: cat?.name ?? 'Unknown',
+            icon: cat?.icon ?? null,
+            color: cat?.color ?? null,
+            total: Number(total.toFixed(2)),
+          };
+        })
+        .sort((a, b) => b.total - a.total)
+        .slice(0, 5);
+
+    const topCategories = topFive(catTotalsThisMonth);
+
+    const catTotalsExclSpecial = new Map();
+    for (const [categoryId, total] of catTotalsThisMonth) {
+      const rest = total - (catSpecialThisMonth.get(categoryId) ?? 0);
+      // A category whose whole month was special leaves the list rather than
+      // sitting in it at zero.
+      if (Number(rest.toFixed(2)) > 0) catTotalsExclSpecial.set(categoryId, rest);
+    }
+    const topCategoriesExclSpecial = topFive(catTotalsExclSpecial);
 
     const thisMonthBucket = seriesByYm.get(thisYm);
     const lastMonthBucket = seriesByYm.get(lastYm);
     const thisMonthExpenses = thisMonthBucket?.expenses ?? 0;
     const lastMonthExpenses = lastMonthBucket?.expenses ?? 0;
-    const deltaPct =
-      lastMonthExpenses > 0
-        ? Number((((thisMonthExpenses - lastMonthExpenses) / lastMonthExpenses) * 100).toFixed(1))
-        : null;
+    const thisMonthSpecial = thisMonthBucket?.special ?? 0;
+    const lastMonthSpecial = lastMonthBucket?.special ?? 0;
+    // One definition of the change, applied to both bases. The client subtracts
+    // the money figures itself (`expenses - special` is exact), but a percentage
+    // computed in two places is how two screens end up disagreeing.
+    const pctChange = (now, prev) =>
+      prev > 0 ? Number((((now - prev) / prev) * 100).toFixed(1)) : null;
+    const deltaPct = pctChange(thisMonthExpenses, lastMonthExpenses);
+    const deltaPctExclSpecial = pctChange(
+      Number((thisMonthExpenses - thisMonthSpecial).toFixed(2)),
+      Number((lastMonthExpenses - lastMonthSpecial).toFixed(2)),
+    );
 
     // Three windows in one response so the card's 3m / 6m / 12m switch needs no
     // refetch. Two extra passes over an in-memory array of at most 24 entries.
@@ -148,10 +185,14 @@ router.get('/', async (req, res, next) => {
       series,
       average,
       topCategories,
+      topCategoriesExclSpecial,
       mom: {
         thisMonth: thisMonthExpenses,
         lastMonth: lastMonthExpenses,
         deltaPct,
+        thisMonthSpecial,
+        lastMonthSpecial,
+        deltaPctExclSpecial,
       },
     });
   } catch (err) {

@@ -17,6 +17,27 @@ import { AverageMonthCard } from '@/components/AverageMonthCard';
 import { QuickAddDialog } from '@/components/QuickAddDialog';
 import { useApi } from '@/hooks/useApi';
 import { formatMoney } from '@/lib/format';
+import { cn } from '@/lib/utils';
+
+// Phase 10 A6's incl./excl. chip, owned by the PAGE rather than by one card.
+// It used to live inside AverageMonthCard and move only that card, so flipping
+// it left "last month", the chart, the category bars and the history table
+// still counting one-offs while the average did not — two different measures on
+// one screen. Owned here, one flip moves every figure on the page, the same way
+// Dashboard owns `trim:heroIncludeSpecial` for its hero.
+//
+// The key keeps its old `avg` name on purpose: renaming it would silently reset
+// a choice Alex has already made. It is still deliberately separate from the
+// hero's key — that toggles this month's net, this toggles a whole page.
+const SPECIAL_KEY = 'trim:avgIncludeSpecial';
+
+function readIncludeSpecial() {
+  try {
+    return localStorage.getItem(SPECIAL_KEY) !== 'false';
+  } catch {
+    return true; // private mode / storage disabled
+  }
+}
 
 function AnalyticsSkeleton() {
   return (
@@ -43,6 +64,17 @@ export default function Analytics() {
   // 'YYYY-MM-DD' while the backdating dialog is open, null when it is closed.
   // Declared before any early return so hook order stays stable.
   const [backdateTo, setBackdateTo] = useState(null);
+  const [includeSpecial, setIncludeSpecial] = useState(readIncludeSpecial);
+
+  function toggleIncludeSpecial() {
+    const next = !includeSpecial;
+    setIncludeSpecial(next);
+    try {
+      localStorage.setItem(SPECIAL_KEY, String(next));
+    } catch {
+      // Not being able to remember the choice is not worth an error.
+    }
+  }
 
   // See Dashboard.jsx — a paused (offline) query leaves data undefined with
   // isLoading and isError both false.
@@ -59,20 +91,65 @@ export default function Analytics() {
     );
   }
 
-  const { series, average, topCategories, mom } = data;
-  const chartSeries = series.slice(-6);
-  const pct = mom.deltaPct;
-  const delta = pct === null ? null : pct;
+  const { series, average, topCategories, topCategoriesExclSpecial, mom } = data;
+  const specialEnabled = !!me?.preferences?.specialExpensesEnabled;
+  // Only worth offering when there IS special spend in the 24 months this page
+  // holds — the same rule the history table uses for its star column.
+  const canToggleSpecial = specialEnabled && series.some((s) => s.special > 0);
+  const excluding = canToggleSpecial && !includeSpecial;
+
+  // `expenses - special` is exact: the server sends the honest all-in figure and
+  // the slice to take out, so subtracting is the same arithmetic it did.
+  const chartSeries = series
+    .slice(-6)
+    .map((s) => (excluding ? { ...s, expenses: Number((s.expenses - s.special).toFixed(2)) } : s));
+  const thisMonth = excluding ? mom.thisMonth - (mom.thisMonthSpecial ?? 0) : mom.thisMonth;
+  const lastMonth = excluding ? mom.lastMonth - (mom.lastMonthSpecial ?? 0) : mom.lastMonth;
+  // The percentage comes from the server on both bases — one definition, so the
+  // change can never disagree with the two figures beside it.
+  const delta = (excluding ? mom.deltaPctExclSpecial : mom.deltaPct) ?? null;
   const trendingUp = delta !== null && delta > 0;
+  // Taking special spend out can change WHICH five categories are on top, so the
+  // excl. list is its own top five from the server, not a filter of this one.
+  const shownCategories = (excluding ? topCategoriesExclSpecial : topCategories) ?? topCategories;
 
   return (
     <div className="space-y-5 pb-12 animate-fade-up">
-      <header className="space-y-1">
-        <p className="text-sm text-muted-foreground">Six-month view. See where the money moves.</p>
-        <h1 className="text-3xl font-extrabold tracking-tight sm:text-4xl">Analytics</h1>
+      <header className="flex flex-wrap items-end justify-between gap-3">
+        <div className="space-y-1">
+          <p className="text-sm text-muted-foreground">Six-month view. See where the money moves.</p>
+          <h1 className="text-3xl font-extrabold tracking-tight sm:text-4xl">Analytics</h1>
+        </div>
+        {canToggleSpecial ? (
+          <button
+            type="button"
+            onClick={toggleIncludeSpecial}
+            aria-pressed={excluding}
+            title="Applies to every figure on this page"
+            className={cn(
+              'rounded-full border px-3 py-1 text-xs font-medium transition-colors',
+              excluding
+                ? 'border-amber-400/50 bg-amber-400/10 text-amber-600 dark:text-amber-400'
+                : 'border-border/70 bg-background/40 text-muted-foreground hover:border-amber-400/50 hover:text-amber-400',
+            )}
+          >
+            {excluding ? 'excl. special' : 'incl. special'}
+          </button>
+        ) : null}
       </header>
 
-      <AverageMonthCard average={average} currency={currency} onAddToMonth={setBackdateTo} />
+      {excluding ? (
+        <p className="-mt-3 text-xs text-amber-600 dark:text-amber-400">
+          Special expenses are out of every figure on this page.
+        </p>
+      ) : null}
+
+      <AverageMonthCard
+        average={average}
+        currency={currency}
+        includeSpecial={!excluding}
+        onAddToMonth={setBackdateTo}
+      />
 
       <Card className="lift relative overflow-hidden border-border/60 bg-card/70 backdrop-blur">
         <div
@@ -85,7 +162,7 @@ export default function Analytics() {
               This month
             </p>
             <p className="nums text-3xl font-extrabold tracking-tight text-gradient">
-              {formatMoney(mom.thisMonth, currency)}
+              {formatMoney(thisMonth, currency)}
             </p>
           </div>
           <div>
@@ -93,7 +170,7 @@ export default function Analytics() {
               Last month
             </p>
             <p className="nums text-2xl font-semibold text-muted-foreground">
-              {formatMoney(mom.lastMonth, currency)}
+              {formatMoney(lastMonth, currency)}
             </p>
           </div>
           <div className="text-right">
@@ -189,14 +266,16 @@ export default function Analytics() {
           <h2 className="mb-3 text-xs font-semibold uppercase tracking-[0.16em] text-muted-foreground">
             Top categories this month
           </h2>
-          {topCategories.length === 0 ? (
+          {shownCategories.length === 0 ? (
             <p className="py-6 text-center text-sm text-muted-foreground">
-              No expenses logged yet this month.
+              {excluding
+                ? 'No non-special expenses logged yet this month.'
+                : 'No expenses logged yet this month.'}
             </p>
           ) : (
             <div className="space-y-3">
-              {topCategories.map((c) => {
-                const max = topCategories[0].total;
+              {shownCategories.map((c) => {
+                const max = shownCategories[0].total;
                 const pct = max > 0 ? Math.round((c.total / max) * 100) : 0;
                 const color = c.color || '#10b981';
                 return (
@@ -230,7 +309,8 @@ export default function Analytics() {
       <MonthlyHistory
         series={series}
         currency={currency}
-        showSpecial={!!me?.preferences?.specialExpensesEnabled && series.some((s) => s.special > 0)}
+        showSpecial={canToggleSpecial}
+        excludeSpecial={excluding}
       />
 
       {/* Opened by the average card's "nothing logged" prompt. Mounted closed
@@ -242,7 +322,7 @@ export default function Analytics() {
         }}
         currency={currency}
         simpleMode={!!me?.preferences?.simpleMode}
-        specialEnabled={!!me?.preferences?.specialExpensesEnabled}
+        specialEnabled={specialEnabled}
         initialDate={backdateTo ?? undefined}
       />
     </div>
