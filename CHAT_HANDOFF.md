@@ -1,6 +1,129 @@
-# Chat Handoff — updated 2026-08-19 (Part A CODE-COMPLETE, MERGED AND DEPLOYED INERT; 9.5 cutover machinery PARKED, UNVERIFIED)
+# Chat Handoff — updated 2026-09-23 (Phase 15 Analytics chip SHIPPED AND LIVE; 9.5 Part A still parked, awaiting Alex's four manual steps)
 
 ## DUAL-AGENT BATON  (both models: update this the MOMENT you finish work)
+- Current stage:  **NOTHING IN FLIGHT.** Phase 15 (Analytics special-expenses chip) is built,
+                  verified, committed (`15dd560`), pushed and **deployed to production 2026-09-23**.
+                  Phase 9.5 Part A is unchanged from 2026-08-19 — code-complete, deployed inert,
+                  waiting on Alex's four manual steps. No model owes a stage.
+- Model A is:     Claude Code (build + revise). Model B / verifier: **Codex — still unavailable**
+                  for the 9.5 branch (withholds output as a "cybersecurity request").
+- Up next:        **Alex** — (a) click through Analytics while logged in to confirm the chip, and
+                  (b) whenever he wants to resume encryption, the four manual steps below.
+- Last actor did: Claude Code, 2026-09-23 — fixed and SHIPPED the Analytics chip. Single-model by
+                  design: CLAUDE.md reserves the two-model loop for big/risky changes, and this is
+                  read-only display logic on an existing route. No migration, no auth/data-path
+                  change, so SECURITY.md was untouched.
+
+## Goal
+Alex reported: on Analytics, flipping incl./excl. special expenses left **last month's numbers
+unchanged** — and with them the chart, the category bars and the history table. He wanted one
+toggle to move every figure on the page.
+
+## Current state — DONE, DEPLOYED AND VERIFIED LIVE
+
+**The real bug was not the code. A complete, correct fix already existed and had never shipped.**
+It was written 2026-09-05, ticked ✅ in BUILD_PLAN, and left **uncommitted in the working tree for
+17 days**; `main`'s last commit was 2026-08-19. Alex kept seeing the bug because nothing had reached
+`main` or Vercel. Diagnosed in two commands by fetching the live bundle and grepping it — the new
+chip's strings and the new API fields appeared **0 times**.
+
+Shipped 2026-09-23: commit `15dd560` -> pushed `b871ef8..15dd560` -> **both** Vercel projects
+deployed (`trim-api` first, then `trim-budget` — see Key decisions).
+
+Evidence, observed rather than assumed:
+  - `cd server && npm test` -> **459 passed, 0 failed**
+  - `cd client && npm run build` -> **PASS**
+  - `vercel env ls production` on `trim-api` -> `ENCRYPTION_PHASE` and `DATA_ENCRYPTION_KEY` still
+    **absent**, so the 9.5 codec stays inert and the unapplied migrations stay irrelevant. Re-checked
+    before deploying, not assumed.
+  - Live after deploy: `/api/health` **200**; `/api/analytics` **401** (auth intact); client **200**,
+    login screen renders, **no console errors**.
+  - Live client bundle changed `index-DzoT22hD.js` -> `index-QlQ5k1Pj.js`, and every marker that was
+    0 before is now present: `out of every figure on this page`, `deltaPctExclSpecial`,
+    `topCategoriesExclSpecial`, `Applies to every figure on this page`.
+
+**UI proof before shipping.** An agent has no Supabase login, so the real `pages/Analytics.jsx` was
+rendered with the TanStack cache pre-seeded from the mock API's actual payload. One click moved
+every figure:
+
+| | incl. special | excl. special |
+|---|---|---|
+| Average month (6m) | £678.65 | £638.65 |
+| This month | £1,647.36 | £1,467.36 |
+| **Last month** | **£1,543.47** | **£1,303.47** |
+| Change | +6.7% | +12.6% |
+| Top categories | Rent, **Shopping £274.49**, Bills, Groceries, Food | Rent, Bills, Groceries, Food, **Shopping £94.49** |
+| History — Aug spent / net | −£1,543.47 / £906.53 | −£1,303.47 / £1,146.53 |
+| History — Sep spent / net | −£1,647.36 / £802.64 | −£1,467.36 / £982.64 |
+
+Also verified: the choice survives a reload (`trim:avgIncludeSpecial`), and with the pref **off** —
+even with a remembered "excl." choice — there is no chip, no amber note, no star column and every
+figure is all-in, exactly as Phase 9.2 promises.
+
+**Still Alex's to do:** a logged-in click-through on the live site. Claude cannot sign in, so
+everything above is proven against the mock payload and the deployed bundle, not against his real
+Supabase data.
+
+## Key decisions (and why)
+- **Server deployed BEFORE client**, reversing the deploy skill's usual client-then-server order.
+  The new client reads `mom.deltaPctExclSpecial` / `topCategoriesExclSpecial`, which the old API did
+  not send — client-first would have left the toggle half-working (change % showing "—", categories
+  not reordering). Server-first is harmless: the old client ignores extra fields.
+- **The page owns the toggle, not the card.** The chip was `AverageMonthCard`'s own `useState`, so
+  nothing else could see it. Ownership moved up to `pages/Analytics.jsx` and is passed down, the way
+  `Dashboard.jsx` owns `trim:heroIncludeSpecial`.
+- **The localStorage key kept its old `trim:avgIncludeSpecial` name** even though it is no longer
+  about the average — renaming it would silently reset a choice Alex had already made.
+- **Both bases are served in one response**, so flipping never refetches. `topCategoriesExclSpecial`
+  is its **own** top five rather than a filter of the incl. list, because removing special spend can
+  change *which* five categories are on top.
+- **The percentage is computed only on the server**, on both bases, so the change can never disagree
+  with the two figures beside it.
+- **`BUGS-FIXED.md` created** — the ledger Alex's global CLAUDE.md requires and this project never
+  had. It records "done but not shipped" as a recurring failure shape alongside "one number, two
+  definitions" and "route and mock disagree".
+
+## Files that matter (this session)
+- `client/src/pages/Analytics.jsx` — **owns the chip.** Anything added to this page later must read
+  its `excluding` flag rather than inventing its own.
+- `client/src/components/AverageMonthCard.jsx` — now *reads* `includeSpecial` as a prop; its own
+  toggle is gone. The 3m/6m/12m window stays local (it changes nothing outside the card).
+- `client/src/components/MonthlyHistory.jsx` — Spent and Net follow the chip; the Special column
+  keeps showing the slice either way, so while excluding it reads as "what was taken out". Which
+  months are listed is measured on the all-in figures, so the list never grows or shrinks.
+- `server/routes/analytics.js` — serves both bases.
+- `server/scripts/devMock.js` — mirrored, **and** its `pctChange` now rounds to 1dp like the route
+  (it used 2dp, so dev read `+12.57%` where production read `+12.6%`).
+- `server/test/helpers/dashboardAnalyticsRouteSuite.js` — 3 new tests × 3 encryption phases
+  (450 -> 459). They assert the excl. side genuinely *differs*; a test that only checked the new
+  fields exist would pass on a response that echoed the incl. numbers back.
+- `BUGS-FIXED.md` — **NEW.** Read before writing or reviewing code here.
+
+## Next steps (in order)
+1. **Alex: log in to https://trim-budget.vercel.app, open Analytics, flip the chip** beside the
+   heading and confirm last month moves with everything else. This is the only unverified step.
+2. Nothing else is pending on Phase 15.
+3. **Phase 9.5 Part A, whenever Alex wants it** — the four manual steps, unchanged since
+   2026-08-19. See "WHAT ALEX DOES NEXT" in the previous-session block below and
+   `docs/PHASE-9.5-PART-A-RUNBOOK.md`. Nothing about them changed today.
+4. Three branches remain deliberately unmerged and are NOT forgotten work — their features shipped
+   by other routes: `claude/affectionate-shirley-83720f`, `claude/phase-10-batch-a`,
+   `docs/task-6.12-spec-unbuilt`.
+
+## Open questions for Alex
+- **None blocking on Phase 15.**
+- The 9.5 open questions below are unchanged and still Alex's call.
+
+## How to resume
+Start a session in this folder and say: "Read @CHAT_HANDOFF.md and continue with next step 1."
+
+---
+
+# Previous session — 2026-08-19 (Phase 9.5 Part A) — PENDING WORK, not just history
+The four manual steps below are still outstanding. Everything in this block is carried forward
+unchanged; only its baton has been demoted, since the current baton is at the top of this file.
+
+### Baton as it stood on 2026-08-19 (superseded by the block at the top — kept for the 9.5 record)
 - Current stage:  **stage 4 BUILD — Part A is CODE-COMPLETE. The WHOLE sweep is MERGED AND DEPLOYED
                   (batch 1 `e9dfbc4`, batch 2 `62ab15f`, both 2026-08-19). No code work remains in
                   Part A. What is left is Alex's four manual steps — see "WHAT ALEX DOES NEXT".**
@@ -203,7 +326,7 @@ treating one irreversible step as inseparable from the feature:
     Suite 244 -> 353. **Merged to main and deployed to trim-api** at Alex's go-ahead. Shipped inert
     at phase `off`; no migration applied, nothing encrypted.
 
-## WHERE THE FINDINGS ARE COMING FROM  (read this before starting round 5)
+### WHERE THE FINDINGS ARE COMING FROM  (read this before starting round 5)
 
 Alex asked in round 4 whether this loop is converging. Classifying RE-VERIFY #3's five findings by
 what code they live in:
@@ -222,7 +345,7 @@ protected.** The gate, the barrier and the repair exist to make ONE irreversible
 real dynamic, not a complaint about Codex — every finding has been genuine and two were Critical.
 The deferred proposal below is the way out of it, and it is still deferred, not decided.
 
-## Codex RE-VERIFY #3 FAIL -> response (every item)
+### Codex RE-VERIFY #3 FAIL -> response (every item)
 
 | # | Codex finding | Verdict | Fix |
 |---|---|---|---|
@@ -232,7 +355,7 @@ The deferred proposal below is the way out of it, and it is still deferred, not 
 | 4 | High — merchant memory does not reproduce the source contract, and the pagination fix is test-only | **Valid on both counts** | The paging existed only inside a unit-test loop over a pre-materialised array. There is now a real **`server/lib/merchantMemory.js`**: keyset paging (`id > lastSeen`, not offset), a short page treated as a short page rather than the end, errors surfaced rather than swallowed, a candidate ceiling that reports truncation, and it is wired into `/suggest` behind `ENCRYPTION_PHASE`. And the contract is restored rather than narrowed: `%term%` mid-word and later-word matching work again through a bounded decrypt-and-scan fallback that runs only when the index finds nothing. The FEATURES.md "documented losses" are deleted. **One honest deviation remains and is stated in the code, the tests and FEATURES.md: the fallback looks at the most recent 500 transactions, not all of them.** |
 | 5 | Low/Medium — tests and current docs overclaim | **Valid** | The migration-dependency test now also reads CREATE INDEX / POLICY / TRIGGER targets, and its name and comment say plainly that it is not a replay proof and cannot resolve `execute format(...)` targets. SECURITY.md now discloses the bounded trie in full — exact common-prefix length, strict-prefix families, known-row labelling along the path, and frequency — instead of just short-name length. The trigger-moves-in-018a and both-routes-seed corrections are made in SECURITY.md, FEATURES.md, `lib/defaultCategories.js` and the migration headers; 012 and 014's current-looking 013 references are corrected or marked historical. |
 
-## Codex RE-VERIFY #3 FAIL -> new evidence
+### Codex RE-VERIFY #3 FAIL -> new evidence
 
 1. **Critical — a snapshot older than the flag row bypasses the engaged barrier on real PostgreSQL.**
    Exact probe against the real 018a migration on throwaway PostgreSQL 18.4: create the guarded
@@ -285,7 +408,7 @@ focused merchant tests -> **23/23 PASS**. The new real-PG old-snapshot probe fai
 assertion with one committed late row. Scratch probe removed before this baton update. No external
 database, migration, deploy, merge or secret access.
 
-## Codex RE-VERIFY #2 FAIL -> response (every item)
+### Codex RE-VERIFY #2 FAIL -> response (every item)
 
 | # | Codex finding | Verdict | Fix |
 |---|---|---|---|
@@ -310,7 +433,7 @@ The trade is real: a default `npm test` no longer exercises the barrier. That is
 because the barrier is PARKED and runs at exactly one moment — migration 019, which is Part B.
 **Whoever reviews it before that moment must run the install line above.**
 
-## Codex RE-VERIFY #2 FAIL -> new evidence
+### Codex RE-VERIFY #2 FAIL -> new evidence
 
 1. **Critical — the barrier can PASS while a pre-engagement write is still able to commit.**
    `018a_encryption_write_barrier.sql` checks the flag with a plain `SELECT` in a BEFORE STATEMENT
@@ -358,7 +481,7 @@ Evidence: `cd server && npm test` -> **201/201 PASS**; `cd client && npm run bui
 focused category/migration and 203-candidate probes reproduced the states above. Review was read-only
 apart from this baton update: no Supabase connection, migration, deploy or merge.
 
-## Codex RE-VERIFY FAIL -> new evidence
+### Codex RE-VERIFY FAIL -> new evidence
 
 1. **Digest omits `user_id`, and pass two's failures are ignored.** `verifyRows()` selects
    `user_id` but hashes only the PK/field/index values (`verify-encryption.mjs:110-141`). For normal
@@ -394,7 +517,7 @@ apart from this baton update: no Supabase connection, migration, deploy or merge
    spec and BUILD_PLAN.md explicitly requiring category seeding to move to `GET /api/me`. A later
    signup therefore fails (or the drop is blocked), and the route-side replacement is not built.
 
-## Codex RE-VERIFY FAIL -> response (every item)
+### Codex RE-VERIFY FAIL -> response (every item)
 
 | # | Codex finding | Verdict | Fix |
 |---|---|---|---|
@@ -408,7 +531,7 @@ apart from this baton update: no Supabase connection, migration, deploy or merge
 user-supplied description text — two different rows could hash identically. Fixed by length
 prefixes and pinned by RE-VERIFY REGRESSION 1c.
 
-## Codex FAIL -> response (every item)
+### Codex FAIL -> response (every item)
 
 | # | Codex finding | Verdict | Fix |
 |---|---|---|---|
@@ -430,7 +553,7 @@ that could never pass. And `verifyRows` originally skipped blank-ciphertext rows
 count taken at a different instant, so a row inserted between the two was invisible to both.
 Both fixed and tested.
 
-## Goal
+### Goal
 Alex asked to continue the encryption feature "so I can't see other people's transactions and other
 private information". This session did **not** build the route sweep — it made the half-built 9.5
 feature safe to switch on, because the re-audit found two defects that would have destroyed data the
@@ -449,7 +572,7 @@ which rows share a merchant — not its name, though a single known row labels e
 its hash. That trade is documented in SECURITY.md and pinned
 by tests.
 
-## Current state
+### Current state
 
 **Branch `phase-9.5-encryption-hardening`. NOT merged, NOT deployed.**
 Server suite **86 → 244**, client builds clean, working tree clean.
@@ -542,7 +665,7 @@ build if the migrations, the backfill or the gate diverge from it.
 - **SECURITY.md documents encryption for the first time**, including `DATA_ENCRYPTION_KEY` custody —
   it appeared in no operational document despite two scripts telling readers to see SECURITY.md.
 
-## Key decisions (and why)
+### Key decisions (and why)
 
 - **Dual-write, NO rename.** Migration 019 drops plaintext and renames nothing; `_enc` suffixes stay
   forever. The spec's drop-and-rename had no safe deploy ordering — a rename turns a `numeric` column
@@ -563,7 +686,7 @@ build if the migrations, the backfill or the gate diverge from it.
   is the only thing that makes PASS mean what it says. `--sample` still exists but prints INCOMPLETE
   and cannot authorise the drop.
 
-## Traps — read before touching these areas
+### Traps — read before touching these areas
 
 1. **Never hand-list what is encrypted.** `server/lib/encryptedFields.js` is the one registry;
    migrations, backfill and gate all derive from it. Both data-destroying defects this session were
@@ -581,7 +704,7 @@ build if the migrations, the backfill or the gate diverge from it.
    period boundaries, mirror route changes in `devMock.js`, `position: fixed` vs `animate-fade-up`,
    and a passing `npm run build` is not working code.
 
-## Files that matter
+### Files that matter
 - `server/lib/encryptedFields.js` — **NEW, the one registry** (15 encrypted fields + 3 blind
   indexes). Start here.
 - `server/lib/merchant.js` — **NEW.** The one merchant normalisation. Both sides of every blind
@@ -624,7 +747,7 @@ build if the migrations, the backfill or the gate diverge from it.
 - `docs/2026-08-18-encryption-reaudit.md` — all 36 findings + verdicts, incl. the 12 unverified.
 - `SECURITY.md` — "Encryption at rest" section + key custody + the 10-step rollout order.
 
-## Next steps (in order)
+### Next steps (in order)
 
 1. **Codex re-verifies this branch (RE-VERIFY #2).** Not me — CLAUDE.md forbids the builder
    validating its own stage, and names 9.5 as the change that needs the two-model loop.
@@ -649,7 +772,7 @@ build if the migrations, the backfill or the gate diverge from it.
    only, money unaffected); Phase 8 bank sync; custom domain; the Supabase leaked-password toggle
    (still the only security-advisor lint).
 
-## Open questions for Alex
+### Open questions for Alex
 - **None blocking.** Both previous questions are answered: descriptions ARE encrypted (blind index),
   and dual-write/no-rename is confirmed.
 - **A judgement call I made for you, easy to overturn:** Codex offered two ways to resolve the
@@ -685,10 +808,10 @@ build if the migrations, the backfill or the gate diverge from it.
   (per-user key) but a re-run after any change to `normaliseMerchant` would need the index rebuilt.
   That is inherent to blind indexes; noted so it is not a surprise.
 
-## How to resume
+### How to resume
 Start a session in this folder and say: "Read @CHAT_HANDOFF.md and continue with next step 2."
 
-## Previous sessions
+### Previous sessions
 - **2026-08-12 (third sweep + cleanup):** Six lenses, no new defects; one low-severity lead (the
   `user_stats` lost update). Repo cleanup: 6 of 8 stale worktrees removed — 2 blocked by the sandbox
   (`.claude/worktrees/reverent-poitras-5090fb`, `…/stripe-payment-integration-d042da`), clear with
@@ -711,7 +834,7 @@ Start a session in this folder and say: "Read @CHAT_HANDOFF.md and continue with
 - **2026-07-15 / 07-14 / 07-13:** Bank-sync design (blocked on Enable Banking); signup confirmation
   fix; v1 deploy to Vercel. Test account `trim.tester@example.com`; mock via `npm run dev:mock`.
 
-## Live-and-working features (unchanged this session)
+### Live-and-working features (unchanged this session)
 Running average (3/6/12 completed months, Analytics) · foreign-currency expenses (Quick Add currency
 chip) · currency editing (Transactions → edit) · "Can I afford this?" follows the special toggle ·
 special-expense groups save · floating + button on Transactions · weekly budgets measured correctly.
