@@ -5,7 +5,7 @@
 
 const MS_PER_DAY = 86_400_000;
 
-function addDaysISO(iso, days) {
+export function addDaysISO(iso, days) {
   const t = new Date(`${iso}T00:00:00Z`).getTime() + days * MS_PER_DAY;
   return new Date(t).toISOString().slice(0, 10);
 }

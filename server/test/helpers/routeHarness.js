@@ -56,6 +56,7 @@ export function fakeSupabase(tables = {}) {
         lt(c, v) { q._filters.push((r) => r[c] < v); return q; },
         lte(c, v) { q._filters.push((r) => r[c] <= v); return q; },
         is(c, v) { q._filters.push((r) => (v === null ? r[c] == null : r[c] === v)); return q; },
+        in(c, vs) { q._filters.push((r) => vs.includes(r[c])); return q; },
         not(c, _op, v) { q._filters.push((r) => (v === null ? r[c] != null : r[c] !== v)); return q; },
         contains(c, v) { q._filters.push((r) => (r[c] ?? []).includes(v[0])); return q; },
         order(c, o) { q._order = c; q._asc = o?.ascending !== false; return q; },

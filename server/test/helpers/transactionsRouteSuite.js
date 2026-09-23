@@ -268,4 +268,80 @@ export function runTransactionsRouteSuite(phase) {
       await http.close();
     }
   });
+
+  test(`${label} a huge fxRate cannot smuggle an amount past the MAX_AMOUNT cap`, async () => {
+    // The schema caps `amount` and `originalAmount` at 1e9 but leaves `fxRate` only
+    // positive+finite, so the DERIVED amount (original x rate) reached ~1000x the cap
+    // and numeric(14,2) accepted it. One such row skewed every figure on the account.
+    const { db, http } = await boot();
+    const before = db.store.transactions.length;
+    try {
+      const { status, body } = await http.send('POST', '/', {
+        categoryId: CAT, amount: 1, type: 'expense',
+        foreign: { originalAmount: 1_000_000_000, originalCurrency: 'EUR', fxRate: 100 },
+      });
+      assert.equal(status, 400, JSON.stringify(body));
+      assert.equal(db.store.transactions.length, before, 'nothing may be stored');
+    } finally {
+      await http.close();
+    }
+  });
+
+  test(`${label} PATCH cannot smuggle an over-cap amount either`, async () => {
+    const { db, http } = await boot();
+    try {
+      const { status } = await http.send('PATCH', `/${TX_ID}`, {
+        foreign: { originalAmount: 1_000_000_000, originalCurrency: 'EUR', fxRate: 100 },
+      });
+      assert.equal(status, 400);
+      const row = db.store.transactions.find((t) => t.id === TX_ID);
+      assert.notEqual(row.amount, 100_000_000_000);
+    } finally {
+      await http.close();
+    }
+  });
+
+  test(`${label} a sub-minor-unit conversion is still refused`, async () => {
+    // The lower bound must survive the refactor that added the upper one.
+    const { http } = await boot();
+    try {
+      const { status } = await http.send('POST', '/', {
+        categoryId: CAT, amount: 1, type: 'expense',
+        foreign: { originalAmount: 1, originalCurrency: 'EUR', fxRate: 0.000001 },
+      });
+      assert.equal(status, 400);
+    } finally {
+      await http.close();
+    }
+  });
+
+  test(`${label} PATCH type alone cannot contradict the row's category`, async () => {
+    // The seeded row is an expense under an expense category. Sending `type` WITHOUT
+    // `categoryId` used to skip the check entirely — it sat inside `if (categoryId)`
+    // and was additionally gated on `type` — leaving an income row filed under an
+    // expense category, which every aggregate then labelled inconsistently.
+    const { db, http } = await boot();
+    try {
+      const { status, body } = await http.send('PATCH', `/${TX_ID}`, { type: 'income' });
+      assert.equal(status, 400, JSON.stringify(body));
+      const row = db.store.transactions.find((t) => t.id === TX_ID);
+      assert.equal(row.type, 'expense', 'the row must be untouched');
+    } finally {
+      await http.close();
+    }
+  });
+
+  test(`${label} PATCH still accepts a change that keeps type and category agreeing`, async () => {
+    // Positive control: the guard above must not block the legitimate edit.
+    const { http } = await boot();
+    try {
+      const { status, body } = await http.send('PATCH', `/${TX_ID}`, {
+        categoryId: CAT, type: 'expense', description: 'Tesco Express 9999',
+      });
+      assert.equal(status, 200, JSON.stringify(body));
+      assert.equal(body.transaction.description, 'Tesco Express 9999');
+    } finally {
+      await http.close();
+    }
+  });
 }

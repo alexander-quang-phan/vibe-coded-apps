@@ -53,9 +53,33 @@ const recurringSchema = z.object({
   interval: z.enum(['monthly', 'weekly']),
 });
 
+// The one bound for every money figure in this file. Kept as a constant so the
+// direct and derived paths can only ever agree.
+const MAX_AMOUNT = 1_000_000_000;
+
+/**
+ * Apply MAX_AMOUNT to a DERIVED amount. A bound on an input is not a bound on what
+ * is computed from it: `originalAmount` is capped, but `fxRate` is only required to
+ * be positive and finite, so their product reached ~1000x the cap and
+ * `numeric(14,2)` accepted it — one row then skewed every figure on the account
+ * (dashboard totals, budget percentages, projections, the Ask Trim context).
+ * Returns null when the value is fine, otherwise the message to return.
+ */
+function amountRangeError(value) {
+  if (!(value > 0)) {
+    // Sub-minor-unit case: 1 unit of a currency worth less than half a penny
+    // would otherwise be stored as a free transaction.
+    return 'That converts to zero in your currency — check the amount and rate';
+  }
+  if (value > MAX_AMOUNT) {
+    return 'That converts to more than this app can store — check the amount and rate';
+  }
+  return null;
+}
+
 const createSchema = z.object({
   categoryId: z.string().uuid(),
-  amount: z.number().positive().finite().max(1_000_000_000),
+  amount: z.number().positive().finite().max(MAX_AMOUNT),
   type: z.enum(['income', 'expense']),
   description: z.string().trim().max(200).optional().nullable(),
   date: isoDate.optional(),
@@ -78,7 +102,7 @@ const createSchema = z.object({
   // computing the same figure is precisely how this codebase got a bug before.
   foreign: z
     .object({
-      originalAmount: z.number().positive().finite().max(1_000_000_000),
+      originalAmount: z.number().positive().finite().max(MAX_AMOUNT),
       originalCurrency: z.string().regex(/^[A-Za-z]{3}$/),
       fxRate: z.number().positive().finite(),
     })
@@ -87,7 +111,7 @@ const createSchema = z.object({
 
 const updateSchema = z.object({
   categoryId: z.string().uuid().optional(),
-  amount: z.number().positive().finite().max(1_000_000_000).optional(),
+  amount: z.number().positive().finite().max(MAX_AMOUNT).optional(),
   type: z.enum(['income', 'expense']).optional(),
   description: z.string().trim().max(200).optional().nullable(),
   date: isoDate.optional(),
@@ -99,7 +123,7 @@ const updateSchema = z.object({
   // entry, keeping whatever `amount` is supplied.
   foreign: z
     .object({
-      originalAmount: z.number().positive().finite().max(1_000_000_000),
+      originalAmount: z.number().positive().finite().max(MAX_AMOUNT),
       originalCurrency: z.string().regex(/^[A-Za-z]{3}$/),
       fxRate: z.number().positive().finite(),
     })
@@ -213,15 +237,12 @@ router.post('/', async (req, res, next) => {
         // Not actually foreign. Store it as an ordinary row rather than leaving
         // a pointless "EUR 45 at 1.0" annotation on every home-currency expense.
         storedAmount = convertToBase({ originalAmount, fxRate: 1, baseCurrency });
+        const rangeErr = amountRangeError(storedAmount);
+        if (rangeErr) return res.status(400).json({ error: rangeErr });
       } else {
         storedAmount = convertToBase({ originalAmount, fxRate, baseCurrency });
-        if (storedAmount <= 0) {
-          // Guard the sub-minor-unit case: 1 unit of a currency worth less than
-          // half a penny would otherwise be stored as a free transaction.
-          return res.status(400).json({
-            error: 'That converts to zero in your currency — check the amount and rate',
-          });
-        }
+        const rangeErr = amountRangeError(storedAmount);
+        if (rangeErr) return res.status(400).json({ error: rangeErr });
         foreign = { originalAmount, originalCurrency, fxRate };
       }
     }
@@ -395,32 +416,36 @@ router.patch('/:id', async (req, res, next) => {
     // below, know the current type when the caller isn't also changing it.
     const { data: existing, error: existingErr } = await supabase
       .from('transactions')
-      .select('type, is_special, special_group_id')
+      .select('type, category_id, is_special, special_group_id')
       .eq('id', id)
       .eq('user_id', req.user.id)
       .maybeSingle();
     if (existingErr) throw existingErr;
     if (!existing) return res.status(404).json({ error: 'Transaction not found' });
 
-    // If changing category, confirm it belongs to the user.
-    if (parsed.data.categoryId) {
-      const { data: category, error: catErr } = await supabase
-        .from('categories')
-        .select('id, type')
-        .eq('id', parsed.data.categoryId)
-        .eq('user_id', req.user.id)
-        .maybeSingle();
-      if (catErr) throw catErr;
-      if (!category) return res.status(404).json({ error: 'Category not found' });
-      if (parsed.data.type && category.type !== parsed.data.type) {
-        return res.status(400).json({ error: 'Category type does not match transaction type' });
-      }
-    }
-
     // Guard on the RESULTING state, not just this request's fields: flipping an
     // already-special expense to income would otherwise leave a flagged income row.
     const effectiveType = parsed.data.type ?? existing.type;
     const effectiveSpecial = parsed.data.isSpecial ?? existing.is_special;
+    // The (type, category) pair, on the RESULTING state. Either half can contradict
+    // the other, and POST refuses that combination at create time. This check used
+    // to sit inside `if (categoryId)` AND be gated on `type`, so sending `type`
+    // alone skipped it entirely and left an income row filed under an expense
+    // category — which every aggregate then labelled inconsistently.
+    const effectiveCategoryId = parsed.data.categoryId ?? existing.category_id;
+    if (parsed.data.categoryId !== undefined || parsed.data.type !== undefined) {
+      const { data: category, error: catErr } = await supabase
+        .from('categories')
+        .select('id, type')
+        .eq('id', effectiveCategoryId)
+        .eq('user_id', req.user.id)
+        .maybeSingle();
+      if (catErr) throw catErr;
+      if (!category) return res.status(404).json({ error: 'Category not found' });
+      if (category.type !== effectiveType) {
+        return res.status(400).json({ error: 'Category type does not match transaction type' });
+      }
+    }
     if (effectiveSpecial && effectiveType === 'income') {
       return res.status(400).json({ error: 'Only expenses can be special' });
     }
@@ -469,17 +494,17 @@ router.patch('/:id', async (req, res, next) => {
       const baseCurrency = prefs.currency;
 
       if (originalCurrency === baseCurrency) {
-        payload.amount = convertToBase({ originalAmount, fxRate: 1, baseCurrency });
+        const converted = convertToBase({ originalAmount, fxRate: 1, baseCurrency });
+        const rangeErr = amountRangeError(converted);
+        if (rangeErr) return res.status(400).json({ error: rangeErr });
+        payload.amount = converted;
         payload.original_amount = null;
         payload.original_currency = null;
         payload.fx_rate = null;
       } else {
         const converted = convertToBase({ originalAmount, fxRate, baseCurrency });
-        if (converted <= 0) {
-          return res.status(400).json({
-            error: 'That converts to zero in your currency — check the amount and rate',
-          });
-        }
+        const rangeErr = amountRangeError(converted);
+        if (rangeErr) return res.status(400).json({ error: rangeErr });
         payload.amount = converted;
         payload.original_amount = originalAmount;
         payload.original_currency = originalCurrency;

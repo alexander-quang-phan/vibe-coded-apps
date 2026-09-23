@@ -191,4 +191,60 @@ export function runCronRecurrencesSuite(phase) {
     assert.equal(second.created, 0, 'nothing new on a same-day re-run');
     assert.equal(db.store.transactions.length, after);
   });
+
+  test(`${label} CRITICAL: each transaction is dated in ITS OWN user's timezone, not the server's`, async () => {
+    // A calendar day belongs to the user, not the server (the rule stated at
+    // routes/transactions.js todayISO, and followed by every route via userZone.js).
+    // The sweep used to stamp `date` from the server's UTC day for everyone, so for a
+    // user west of UTC the 03:00 UTC run was still the previous day locally and a
+    // month-end recurrence was filed into the wrong budget month.
+    //
+    // The two zones below are 25 hours apart, so their local dates ALWAYS differ from
+    // each other and at most one can equal the UTC date — which makes this assertion
+    // deterministic whenever the test happens to run.
+    const { encodeWrite } = await import('../../lib/encryptionCodec.js');
+    const { dayInZone } = await import('../../lib/month.js');
+    const EAST = 'Pacific/Kiritimati'; // UTC+14
+    const WEST = 'Pacific/Midway'; //    UTC-11
+    const past = '2026-01-01'; // long overdue for both, whatever "today" is
+
+    const { db, runRecurrences } = await boot({
+      recurrences: [
+        {
+          id: REC, user_id: U, category_id: CAT, type: 'expense', interval: 'monthly',
+          next_run_at: past, last_run_at: null, cancelled_at: null,
+          created_at: '2026-01-01T00:00:00Z',
+          ...encodeWrite('recurrences', U, { amount: 9.99, description: 'Netflix' }, phase),
+        },
+        {
+          id: REC2, user_id: U2, category_id: CAT, type: 'expense', interval: 'monthly',
+          next_run_at: past, last_run_at: null, cancelled_at: null,
+          created_at: '2026-01-01T00:00:00Z',
+          ...encodeWrite('recurrences', U2, { amount: 42.5, description: 'PureGym' }, phase),
+        },
+      ],
+      transactions: [],
+      user_stats: [
+        { user_id: U, currency: 'GBP', timezone: EAST, xp_points: 0, current_streak: 0, last_logged_date: null },
+        { user_id: U2, currency: 'GBP', timezone: WEST, xp_points: 0, current_streak: 0, last_logged_date: null },
+      ],
+    });
+
+    await runRecurrences();
+    const txEast = db.store.transactions.find((t) => t.recurrence_id === REC);
+    const txWest = db.store.transactions.find((t) => t.recurrence_id === REC2);
+    assert.ok(txEast && txWest, 'both schedules must fire');
+
+    assert.equal(txEast.date, dayInZone(EAST), 'east user dated in UTC+14');
+    assert.equal(txWest.date, dayInZone(WEST), 'west user dated in UTC-11');
+    assert.notEqual(
+      txEast.date,
+      txWest.date,
+      'two users 25h apart cannot share a calendar day — proof the date is per-user',
+    );
+
+    // last_run_at follows the same clock as the transaction it recorded.
+    const recEast = db.store.recurrences.find((r) => r.id === REC);
+    assert.equal(recEast.last_run_at, dayInZone(EAST));
+  });
 }

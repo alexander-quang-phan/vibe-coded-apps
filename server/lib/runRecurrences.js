@@ -5,11 +5,35 @@
 // client — see the comment on that route for why that's a deliberate
 // exception to "scope every query by req.user.id", not an oversight.
 import { supabase } from './supabase.js';
-import { advanceToFuture, dueRecurrences, utcDayOfMonth } from './recurrences.js';
+import { addDaysISO, advanceToFuture, dueRecurrences, utcDayOfMonth } from './recurrences.js';
 import { selectFor, decodeRows, encodeWrite } from './encryptionCodec.js';
+import { dayInZone, DEFAULT_TIMEZONE } from './month.js';
 
-function todayISO() {
+/** The server's own UTC day. Used ONLY to bound the database query, never to decide
+ *  whether a schedule is due or to stamp a transaction — see runRecurrences(). */
+function utcTodayISO() {
   return new Date().toISOString().slice(0, 10);
+}
+
+/**
+ * Each user's IANA zone, in one query rather than one per row.
+ *
+ * A calendar day belongs to the user, not the server — the same rule
+ * routes/transactions.js states at its own `todayISO`, and the rule every route
+ * already follows by resolving month bounds through lib/userZone.js. This sweep
+ * used to ignore it: it stamped `date` from the server's UTC day for everyone, so
+ * for a user west of UTC the 03:00 UTC run was still the previous day locally and a
+ * month-end recurrence landed in the wrong budget month — invisible to Alex in
+ * London, wrong for anyone in the Americas.
+ */
+async function timezonesByUser(userIds) {
+  if (userIds.length === 0) return new Map();
+  const { data, error } = await supabase
+    .from('user_stats')
+    .select('user_id, timezone')
+    .in('user_id', userIds);
+  if (error) throw error;
+  return new Map((data ?? []).map((r) => [r.user_id, r.timezone || DEFAULT_TIMEZONE]));
 }
 
 const RECURRENCE_COLUMNS =
@@ -98,26 +122,46 @@ async function processOne(row, today) {
  * per-user counts only — never amounts or descriptions.
  */
 export async function runRecurrences() {
-  const today = todayISO();
+  // Widen the DB filter by one day: a user EAST of UTC can already be on their next
+  // local day, so a row that is due in their zone still reads as tomorrow in UTC and
+  // a `<= utcToday` filter would miss it for a whole run. The precise, per-user
+  // decision is made below against that user's own calendar day.
+  const horizon = addDaysISO(utcTodayISO(), 1);
 
   const { data: rows, error } = await supabase
     .from('recurrences')
     .select(selectFor('recurrences', RECURRENCE_COLUMNS))
     .is('cancelled_at', null)
-    .lte('next_run_at', today);
+    .lte('next_run_at', horizon);
   if (error) throw error;
 
   // Decode before anything reads amount/description. Each row carries its own
   // user_id, which is what decodeRows needs to derive the per-user key — this
   // sweep is across ALL users, not one request.
-  const due = dueRecurrences(decodeRows('recurrences', null, rows ?? []), today);
+  const decoded = decodeRows('recurrences', null, rows ?? []);
+
+  // Group by user, because "today" is a different date for different users.
+  const byUser = new Map();
+  for (const row of decoded) {
+    if (!byUser.has(row.user_id)) byUser.set(row.user_id, []);
+    byUser.get(row.user_id).push(row);
+  }
+  const zones = await timezonesByUser([...byUser.keys()]);
 
   let created = 0;
   let skipped = 0;
   let errors = 0;
   const perUser = new Map();
 
-  for (const row of due) {
+  const work = [];
+  for (const [userId, userRows] of byUser) {
+    const today = dayInZone(zones.get(userId));
+    // dueRecurrences applies `next_run_at <= today` — now that user's today, so the
+    // widened horizon above cannot fire anything early.
+    for (const row of dueRecurrences(userRows, today)) work.push({ row, today });
+  }
+
+  for (const { row, today } of work) {
     const result = await processOne(row, today);
     const bucket = perUser.get(row.user_id) ?? { created: 0, skipped: 0, errors: 0 };
     if (result.outcome === 'created') {

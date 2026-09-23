@@ -7,7 +7,13 @@ import { suggestFromHistory } from '../lib/merchantMemory.js';
 import { merchantSearchTerm } from '../lib/merchant.js';
 import { CURRENT_PHASE, writesCiphertext } from '../lib/encryptionPhase.js';
 import { blindIndex } from '../lib/crypto.js';
-import { selectFor, decodeRow, decodeRows, encodeWrite } from '../lib/encryptionCodec.js';
+import {
+  selectFor,
+  decodeRow,
+  encodeWrite,
+  presentRow,
+  presentRows,
+} from '../lib/encryptionCodec.js';
 
 // Phase 9.5 Part A. `categories.name` is encrypted with a blind index for the
 // exact keyword lookup. `transactions.description` is encrypted too, which is
@@ -70,7 +76,7 @@ router.get('/', async (req, res, next) => {
       .order('created_at', { ascending: true });
 
     if (error) throw error;
-    res.json({ categories: decodeRows('categories', req.user.id, data) });
+    res.json({ categories: presentRows('categories', req.user.id, data, CAT_COLUMNS) });
   } catch (err) {
     next(err);
   }
@@ -173,7 +179,7 @@ router.post('/', async (req, res, next) => {
       .single();
 
     if (error) throw error;
-    res.status(201).json({ category: decodeRow('categories', req.user.id, data) });
+    res.status(201).json({ category: presentRow('categories', req.user.id, data, CAT_COLUMNS) });
   } catch (err) {
     next(err);
   }
@@ -204,7 +210,7 @@ router.patch('/:id', async (req, res, next) => {
 
     if (error) throw error;
     if (!data) return res.status(404).json({ error: 'Category not found' });
-    res.json({ category: decodeRow('categories', req.user.id, data) });
+    res.json({ category: presentRow('categories', req.user.id, data, CAT_COLUMNS) });
   } catch (err) {
     next(err);
   }
@@ -215,14 +221,19 @@ router.delete('/:id', async (req, res, next) => {
     const { id } = req.params;
     if (!UUID_RE.test(id)) return res.status(400).json({ error: 'Invalid id' });
 
-    const { data: cat, error: catErr } = await supabase
+    const { data: catRaw, error: catErr } = await supabase
       .from('categories')
       .select(selectFor('categories', CAT_MINI_COLUMNS))
       .eq('id', id)
       .eq('user_id', req.user.id)
       .maybeSingle();
     if (catErr) throw catErr;
-    if (!cat) return res.status(404).json({ error: 'Category not found' });
+    if (!catRaw) return res.status(404).json({ error: 'Category not found' });
+    // Decode BEFORE the name check. Past phase `off` the plaintext `name` column is
+    // gone, so `catRaw.name` is undefined, `PROTECTED_DEFAULT_NAMES.has(undefined)`
+    // is false, and this 403 would silently stop firing — letting the user delete
+    // the reassign safety net every later "category has transactions" flow needs.
+    const cat = decodeRow('categories', req.user.id, catRaw);
 
     if (cat.is_default && PROTECTED_DEFAULT_NAMES.has(cat.name)) {
       return res
