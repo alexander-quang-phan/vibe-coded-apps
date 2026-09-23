@@ -1209,6 +1209,39 @@ session, which this project had been missing.
 
 ---
 
+## Phase 16 — close the open-signup hole and make the /api/ask cost cap real (2026-09-23)
+
+Found by a security pass, not by a user report. Committed as `a4a30ee`; documented here after the
+fact, because `a4a30ee` updated SECURITY.md but touched neither BUILD_PLAN nor FEATURES.
+
+- [x] **16.1** `requireAuth` gains an `ALLOWED_EMAILS` allowlist, checked after the `sub` guard and
+      answering **403** (genuine credential, uninvited account — a fresh token will never help).
+      Verifying a Supabase JWT only ever proved our project issued it; with open signup, email
+      confirmation off and a public anon key, anyone could self-issue one and reach all 14
+      authenticated mounts — including `/api/ask`, which spends `ANTHROPIC_API_KEY` per turn.
+      **Not** a data breach: every query was still scoped by `req.user.id`, so a fake account saw
+      only its own empty data.
+- [x] **16.2** Fails closed at boot — unset or empty list and the server refuses to start, the same
+      way a missing `SUPABASE_URL` does.
+- [x] **16.3** The `/api/ask` ceiling moves into Postgres (20 `role='user'` rows per rolling hour).
+      `express-rate-limit`'s in-memory store is per serverless instance on Vercel, so the documented
+      cap never held. Counted before the insert, so a rejected turn leaves no row behind.
+- [x] **16.4** `server/test/auth.test.js` — the first tests in this suite to load the real
+      middleware (every route suite mounts behind a stub that injects `req.user`). Suite 459 → 507,
+      verified 2026-09-23 on the committed code.
+
+### ⚠️ 16.5 — NOT DONE, and it gates the deploy
+**`ALLOWED_EMAILS` is not set in the `trim-api` Vercel environment.** Checked 2026-09-23 with
+`vercel env ls production`: only `CRON_SECRET`, `CLIENT_URL`, `ANTHROPIC_API_KEY`,
+`SUPABASE_JWT_SECRET`, `SUPABASE_SERVICE_ROLE_KEY`, `SUPABASE_URL`. Because 16.2 fails closed at
+boot, **the next `trim-api` deploy takes the API down for every user** until it is set. `a4a30ee`
+and `55ed17b` were deliberately left unpushed for this reason — set the variable first, then push,
+then deploy. It must list every real user plus `trim.tester@example.com`; anyone omitted gets a 403
+they cannot resolve by signing in again. Only Alex can supply the list — a session cannot read
+`auth.users` (production reads are blocked).
+
+---
+
 ## Deferred further (flagged in FEATURES.md, don't start without explicit ask)
 
 **Deferred during Phase 6 plan review (2026-05-08):**
