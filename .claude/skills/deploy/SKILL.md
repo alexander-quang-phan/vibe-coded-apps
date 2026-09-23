@@ -28,7 +28,7 @@ before/after row count that no existing row changed, then deploy.
    - If on a feature/worktree branch: confirm the working tree is committed, then merge into `main`. List any other unmerged `claude/*` branches and tell Alex what's in them (`git branch --no-merged main`), so finished features don't sit forgotten in worktrees.
    - If already on `main`: commit pending changes with a clear message.
 2. **Build check before deploying.** Run `npm run build` in `client/`. A broken build deployed means a broken live site.
-3. **Push, then deploy.** `git push origin main`, then from the main checkout: `cd client && vercel deploy --prod --yes` — and `cd server && vercel deploy --prod --yes` only if server code changed (client-only UI changes don't need it).
+3. **Push, then deploy — server FIRST when the client depends on it.** `git push origin main`, then from the main checkout. If server code changed, deploy it first: `cd server && vercel deploy --prod --yes`, then `cd client && vercel deploy --prod --yes`. Same reason as Step 0.5 — backend before frontend. On 2026-09-23 the client read two new `/api/analytics` fields; client-first would have left the toggle visibly half-working (change % showing "—", categories not reordering) until the API caught up. Server-first is always safe: the old client ignores fields it doesn't know. Client-only UI changes don't need the server deploy at all.
 4. **Verify live.** After a couple of minutes, load the live client URL and hit the API health/login flow. Report what you actually observed, not what should have happened.
 5. **Report.** Tell Alex in plain terms: what got deployed (features/commits), the live URL, and anything he should click through to double-check.
 
