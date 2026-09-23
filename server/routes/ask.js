@@ -13,7 +13,13 @@ import {
 import { dayInZone } from '../lib/month.js';
 import { userTimeZone } from '../lib/userZone.js';
 
-import { selectFor, decodeRow, decodeRows, encodeWrite } from '../lib/encryptionCodec.js';
+import {
+  selectFor,
+  decodeRows,
+  encodeWrite,
+  presentRow,
+  presentRows,
+} from '../lib/encryptionCodec.js';
 
 const router = Router();
 
@@ -21,6 +27,14 @@ const router = Router();
 // could contain anything and that nothing queries.
 const ASK_MESSAGE_COLUMNS = 'id, role, content, created_at';
 const ASK_HISTORY_COLUMNS = 'role, content, created_at';
+
+// The cost ceiling that actually holds. `askLimiter` in index.js is an in-memory
+// backstop, and on Vercel every serverless instance has its own memory — a caller
+// who fans out across instances, or just waits for one to recycle, never meets it.
+// Each turn here spends real money on ANTHROPIC_API_KEY, so the binding limit is
+// counted in Postgres, which all instances share by construction.
+const ASK_RATE_LIMIT = 20;
+const ASK_RATE_WINDOW_MS = 60 * 60 * 1000;
 
 const askSchema = z.object({
   message: z.string().trim().min(1).max(2000),
@@ -46,7 +60,10 @@ router.get('/history', async (req, res, next) => {
       .limit(ASK_HISTORY_VISIBLE);
     if (error) throw error;
     // Return oldest-first so the client can append in render order.
-    const messages = decodeRows('ask_messages', req.user.id, data || []).reverse();
+    // presentRows, not decodeRows: selectFor adds `content_enc` and `user_id` for the
+    // codec's own use past phase `off`, and returning the row wholesale ships both to
+    // the browser — where they land in caches and devtools.
+    const messages = presentRows('ask_messages', req.user.id, data || [], ASK_MESSAGE_COLUMNS).reverse();
     res.json({ messages });
   } catch (err) {
     next(err);
@@ -81,6 +98,21 @@ router.post('/', async (req, res, next) => {
     }
     const { message } = parsed.data;
 
+    // Counted before the insert below: a rejected turn must not leave a row behind,
+    // and must not be able to inflate the caller's own quota.
+    const { count: recentTurns, error: rateErr } = await supabase
+      .from('ask_messages')
+      .select('id', { count: 'exact', head: true })
+      .eq('user_id', req.user.id)
+      .eq('role', 'user')
+      .gte('created_at', new Date(Date.now() - ASK_RATE_WINDOW_MS).toISOString());
+    if (rateErr) throw rateErr;
+    if ((recentTurns ?? 0) >= ASK_RATE_LIMIT) {
+      return res
+        .status(429)
+        .json({ error: "You've been chatting a lot — try again in a bit." });
+    }
+
     // Persist the user message first so a crash during streaming still leaves
     // the question in the transcript.
     const { data: userRow, error: userInsErr } = await supabase
@@ -89,7 +121,7 @@ router.post('/', async (req, res, next) => {
       .select(selectFor('ask_messages', ASK_MESSAGE_COLUMNS))
       .single();
     if (userInsErr) throw userInsErr;
-    const userMessage = decodeRow('ask_messages', req.user.id, userRow);
+    const userMessage = presentRow('ask_messages', req.user.id, userRow, ASK_MESSAGE_COLUMNS);
 
     // Load prior history to send to the model (oldest first, excluding the
     // message we just inserted).
@@ -201,7 +233,7 @@ router.post('/', async (req, res, next) => {
       if (error) {
         console.error('[ask] failed to persist assistant message', error.message);
       } else {
-        assistantRow = decodeRow('ask_messages', req.user.id, data);
+        assistantRow = presentRow('ask_messages', req.user.id, data, ASK_MESSAGE_COLUMNS);
       }
     }
 

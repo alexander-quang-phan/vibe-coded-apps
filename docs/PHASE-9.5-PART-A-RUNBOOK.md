@@ -157,7 +157,7 @@ run that fails halfway can simply be re-run.
 ### How to run them
 
 **Option A — Supabase dashboard (recommended, you stay in control).** Go to
-[the SQL Editor](https://supabase.com/dashboard/project/fqfzjcpypxvikdgmegzq/sql/new),
+[the SQL Editor](https://supabase.com/dashboard/project/YOUR-PROJECT-REF/sql/new),
 open the file in your editor, copy the whole thing, paste, press Run. One file at a time.
 
 - `server/migrations/012_encryption_columns.sql`

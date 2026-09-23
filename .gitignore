@@ -34,3 +34,7 @@ yarn-error.log*
 
 # Railway
 .railway/
+
+# Real deployment values + any downloaded private key — this repo is PUBLIC.
+DEPLOY.local.md
+*.pem

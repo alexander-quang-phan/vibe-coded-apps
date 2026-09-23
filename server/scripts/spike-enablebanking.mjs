@@ -1,4 +1,11 @@
-// SPIKE — task 8.A0 (go/no-go). Throwaway; intentionally NOT committed.
+// SPIKE — task 8.A0 (go/no-go). Proves the Enable Banking flow end-to-end before any
+// product code is written.
+//
+// THIS FILE IS COMMITTED, AND THIS REPOSITORY IS PUBLIC. An earlier version of this
+// header claimed the opposite ("Throwaway; intentionally NOT committed"), which invited
+// exactly the wrong habit: it must NEVER contain a real ENABLEBANKING_APP_ID, a real key
+// path, or a PEM body. Every value comes from server/.env only (see below). Downloaded
+// keys are covered by `*.pem` in .gitignore — keep them out of the repo entirely.
 // Proves the Enable Banking flow end-to-end with a real UK bank before any product code.
 //
 // Prereqs (see chat / spec §8 row A0):

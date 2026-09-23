@@ -2,6 +2,11 @@
 
 ## ✅ It's live (Vercel free tier, deployed 2026-07-13)
 
+> **Project ref is not in this file.** This repository is **public**, so the live Supabase
+> project ref is kept in `DEPLOY.local.md` (gitignored) instead of here. Replace
+> `YOUR-PROJECT-REF` below with the value from that file, or read it off the Supabase
+> dashboard URL.
+
 | What | URL |
 |---|---|
 | **The app** (share this) | https://trim-budget.vercel.app |
@@ -44,7 +49,7 @@ Browser --> client (static host)            Supabase (Auth + Postgres)
 ## 0. What you need
 
 - The GitHub repo for this project (push it first if it only lives locally).
-- Your Supabase project (`Trim_Budgeting_App`, ref `fqfzjcpypxvikdgmegzq`) — already
+- Your Supabase project (`Trim_Budgeting_App`, ref `YOUR-PROJECT-REF`) — already
   set up with migrations 001–009 applied.
 - A [Railway](https://railway.com) account (Hobby plan, ~$5/mo, includes both services).
 - Your Anthropic API key (powers Ask Trim + the AI quick-add parser).
@@ -85,10 +90,11 @@ The database already exists. Before going live:
    |---|---|
    | `NODE_ENV` | `production` |
    | `CLIENT_URL` | placeholder for now — you'll paste the real client URL in step 4 |
-   | `SUPABASE_URL` | `https://fqfzjcpypxvikdgmegzq.supabase.co` |
+   | `SUPABASE_URL` | `https://YOUR-PROJECT-REF.supabase.co` |
    | `SUPABASE_SERVICE_ROLE_KEY` | from step 1.4 |
    | `SUPABASE_JWT_SECRET` | from step 1.4 |
    | `ANTHROPIC_API_KEY` | your key — **server service only** |
+   | `ALLOWED_EMAILS` | every permitted account email, comma-separated — **the server will not start without it** |
 
    (Don't set `PORT` — Railway injects it.)
 4. **Settings → Networking → Generate Domain**. Note the URL, e.g.
@@ -107,7 +113,7 @@ The database already exists. Before going live:
    | Variable | Value |
    |---|---|
    | `VITE_API_URL` | the API URL from step 2.4, **no trailing slash** |
-   | `VITE_SUPABASE_URL` | `https://fqfzjcpypxvikdgmegzq.supabase.co` |
+   | `VITE_SUPABASE_URL` | `https://YOUR-PROJECT-REF.supabase.co` |
    | `VITE_SUPABASE_ANON_KEY` | the anon/publishable key |
 
 4. **Settings → Networking → Generate Domain**. This is your app's address —
