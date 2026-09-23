@@ -1,18 +1,150 @@
-# Chat Handoff — updated 2026-09-23 (Phase 15 Analytics chip SHIPPED AND LIVE; 9.5 Part A still parked, awaiting Alex's four manual steps)
+# Chat Handoff — updated 2026-09-23 (SECURITY AUDIT of all three apps + P1/P2/P3 fixes — UNCOMMITTED, and BLOCKED on one Vercel env var)
 
 ## DUAL-AGENT BATON  (both models: update this the MOMENT you finish work)
-- Current stage:  **NOTHING IN FLIGHT.** Phase 15 (Analytics special-expenses chip) is built,
-                  verified, committed (`15dd560`), pushed and **deployed to production 2026-09-23**.
-                  Phase 9.5 Part A is unchanged from 2026-08-19 — code-complete, deployed inert,
-                  waiting on Alex's four manual steps. No model owes a stage.
-- Model A is:     Claude Code (build + revise). Model B / verifier: **Codex — still unavailable**
-                  for the 9.5 branch (withholds output as a "cybersecurity request").
-- Up next:        **Alex** — (a) click through Analytics while logged in to confirm the chip, and
-                  (b) whenever he wants to resume encryption, the four manual steps below.
-- Last actor did: Claude Code, 2026-09-23 — fixed and SHIPPED the Analytics chip. Single-model by
-                  design: CLAUDE.md reserves the two-model loop for big/risky changes, and this is
-                  read-only display logic on an existing route. No migration, no auth/data-path
-                  change, so SECURITY.md was untouched.
+- Current stage:  **STAGE 6 RED-TEAM equivalent COMPLETE; all fixes written but NOT committed, NOT
+                  deployed.** A full security audit ran across Trim, LifeChat and Morning Briefing.
+                  The P1 (auth), the P2 (rate limit) and 9 of 13 P3s are FIXED in the working tree,
+                  each with tests, each RED/GREEN-verified against the unfixed code. Suite is
+                  **507 passing, 0 skipped**. Nothing is committed.
+                  **Do not push until Alex sets `ALLOWED_EMAILS` in Vercel.**
+- Model A is:     Claude Code (audit + fix). Model B / verifier: **Codex — still unavailable** for
+                  security work (withholds output as a "cybersecurity request"), so the adversarial
+                  pass was done by a fan-out of Claude subagents plus by-hand verification instead.
+- Up next:        **Alex** — (1) put the full 7-user `ALLOWED_EMAILS` list in the `trim-api` Vercel
+                  env, (2) then commit + deploy. Order matters, see the DEPLOY BLOCKER below.
+- Last actor did: Claude Code, 2026-09-23 — audited all three apps; fixed P1 + P2 + 9 P3s; added
+                  `server/test/auth.test.js` (11) and `server/test/routeMountTable.test.js` (19);
+                  extended the transactions and cron suites; extended both BUGS-FIXED ledgers;
+                  updated SECURITY.md + DEPLOY.md; sanitised the project ref out of the public repo;
+                  `npm audit fix`; removed both stale worktrees. Auth changed, so SECURITY.md was
+                  mandatory and was done.
+
+## ⚠ DEPLOY BLOCKER — read before committing or pushing anything
+`server/middleware/auth.js` now **refuses to boot** if `ALLOWED_EMAILS` is unset (fail-closed, the
+same pattern as `SUPABASE_URL`). That variable is **not yet in the Vercel `trim-api` project**.
+
+If this reaches `main` before the env var is set, the API will not start — total outage, not a
+degraded mode. Correct order:
+  1. Set `ALLOWED_EMAILS` in the `trim-api` Vercel project = **all 7 real users' emails**,
+     comma-separated. Only Alex's own address is in local `server/.env` right now; the other six
+     are unknown to this session (deliberately — reading 7 friends' addresses out of `auth.users`
+     was not done without asking). Get them with:
+     `select email from auth.users order by created_at;`
+  2. Verify: `vercel env ls production` on `trim-api` shows `ALLOWED_EMAILS`.
+  3. Then commit, push, deploy, and re-check `/api/health` returns 200.
+
+Note the project's own history here: a correct fix once sat **uncommitted for 17 days** and Alex kept
+seeing a bug that was already solved. Do not let these edits rot the same way — but do not push them
+ahead of the env var either.
+
+## Goal
+Alex asked (22 Sep): validate all app infrastructure and plans — "make sure security is flawless and
+there are no private API key leaks or anything, and the users data won't be leaked, and there are no
+bugs or errors with the apps so far." Scope was all three apps, not just Trim.
+
+## Current state
+
+**Audit: COMPLETE.** Full report (kept OUTSIDE this public repo on purpose):
+`../SECURITY-AUDIT-2026-09-22.md` + `.pdf`.
+
+Headline: **no key leaks, no data leaks, no failing tests.** No secret has ever been committed to any
+of the three repos — every diff in all history was scanned, not just the current tree. All 14 Trim
+routes are correctly user-scoped. Trim 459/459 tests passed before changes, 470/470 after.
+
+**Fixed this session (in the working tree, UNCOMMITTED):**
+1. **P1 — open signup let any stranger use Trim and spend `ANTHROPIC_API_KEY`.** `requireAuth`
+   verified tokens perfectly but never checked *which* account held them; signup is open and email
+   confirmation is off. Fixed with an `ALLOWED_EMAILS` allowlist returning 403, failing closed at
+   boot. `server/middleware/auth.js`.
+2. **P2 — rate limits did not hold in production.** Both limiters used in-memory storage, but the
+   live deploy is Vercel *serverless*, so counters were per-instance. The `/api/ask` ceiling is now
+   counted in Postgres. `server/routes/ask.js`.
+3. **`server/test/auth.test.js` — NEW, 11 tests.** Nothing previously loaded the real auth
+   middleware; every route suite stubs auth away. Covers the allowlist, the token checks, and the
+   fail-closed boot guard (in a child process, since it calls `process.exit(1)`).
+4. **`BUGS-FIXED.md` — appended to (it already existed).** The ledger was created 2026-09-22 and
+   was committed but MISSING from the working tree, so an `ls` check wrongly reported it absent and
+   the first write overwrote it. Restored from HEAD and re-applied additively: the two 2026-09-23
+   fixes, three new named failure shapes, and a "traps that have not bitten yet" section that
+   records invariants rather than exploits, because this repo is public.
+5. SECURITY.md + DEPLOY.md document `ALLOWED_EMAILS`; the "email confirmation OFF" checklist line
+   now says out loud that the allowlist is what makes that safe.
+
+**Verified, not assumed:** `npm test` 470/470 · server boots on the real `.env` · `client npm run
+build` passes · the new Postgres count query was run against the live database to confirm the
+`role='user'` filter discriminates (2 of 4 rows).
+
+**Confirmed NOT exploited:** `auth.users` holds exactly 7 accounts, latest signup 16 Jul, **zero in
+the last 30 days**. `ask_messages` has 4 rows ever, 1 user, most recent 12 Jul — the Anthropic key
+was never burned. The P1 was a real hole that nobody found.
+
+**Encryption is still inert and untouched** — production has neither `ENCRYPTION_PHASE` nor
+`DATA_ENCRYPTION_KEY`, consistent with the 2026-09-23 Phase 15 check. Worth stating plainly because
+it is easy to misread the docs: **Trim's data is not currently encrypted at rest.**
+
+## Key decisions (and why)
+- **Fail closed at boot, not per-request, for `ALLOWED_EMAILS`** — matches the existing
+  `SUPABASE_URL` / `CRON_SECRET` pattern. An unset allowlist must never silently mean "admit
+  everyone", which is the whole bug being fixed. Cost: it creates the deploy blocker above, which
+  is the correct trade (a loud outage beats a silent open door).
+- **403, not 401, for a non-allowlisted account** — the credential is genuine; the account just
+  isn't invited, so retrying with a fresh token will never help.
+- **The ask cap moved to Postgres rather than a Redis/store add-on** — the data was already there,
+  it is one indexed query, and it needs no new dependency or service.
+- **Counted BEFORE the user-message insert** — otherwise a rejected turn leaves a stray row and
+  inflates the caller's own quota.
+- **`BUGS-FIXED.md` records invariants, not exploits** — the repo is public, and some audit findings
+  are still open. The exploitable detail stays in the out-of-repo report.
+- **Did not commit** — Alex asked for fixes, not a deploy, and pushing ahead of the env var would
+  take the API down.
+- **Did not read the other 6 users' emails** — reading friends' addresses out of `auth.users` is a
+  privacy step worth asking about first, and aggregate counts answered the abuse question.
+
+## Files that matter (this session)
+- `../SECURITY-AUDIT-2026-09-22.md` / `.pdf` — the full report, all three apps. **Outside the repo
+  by design** (it lists still-open findings; this repo is public).
+- `server/middleware/auth.js` — the P1 fix. **Changed, uncommitted.**
+- `server/routes/ask.js` — the P2 fix. **Changed, uncommitted.**
+- `server/test/auth.test.js` — **NEW**, 11 tests, the first coverage of real auth.
+- `BUGS-FIXED.md` — extended, not created (it dated from 2026-09-22). Now additive-only vs HEAD.
+- `SECURITY.md` (credential table + confirmation-off line), `DEPLOY.md` (server env table) — updated.
+- `server/.env.example` — documents `ALLOWED_EMAILS`. `server/.env` has Alex's address only.
+- Backups of the pre-edit files: `/tmp/auth.js.bak`, `/tmp/ask.js.bak` (ephemeral — git is the real
+  record once committed).
+
+## Next steps (in order)
+1. **Alex: set `ALLOWED_EMAILS` (all 7 emails) in the `trim-api` Vercel project.** Blocks everything.
+2. Commit + push + deploy, then confirm `/api/health` is 200 and a real login still works.
+   Note the 23 Sep P3 sweep also touched `routes/transactions.js`, `routes/categories.js`,
+   `routes/ask.js`, `lib/runRecurrences.js`, `lib/recurrences.js` and
+   `migrations/009_lock_down_definer_functions.sql` — 009 must be **re-run** on any database built
+   from an earlier replay, since the old version aborted before applying either revoke.
+3. **LifeChat's Supabase project is `INACTIVE`** (free-tier idle pause) — the app will not load until
+   Alex restores it from the dashboard. Separate repo, unrelated to these edits.
+4. `npm audit fix` in `server/`, `client/` and LifeChat (3 and 4 transitive advisories, fixes exist).
+5. ~~The P3 sweep~~ **DONE 23 Sep** — fx bound, PATCH type invariant, migration 009, cron
+   timezone, the two phase-`enc` bugs, LifeChat's cache-on-signout, the project ref, the spike
+   header, `*.pem`, `npm audit fix`, both worktrees. Details in `BUGS-FIXED.md`.
+6. **Still open, all decisions rather than defects** (full list in the report's last section):
+   Trim client's 4 advisories need *major* bumps (vite 8, react-router-dom 7) — I verified the
+   react-router open redirect is NOT reachable here and the vite ones are dev-server only, so this
+   is a judgement call, not urgent; whether the repo stays public; whether Trim gets an
+   account-deletion path; a `RECOVERY.md` for Trim; service-role key rotation; and recovering
+   `rls_auto_enable()`'s body out of the live project so the migrations folder is complete.
+
+## Open questions for Alex
+- **Does Trim's repo stay public?** Nothing is leaked by it — checked for real personal data, emails
+  and keys, found only `example.com` placeholders — but it publishes the full authorization logic.
+- **Do you want an account-deletion path?** Seven people's financial data currently has no way to be
+  deleted, and no password-reset or session-revocation route exists either.
+- **Rotate the service-role key?** No evidence it ever leaked, so hygiene rather than remediation.
+- **Write a `RECOVERY.md` for Trim?** LifeChat has one; Trim has no backup/restore runbook, on a
+  free tier that pauses when idle.
+
+## How to resume
+Start a new session in this folder and say: "Read @CHAT_HANDOFF.md and continue with next step 1."
+
+# Previous session — 2026-09-23 (Phase 15 Analytics chip SHIPPED AND LIVE)
 
 ## Goal
 Alex reported: on Analytics, flipping incl./excl. special expenses left **last month's numbers
