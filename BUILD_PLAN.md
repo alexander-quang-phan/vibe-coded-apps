@@ -1230,15 +1230,24 @@ fact, because `a4a30ee` updated SECURITY.md but touched neither BUILD_PLAN nor F
       middleware (every route suite mounts behind a stub that injects `req.user`). Suite 459 → 507,
       verified 2026-09-23 on the committed code.
 
-### ⚠️ 16.5 — NOT DONE, and it gates the deploy
-**`ALLOWED_EMAILS` is not set in the `trim-api` Vercel environment.** Checked 2026-09-23 with
-`vercel env ls production`: only `CRON_SECRET`, `CLIENT_URL`, `ANTHROPIC_API_KEY`,
-`SUPABASE_JWT_SECRET`, `SUPABASE_SERVICE_ROLE_KEY`, `SUPABASE_URL`. Because 16.2 fails closed at
-boot, **the next `trim-api` deploy takes the API down for every user** until it is set. `a4a30ee`
-and `55ed17b` were deliberately left unpushed for this reason — set the variable first, then push,
-then deploy. It must list every real user plus `trim.tester@example.com`; anyone omitted gets a 403
-they cannot resolve by signing in again. Only Alex can supply the list — a session cannot read
-`auth.users` (production reads are blocked).
+### [x] 16.5 — DONE 2026-09-23: allowlist set, pushed, deployed, API verified up
+`ALLOWED_EMAILS` is set on `trim-api` production and the API was deployed from `69d177f`.
+
+The list holds **all seven pre-existing accounts** — every account that existed before the gate, so
+nobody using Trim was locked out. The hole it closes is *new* strangers self-registering, not the
+people already here. Two are plainly disposable (`testuser@gmail.com`, and a joke-named account with
+3 transactions); they are kept only because removing an account someone is using is a decision for
+Alex, and pruning is one `vercel env add` + redeploy away.
+
+Verified live after the deploy, not assumed:
+  - `/api/health` -> **200**. This is the load-bearing check: 16.2 calls `process.exit(1)` on an
+    empty list, so a booted server *is* the proof that `ALLOWED_EMAILS` was read.
+  - `/api/analytics` with no token -> **401**; with a garbage token -> **401**, not 500.
+  - No client deploy: the whole stack touched `client/package-lock.json` only, no client source.
+
+**Still unverified, and only Alex can do it:** a real logged-in session returning 200, and a
+non-allowlisted account returning 403. Both need a genuine Supabase token, which a session cannot
+mint.
 
 ---
 
