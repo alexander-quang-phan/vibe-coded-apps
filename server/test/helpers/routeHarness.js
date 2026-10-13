@@ -15,6 +15,7 @@
  * the file, before any import of the app code.
  */
 import express from 'express';
+import { randomUUID } from 'node:crypto';
 
 /**
  * Minimal PostgREST double covering what the swept routes use:
@@ -25,7 +26,7 @@ import express from 'express';
  * assert what was actually stored — which is how "did this write the ciphertext
  * column?" gets answered.
  */
-export function fakeSupabase(tables = {}) {
+export function fakeSupabase(tables = {}, { maxRows = null, failOn = null } = {}) {
   const store = {};
   for (const [t, rows] of Object.entries(tables)) store[t] = rows.map((r) => ({ ...r }));
 
@@ -39,6 +40,9 @@ export function fakeSupabase(tables = {}) {
       const q = {
         _table: table,
         _select: null,
+        _selectOpts: null,
+        _orders: [],
+        _readBack: false,
         _filters: [],
         _order: null,
         _asc: true,
@@ -48,7 +52,15 @@ export function fakeSupabase(tables = {}) {
         _single: null,
         _conflict: null,
 
-        select(cols) { q._select = cols; return q; },
+        // A select AFTER a write is PostgREST's `return=representation`: without it the
+        // real client hands back `data: null`, and a route that reads the result anyway
+        // throws in production while passing every test. `_readBack` models that.
+        select(cols, opts) {
+          if (q._op !== 'select') q._readBack = true;
+          q._select = cols;
+          q._selectOpts = opts ?? null;
+          return q;
+        },
         eq(c, v) { q._filters.push((r) => r[c] === v); return q; },
         neq(c, v) { q._filters.push((r) => r[c] !== v); return q; },
         gt(c, v) { q._filters.push((r) => r[c] > v); return q; },
@@ -59,7 +71,10 @@ export function fakeSupabase(tables = {}) {
         in(c, vs) { q._filters.push((r) => vs.includes(r[c])); return q; },
         not(c, _op, v) { q._filters.push((r) => (v === null ? r[c] != null : r[c] !== v)); return q; },
         contains(c, v) { q._filters.push((r) => (r[c] ?? []).includes(v[0])); return q; },
-        order(c, o) { q._order = c; q._asc = o?.ascending !== false; return q; },
+        // Chained orders sort by each key in turn, as SQL does. They are also recorded,
+        // so a test can assert the tie-breaker is there: a stable JS sort over unchanging
+        // data would otherwise page cleanly with or without it.
+        order(c, o) { q._orders.push({ c, asc: o?.ascending !== false }); return q; },
         limit(n) { q._limit = n; return q; },
         range(a, b) { q._limit = b - a + 1; q._offset = a; return q; },
         insert(payload) { q._op = 'insert'; q._payload = payload; return q; },
@@ -76,7 +91,11 @@ export function fakeSupabase(tables = {}) {
 
         then(resolve, reject) {
           try {
-            calls.push({ table, op: q._op, select: q._select, payload: q._payload });
+            calls.push({ table, op: q._op, select: q._select, payload: q._payload, orders: q._orders });
+            if (failOn && failOn(table, q._op)) {
+              return Promise.resolve({ data: null, error: { message: `injected failure on ${table}.${q._op}` } })
+                .then(resolve, reject);
+            }
             const match = (r) => q._filters.every((f) => f(r));
             let rows;
 
@@ -86,13 +105,13 @@ export function fakeSupabase(tables = {}) {
                 const hit = store[table].find((r) =>
                   q._conflict.every((c) => r[c] !== undefined && r[c] === incoming[c]));
                 if (hit) { Object.assign(hit, incoming); return hit; }
-                const added = { id: `gen-${store[table].length + 1}`, ...incoming };
+                const added = { id: randomUUID(), ...incoming };
                 store[table].push(added);
                 return added;
               });
             } else if (q._op === 'insert') {
               const list = Array.isArray(q._payload) ? q._payload : [q._payload];
-              const added = list.map((r) => ({ id: `gen-${store[table].length + 1}`, ...r }));
+              const added = list.map((r) => ({ id: randomUUID(), ...r }));
               store[table].push(...added);
               rows = added;
             } else if (q._op === 'update') {
@@ -104,16 +123,22 @@ export function fakeSupabase(tables = {}) {
               store[table] = keep;
             } else {
               rows = store[table].filter(match);
-              if (q._order) {
+              if (q._orders.length) {
                 rows = [...rows].sort((a, b) => {
-                  const av = a[q._order]; const bv = b[q._order];
-                  const c = av < bv ? -1 : av > bv ? 1 : 0;
-                  return q._asc ? c : -c;
+                  for (const { c, asc } of q._orders) {
+                    const av = a[c]; const bv = b[c];
+                    const cmp = av < bv ? -1 : av > bv ? 1 : 0;
+                    if (cmp !== 0) return asc ? cmp : -cmp;
+                  }
+                  return 0;
                 });
               }
               if (q._offset) rows = rows.slice(q._offset);
               if (q._limit != null) rows = rows.slice(0, q._limit);
+              // PostgREST's max-rows cap applies AFTER the requested range, silently.
+              if (maxRows != null) rows = rows.slice(0, maxRows);
             }
+            const count = rows.length;
 
             // Project only the requested columns, the way PostgREST does — this is
             // what catches a route that forgot to widen its select.
@@ -127,6 +152,15 @@ export function fakeSupabase(tables = {}) {
               return out;
             };
             const projected = rows.map(project);
+
+            // A write with no `.select()` returns no rows, exactly like the real client.
+            if (q._op !== 'select' && !q._readBack) {
+              return Promise.resolve({ data: null, error: null }).then(resolve, reject);
+            }
+            if (q._selectOpts?.count) {
+              return Promise.resolve({ data: q._selectOpts.head ? null : projected, count, error: null })
+                .then(resolve, reject);
+            }
 
             if (q._single) {
               if (projected.length === 0) {
