@@ -33,7 +33,7 @@ async function seed(phase) {
       ...encodeWrite('categories', U, { name: 'Entertainment' }, phase),
     }],
     recurrences: [{
-      id: REC, user_id: U, category_id: CAT, type: 'expense', interval: 'monthly',
+      id: REC, user_id: U, category_id: CAT, type: 'expense', interval: 'monthly', auto_log: true,
       next_run_at: '2026-09-01', last_run_at: null, cancelled_at: null,
       created_at: '2026-08-01T00:00:00Z',
       ...encodeWrite('recurrences', U, { amount: 9.99, description: 'Netflix' }, phase),
@@ -52,9 +52,9 @@ export function runSubscriptionsRouteSuite(phase) {
     rpc: (...args) => currentDb.rpc(...args),
   };
 
-  async function boot(tables) {
+  async function boot(tables, opts) {
     const { fakeSupabase, serve } = await import('./routeHarness.js');
-    currentDb = fakeSupabase(tables ?? (await seed(phase)));
+    currentDb = fakeSupabase(tables ?? (await seed(phase)), opts);
     if (!mocked) {
       mock.module('../../lib/supabase.js', { exports: { supabase: supabaseProxy } });
       mocked = true;
@@ -203,6 +203,661 @@ export function runSubscriptionsRouteSuite(phase) {
         const { decryptRegistered } = await import('../../lib/crypto.js');
         assert.equal(decryptRegistered('recurrences.amount', U, stored.amount_enc), 12.99);
       }
+    } finally {
+      await http.close();
+    }
+  });
+
+  // ===========================================================================
+  // Phase 17 — subscriptions Alex marks himself (tracked, never auto-logged)
+  // ===========================================================================
+
+  const U2 = '00000000-0000-4000-8000-000000000002';
+  const OTHER_CAT = '22222222-2222-4222-8222-222222222222';
+  const T_REC = '55555555-5555-4555-8555-555555555555';
+  const id = (n) => `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
+
+  async function txRow({ n, date, amount, description = null, rec = null, user = U, cat = CAT, type = 'expense' }) {
+    const { encodeWrite } = await import('../../lib/encryptionCodec.js');
+    return {
+      id: id(n), user_id: user, category_id: cat, type, date, is_recurring: false,
+      recurrence_id: rec, created_at: `${date}T09:00:00Z`,
+      ...encodeWrite('transactions', user, { amount, description }, phase),
+    };
+  }
+  async function trackedRec({ rid = T_REC, description = 'Netflix', amount = 10.99, interval = 'monthly', cancelled_at = null, user = U, cat = CAT } = {}) {
+    const { encodeWrite } = await import('../../lib/encryptionCodec.js');
+    return {
+      id: rid, user_id: user, category_id: cat, type: 'expense', interval, auto_log: false,
+      next_run_at: null, last_run_at: null, cancelled_at, created_at: '2026-08-01T00:00:00Z',
+      ...encodeWrite('recurrences', user, { amount, description }, phase),
+    };
+  }
+  async function tables({ recurrences = [], transactions = [] } = {}) {
+    const base = await seed(phase);
+    return { ...base, subscription_overrides: [], recurrences: [...base.recurrences, ...recurrences], transactions };
+  }
+  const sub = (body, key) => body.subscriptions.find((x) => x.merchantKey === key);
+  const autoRows = (body) => body.subscriptions.filter((x) => x.source === 'auto');
+
+  test(`${label} GET: a tracked row is DERIVED from its charges, and follows an edited charge`, async () => {
+    const t = await tables({
+      recurrences: [await trackedRec({ amount: 9.99 })],
+      transactions: [
+        await txRow({ n: 1, date: '2026-08-03', amount: 9.99, description: 'Netflix', rec: T_REC }),
+        await txRow({ n: 2, date: '2026-09-03', amount: 12.99, description: 'Netflix', rec: T_REC }),
+      ],
+    });
+    const { db, http } = await boot(t);
+    try {
+      let { status, body } = await http.get('/');
+      assert.equal(status, 200, JSON.stringify(body));
+      clean(body);
+      const row = sub(body, `manual:${T_REC}`);
+      assert.equal(row.tracking, true);
+      assert.equal(row.amount, 12.99, 'amount = the latest charge, not the stored 9.99');
+      assert.equal(row.lastCharged, '2026-09-03');
+      assert.equal(row.nextExpected, '2026-10-03');
+      assert.equal(row.occurrences, 2);
+      assert.equal(row.totalPaid, 22.98);
+      const repeat = sub(body, `manual:${REC}`);
+      assert.equal(repeat.tracking, false, 'the seeded Repeat-this row is NOT tracked');
+      assert.equal(repeat.nextExpected, '2026-09-01', 'Repeat-this keeps its stored next_run_at');
+
+      // Fix a typo'd charge: the figure follows, because nothing was stored.
+      const { encodeWrite } = await import('../../lib/encryptionCodec.js');
+      Object.assign(db.store.transactions.find((r) => r.id === id(2)),
+        encodeWrite('transactions', U, { amount: 10.99 }, phase));
+      ({ body } = await http.get('/'));
+      assert.equal(sub(body, `manual:${T_REC}`).amount, 10.99);
+    } finally {
+      await http.close();
+    }
+  });
+
+  test(`${label} GET: a tracked row with ZERO charges returns 200 with null dates and the stored amount`, async () => {
+    const { http } = await boot(await tables({ recurrences: [await trackedRec({ amount: 7.5 })] }));
+    try {
+      const { status, body } = await http.get('/');
+      assert.equal(status, 200, JSON.stringify(body));
+      const row = sub(body, `manual:${T_REC}`);
+      assert.equal(row.lastCharged, null);
+      assert.equal(row.nextExpected, null);
+      assert.equal(row.amount, 7.5);
+      assert.equal(row.occurrences, 0);
+    } finally {
+      await http.close();
+    }
+  });
+
+  test(`${label} GET: a yearly subscription is costed per year, not as weekly`, async () => {
+    const t = await tables({
+      recurrences: [await trackedRec({ description: 'Amazon Prime', amount: 95, interval: 'annual' })],
+      transactions: [await txRow({ n: 1, date: '2026-02-10', amount: 95, description: 'Amazon Prime', rec: T_REC })],
+    });
+    const { http } = await boot(t);
+    try {
+      const row = sub((await http.get('/')).body, `manual:${T_REC}`);
+      assert.equal(row.monthlyCost, 7.92);
+      assert.equal(row.annualCost, 95);
+      assert.equal(row.cadence, 'annual');
+    } finally {
+      await http.close();
+    }
+  });
+
+  const monthly = async (start, description, amount, cat = CAT) => [
+    await txRow({ n: start, date: '2026-07-05', amount, description, cat }),
+    await txRow({ n: start + 1, date: '2026-08-04', amount, description, cat }),
+    await txRow({ n: start + 2, date: '2026-09-03', amount, description, cat }),
+  ];
+
+  test(`${label} GET: a detected row with the tracked row's exact note is hidden (one row, not two)`, async () => {
+    const t = await tables({
+      recurrences: [await trackedRec()],
+      transactions: [
+        await txRow({ n: 9, date: '2026-10-03', amount: 10.99, description: 'Netflix', rec: T_REC }),
+        ...(await monthly(10, 'Netflix', 10.99)),
+      ],
+    });
+    const { http } = await boot(t);
+    try {
+      const { body } = await http.get('/');
+      assert.equal(autoRows(body).length, 0, 'the unattached Netflix charges do not form a second row');
+    } finally {
+      await http.close();
+    }
+  });
+
+  test(`${label} GET: tracked "Apple Music" never hides a detected "Apple TV" — or iCloud noted "Apple"`, async () => {
+    const t = await tables({
+      recurrences: [await trackedRec({ description: 'Apple Music', amount: 10.99 })],
+      transactions: [
+        await txRow({ n: 1, date: '2026-09-03', amount: 10.99, description: 'Apple Music', rec: T_REC }),
+        // attached through a weak offer — absorbed, but never silent
+        await txRow({ n: 2, date: '2026-10-03', amount: 10.99, description: 'Apple', rec: T_REC }),
+        ...(await monthly(10, 'Apple TV', 8.99)),
+        ...(await monthly(20, 'Apple', 8.99)),
+      ],
+    });
+    const { http } = await boot(t);
+    try {
+      const keys = autoRows((await http.get('/')).body).map((r) => r.merchantKey).sort();
+      assert.deepEqual(keys, ['apple', 'apple tv']);
+    } finally {
+      await http.close();
+    }
+  });
+
+  test(`${label} GET: a no-note tracked row never hides an inferred row (shown twice, never guessed)`, async () => {
+    const t = await tables({
+      recurrences: [await trackedRec({ description: null, amount: 10.99 })],
+      transactions: [
+        await txRow({ n: 1, date: '2026-10-03', amount: 10.99, rec: T_REC }),
+        ...(await monthly(10, null, 10.99)),
+      ],
+    });
+    const { http } = await boot(t);
+    try {
+      const auto = autoRows((await http.get('/')).body);
+      assert.equal(auto.length, 1, 'the accepted, visible duplicate');
+      assert.ok(auto[0].merchantKey.startsWith('auto:'));
+    } finally {
+      await http.close();
+    }
+  });
+
+  test(`${label} GET: cancelling keeps its old charges hidden; a charge after the cancellation brings it back`, async () => {
+    const recs = [await trackedRec({ cancelled_at: '2026-09-20T12:00:00Z' })];
+    const pre = await monthly(10, 'Netflix', 10.99);
+    const { http } = await boot(await tables({ recurrences: recs, transactions: pre }));
+    try {
+      assert.equal(autoRows((await http.get('/')).body).length, 0, 'Per month does not get the cancelled service back');
+    } finally {
+      await http.close();
+    }
+    const post = [...pre, await txRow({ n: 30, date: '2026-10-03', amount: 10.99, description: 'Netflix' })];
+    const second = await boot(await tables({ recurrences: [await trackedRec({ cancelled_at: '2026-09-20T12:00:00Z' })], transactions: post }));
+    try {
+      const auto = autoRows((await second.http.get('/')).body);
+      assert.equal(auto.length, 1, 'a post-cancellation charge means it is back');
+    } finally {
+      await second.http.close();
+    }
+  });
+
+  test(`${label} GET: reads every expense past a silent max-rows cap (paging), same-day rows included`, async () => {
+    const charges = [];
+    for (let i = 0; i < 7; i += 1) {
+      charges.push(await txRow({ n: 100 + i, date: '2026-09-03', amount: 1, description: 'Coffee', rec: T_REC }));
+    }
+    const t = await tables({ recurrences: [await trackedRec({ description: 'Coffee', amount: 1 })], transactions: charges });
+    const { db, http } = await boot(t, { maxRows: 3 });
+    try {
+      const row = sub((await http.get('/')).body, `manual:${T_REC}`);
+      assert.equal(row.occurrences, 7, 'all seven same-day charges, none skipped or repeated');
+      const txReads = db.calls.filter((c) => c.table === 'transactions' && c.op === 'select');
+      assert.ok(txReads.some((c) => c.orders.map((o) => o.c).join(',') === 'date,id'), 'ordered by date then id');
+    } finally {
+      await http.close();
+    }
+  });
+
+  test(`${label} PATCH: a tracked row's amount cannot be edited (it follows the latest charge)`, async () => {
+    const { http } = await boot(await tables({ recurrences: [await trackedRec()] }));
+    try {
+      const { status } = await http.send('PATCH', `/manual:${T_REC}`, { amount: 12 });
+      assert.equal(status, 400);
+      const ok = await http.send('PATCH', `/manual:${T_REC}`, { status: 'cancelled' });
+      assert.equal(ok.status, 200, 'cancelling still works');
+    } finally {
+      await http.close();
+    }
+  });
+
+  // --- preview ------------------------------------------------------------------
+
+  test(`${label} preview: an exact note offers the tracked subscription, using the dialog's typed values`, async () => {
+    const t = await tables({
+      recurrences: [await trackedRec()],
+      transactions: [
+        await txRow({ n: 1, date: '2026-10-03', amount: 10.99, description: 'Netflix', rec: T_REC }),
+        await txRow({ n: 2, date: '2026-11-03', amount: 10.99, description: 'Netflx' }), // typo, fixed in the dialog
+      ],
+    });
+    const { http } = await boot(t);
+    try {
+      const before = await http.get(`/track/preview?transactionId=${id(2)}`);
+      assert.equal(before.body.existing, null, 'the saved typo does not match');
+      const { status, body } = await http.get(`/track/preview?transactionId=${id(2)}&description=Netflix`);
+      assert.equal(status, 200, JSON.stringify(body));
+      clean(body);
+      assert.equal(body.existing.merchantKey, `manual:${T_REC}`);
+      assert.equal(body.existing.kind, 'attach');
+      assert.equal(body.existing.strength, 'exact');
+      assert.equal(body.existing.name, 'Netflix');
+      assert.equal(body.needsCategory, false);
+    } finally {
+      await http.close();
+    }
+  });
+
+  test(`${label} preview: a cancelled subscription offers attach before, final-or-back after the cancellation`, async () => {
+    const t = await tables({
+      recurrences: [await trackedRec({ cancelled_at: '2026-10-10T12:00:00Z' })],
+      transactions: [
+        await txRow({ n: 1, date: '2026-10-03', amount: 10.99, description: 'Netflix', rec: T_REC }),
+        await txRow({ n: 2, date: '2026-09-03', amount: 10.99, description: 'Netflix' }),
+        await txRow({ n: 3, date: '2026-11-03', amount: 10.99, description: 'Netflix' }),
+      ],
+    });
+    const { http } = await boot(t);
+    try {
+      assert.equal((await http.get(`/track/preview?transactionId=${id(2)}`)).body.existing.kind, 'attach');
+      assert.equal((await http.get(`/track/preview?transactionId=${id(3)}`)).body.existing.kind, 'finalOrBack');
+    } finally {
+      await http.close();
+    }
+  });
+
+  test(`${label} preview: "detected" is the exact note only — a detected "Apple TV" never blocks "Apple Music"`, async () => {
+    const t = await tables({
+      transactions: [
+        ...(await monthly(10, 'Apple TV', 8.99)),
+        await txRow({ n: 1, date: '2026-10-03', amount: 10.99, description: 'Apple Music' }),
+        await txRow({ n: 2, date: '2026-10-04', amount: 8.99, description: 'Apple TV' }),
+      ],
+    });
+    const { http } = await boot(t);
+    try {
+      assert.equal((await http.get(`/track/preview?transactionId=${id(1)}`)).body.detected, null);
+      const tv = await http.get(`/track/preview?transactionId=${id(2)}`);
+      assert.equal(tv.body.detected.merchantKey, 'apple tv');
+    } finally {
+      await http.close();
+    }
+  });
+
+  test(`${label} preview: likely = same note a cycle apart; maybe = other look-alikes; needsCategory reported`, async () => {
+    const t = await tables({
+      transactions: [
+        await txRow({ n: 1, date: '2026-10-03', amount: 10.99, description: 'Netflix' }),
+        await txRow({ n: 2, date: '2026-09-03', amount: 10.99, description: 'Netflix' }),
+        await txRow({ n: 3, date: '2026-09-20', amount: 10.99, description: 'Netflix' }), // mid-cycle
+        await txRow({ n: 4, date: '2026-08-15', amount: 10.5 }), // no note, same category
+        // Its own note, so it only exercises needsCategory (an exact "Netflix" note
+        // would rightly appear under maybe — names match regardless of category).
+        await txRow({ n: 5, date: '2026-10-05', amount: 30, description: 'Gym', cat: null }),
+      ],
+    });
+    const { http } = await boot(t);
+    try {
+      const { body } = await http.get(`/track/preview?transactionId=${id(1)}&interval=monthly`);
+      assert.deepEqual(body.likely.map((c) => c.id), [id(2)]);
+      assert.deepEqual(body.maybe.map((c) => c.id).sort(), [id(3), id(4)].sort());
+      const noCat = await http.get(`/track/preview?transactionId=${id(5)}`);
+      assert.equal(noCat.body.needsCategory, true);
+    } finally {
+      await http.close();
+    }
+  });
+
+  test(`${label} preview: 404 for another user's transaction, 400 for income`, async () => {
+    const t = await tables({
+      transactions: [
+        await txRow({ n: 1, date: '2026-10-03', amount: 5, description: 'Theirs', user: U2 }),
+        await txRow({ n: 2, date: '2026-10-03', amount: 5, description: 'Salary', type: 'income' }),
+      ],
+    });
+    const { http } = await boot(t);
+    try {
+      assert.equal((await http.get(`/track/preview?transactionId=${id(1)}`)).status, 404);
+      assert.equal((await http.get(`/track/preview?transactionId=${id(2)}`)).status, 400);
+    } finally {
+      await http.close();
+    }
+  });
+
+  // --- recent ---------------------------------------------------------------------
+
+  test(`${label} recent: an old yearly charge is found by search even behind 200+ newer expenses`, async () => {
+    const rows = [await txRow({ n: 1, date: '2026-01-15', amount: 95, description: 'Amazon Prime' })];
+    for (let i = 0; i < 205; i += 1) {
+      const d = new Date(Date.parse('2026-06-01T00:00:00Z') + i * 43200000).toISOString().slice(0, 10);
+      rows.push(await txRow({ n: 1000 + i, date: d, amount: 3, description: 'Coffee' }));
+    }
+    const { http } = await boot(await tables({ transactions: rows }), { maxRows: 120 });
+    try {
+      const all = await http.get('/track/recent');
+      assert.equal(all.body.transactions.length, 200, 'newest 200 only');
+      const { body } = await http.get('/track/recent?q=amazon');
+      assert.deepEqual(body.transactions.map((x) => x.id), [id(1)]);
+      clean(body);
+    } finally {
+      await http.close();
+    }
+  });
+
+  // --- track ----------------------------------------------------------------------
+
+  test(`${label} track: marks a subscription, links chosen charges, stores the right columns`, async () => {
+    const t = await tables({
+      transactions: [
+        await txRow({ n: 1, date: '2026-10-03', amount: 10.99, description: 'Netflix' }),
+        await txRow({ n: 2, date: '2026-09-03', amount: 10.99, description: 'Netflix' }),
+        await txRow({ n: 3, date: '2026-09-03', amount: 50, description: 'Theirs', user: U2 }),
+        await txRow({ n: 4, date: '2026-09-03', amount: 50, description: 'Salary', type: 'income' }),
+        await txRow({ n: 5, date: '2026-08-03', amount: 10.99, description: 'Netflix', rec: REC }),
+      ],
+    });
+    const { db, http } = await boot(t);
+    try {
+      const { status, body } = await http.send('POST', '/track', {
+        transactionId: id(1), interval: 'monthly', includeTransactionIds: [id(2), id(3), id(4), id(5)],
+      });
+      assert.equal(status, 201, JSON.stringify(body));
+      assert.equal(body.subscription.linkedCount, 2, 'only this user\'s unlinked expenses are linked');
+      const recId = body.subscription.merchantKey.slice('manual:'.length);
+      const stored = db.store.recurrences.find((r) => r.id === recId);
+      assert.equal(stored.auto_log, false);
+      assert.equal(stored.next_run_at, null);
+      assert.equal(stored.interval, 'monthly');
+      if (phase === 'off') assert.equal(stored.description, 'Netflix');
+      else {
+        const { decryptRegistered } = await import('../../lib/crypto.js');
+        assert.equal(decryptRegistered('recurrences.description', U, stored.description_enc), 'Netflix');
+        if (phase === 'enc') assert.equal(stored.description, undefined);
+      }
+      assert.equal(db.store.transactions.find((r) => r.id === id(3)).recurrence_id, null, 'other user untouched');
+      assert.equal(db.store.transactions.find((r) => r.id === id(4)).recurrence_id, null, 'income untouched');
+      assert.equal(db.store.transactions.find((r) => r.id === id(5)).recurrence_id, REC, 'already linked untouched');
+      assert.ok(!db.store.transactions.some((r) => r.is_recurring), 'is_recurring keeps meaning Repeat-this');
+    } finally {
+      await http.close();
+    }
+  });
+
+  test(`${label} track: an exact note already tracked is a 409 even after a +300% price jump — then attach, and the amount follows`, async () => {
+    const t = await tables({
+      recurrences: [await trackedRec({ description: 'Disney Plus', amount: 1.99 })],
+      transactions: [
+        await txRow({ n: 1, date: '2026-10-03', amount: 1.99, description: 'Disney Plus', rec: T_REC }),
+        await txRow({ n: 2, date: '2026-11-03', amount: 7.99, description: 'Disney Plus' }),
+      ],
+    });
+    const { db, http } = await boot(t);
+    try {
+      const before = db.store.recurrences.length;
+      const conflict = await http.send('POST', '/track', { transactionId: id(2), interval: 'monthly' });
+      assert.equal(conflict.status, 409);
+      assert.equal(conflict.body.existing.merchantKey, `manual:${T_REC}`);
+      assert.equal(conflict.body.existing.strength, 'exact');
+      assert.equal(db.store.recurrences.length, before, 'no second subscription');
+      const att = await http.send('POST', `/manual:${T_REC}/attach`, { transactionId: id(2) });
+      assert.equal(att.status, 200, JSON.stringify(att.body));
+      assert.equal(sub((await http.get('/')).body, `manual:${T_REC}`).amount, 7.99);
+    } finally {
+      await http.close();
+    }
+  });
+
+  test(`${label} track: a weak resemblance never blocks — two different services are both trackable`, async () => {
+    const t = await tables({
+      recurrences: [await trackedRec({ description: 'Apple Music', amount: 10.99 })],
+      transactions: [
+        await txRow({ n: 1, date: '2026-10-03', amount: 10.99, description: 'Apple Music', rec: T_REC }),
+        await txRow({ n: 2, date: '2026-10-05', amount: 8.99, description: 'Apple TV' }),
+        await txRow({ n: 3, date: '2026-10-06', amount: 10.99 }),
+      ],
+    });
+    const { http } = await boot(t);
+    try {
+      assert.equal((await http.send('POST', '/track', { transactionId: id(2), interval: 'monthly' })).status, 201);
+      assert.equal((await http.send('POST', '/track', { transactionId: id(3), interval: 'monthly' })).status, 201);
+    } finally {
+      await http.close();
+    }
+  });
+
+  test(`${label} CRITICAL: a double submit never leaves a second (orphan) subscription`, async () => {
+    const t = await tables({ transactions: [await txRow({ n: 1, date: '2026-10-03', amount: 4.99, description: 'Spotify' })] });
+    const { db, http } = await boot(t);
+    try {
+      const first = await http.send('POST', '/track', { transactionId: id(1), interval: 'monthly' });
+      assert.equal(first.status, 201);
+      const count = db.store.recurrences.length;
+      const second = await http.send('POST', '/track', { transactionId: id(1), interval: 'monthly' });
+      assert.equal(second.status, 409);
+      assert.equal(db.store.recurrences.length, count, 'no orphan row');
+    } finally {
+      await http.close();
+    }
+  });
+
+  test(`${label} CRITICAL: if the link races and misses the marked expense, the new row is rolled back`, async () => {
+    const t = await tables({ transactions: [await txRow({ n: 1, date: '2026-10-03', amount: 4.99, description: 'Spotify' })] });
+    const { db, http } = await boot(t);
+    try {
+      // Simulate another request linking it between our checks and our update.
+      const origFrom = db.from.bind(db);
+      let raced = false;
+      db.from = (table) => {
+        const q = origFrom(table);
+        if (table === 'transactions' && !raced) {
+          const origUpdate = q.update.bind(q);
+          q.update = (payload) => {
+            raced = true;
+            db.store.transactions.find((r) => r.id === id(1)).recurrence_id = REC;
+            return origUpdate(payload);
+          };
+        }
+        return q;
+      };
+      const before = db.store.recurrences.length;
+      const res = await http.send('POST', '/track', { transactionId: id(1), interval: 'monthly' });
+      assert.equal(res.status, 409, JSON.stringify(res.body));
+      assert.equal(db.store.recurrences.length, before, 'the inserted recurrence was deleted again');
+    } finally {
+      await http.close();
+    }
+  });
+
+  test(`${label} track: 400 for income or a missing category, 404 for another user's expense`, async () => {
+    const t = await tables({
+      transactions: [
+        await txRow({ n: 1, date: '2026-10-03', amount: 5, description: 'Salary', type: 'income' }),
+        await txRow({ n: 2, date: '2026-10-03', amount: 5, description: 'Thing', cat: null }),
+        await txRow({ n: 3, date: '2026-10-03', amount: 5, description: 'Theirs', user: U2 }),
+      ],
+    });
+    const { http } = await boot(t);
+    try {
+      assert.equal((await http.send('POST', '/track', { transactionId: id(1), interval: 'monthly' })).status, 400);
+      const noCat = await http.send('POST', '/track', { transactionId: id(2), interval: 'monthly' });
+      assert.equal(noCat.status, 400);
+      assert.match(noCat.body.error, /category/);
+      assert.equal((await http.send('POST', '/track', { transactionId: id(3), interval: 'monthly' })).status, 404);
+    } finally {
+      await http.close();
+    }
+  });
+
+  // --- attach / detach / delete ------------------------------------------------------
+
+  test(`${label} attach/detach: ownership, Repeat-this refused, conditional link, reactivate`, async () => {
+    const t = await tables({
+      recurrences: [
+        await trackedRec({ cancelled_at: '2026-10-10T00:00:00Z' }),
+        await trackedRec({ rid: id(900), user: U2 }),
+      ],
+      transactions: [
+        await txRow({ n: 1, date: '2026-11-03', amount: 10.99, description: 'Netflix' }),
+        await txRow({ n: 2, date: '2026-11-04', amount: 10.99, description: 'Netflix', rec: REC }),
+      ],
+    });
+    const { db, http } = await boot(t);
+    try {
+      assert.equal((await http.send('POST', `/manual:${id(900)}/attach`, { transactionId: id(1) })).status, 404, "another user's subscription");
+      assert.equal((await http.send('POST', `/manual:${REC}/attach`, { transactionId: id(1) })).status, 400, 'Repeat-this is not hand-edited');
+      assert.equal((await http.send('POST', `/manual:${T_REC}/attach`, { transactionId: id(2) })).status, 409, 'already linked elsewhere');
+      const ok = await http.send('POST', `/manual:${T_REC}/attach`, { transactionId: id(1), reactivate: true });
+      assert.equal(ok.status, 200);
+      assert.equal(db.store.recurrences.find((r) => r.id === T_REC).cancelled_at, null, 'reactivated');
+      assert.equal((await http.send('POST', `/manual:${T_REC}/detach`, { transactionId: id(2) })).status, 404, 'not part of this one');
+      assert.equal((await http.send('POST', `/manual:${T_REC}/detach`, { transactionId: id(1) })).status, 200);
+      assert.equal(db.store.transactions.find((r) => r.id === id(1)).recurrence_id, null);
+    } finally {
+      await http.close();
+    }
+  });
+
+  test(`${label} DELETE: removes a tracked subscription, unlinks its charges; Repeat-this is refused`, async () => {
+    const t = await tables({
+      recurrences: [await trackedRec()],
+      transactions: [await txRow({ n: 1, date: '2026-10-03', amount: 10.99, description: 'Netflix', rec: T_REC })],
+    });
+    const { db, http } = await boot(t);
+    try {
+      assert.equal((await http.send('DELETE', `/manual:${REC}`)).status, 400);
+      assert.equal((await http.send('DELETE', `/manual:${T_REC}`)).status, 204);
+      assert.ok(!db.store.recurrences.some((r) => r.id === T_REC));
+      assert.equal(db.store.transactions[0].recurrence_id, null, 'the charge survives, unlinked');
+    } finally {
+      await http.close();
+    }
+  });
+
+  // --- fixes from the final validation pass ----------------------------------------
+
+  test(`${label} GET: a price jump never brings back the old-price row (the subscription's own history)`, async () => {
+    const t = await tables({
+      recurrences: [await trackedRec({ description: 'Disney Plus', amount: 7.99 })],
+      transactions: [
+        await txRow({ n: 1, date: '2026-10-05', amount: 7.99, description: 'Disney Plus', rec: T_REC }),
+        ...(await monthly(10, 'Disney Plus', 1.99)), // Jul–Sep at the intro price, never attached
+      ],
+    });
+    const { http } = await boot(t);
+    try {
+      const { body } = await http.get('/');
+      assert.equal(autoRows(body).length, 0, 'no stale £1.99 row next to the £7.99 one');
+      assert.equal(body.summary.activeMonthly, 7.99 + 9.99, 'Per month = Disney+ at £7.99 + the seeded Repeat-this £9.99');
+    } finally {
+      await http.close();
+    }
+  });
+
+  test(`${label} preview: never points at a detected row the page is hiding (existing wins)`, async () => {
+    const t = await tables({
+      recurrences: [await trackedRec()],
+      transactions: [
+        await txRow({ n: 1, date: '2026-06-05', amount: 10.99, description: 'Netflix', rec: T_REC }),
+        ...(await monthly(10, 'Netflix', 10.99)), // three missed prompts — suppressed on GET
+        await txRow({ n: 2, date: '2026-10-03', amount: 10.99, description: 'Netflix' }),
+      ],
+    });
+    const { http } = await boot(t);
+    try {
+      const { body } = await http.get(`/track/preview?transactionId=${id(2)}`);
+      assert.equal(body.existing?.merchantKey, `manual:${T_REC}`);
+      assert.equal(body.detected, null, 'the hidden detected row is not offered');
+    } finally {
+      await http.close();
+    }
+  });
+
+  test(`${label} preview: the dialog's typed DATE decides attach vs final-or-back`, async () => {
+    const t = await tables({
+      recurrences: [await trackedRec({ cancelled_at: '2026-10-10T12:00:00Z' })],
+      transactions: [
+        await txRow({ n: 1, date: '2026-10-03', amount: 10.99, description: 'Netflix', rec: T_REC }),
+        await txRow({ n: 2, date: '2026-09-03', amount: 10.99, description: 'Netflix' }),
+      ],
+    });
+    const { http } = await boot(t);
+    try {
+      const { body } = await http.get(`/track/preview?transactionId=${id(2)}&date=2026-11-03`);
+      assert.equal(body.existing.kind, 'finalOrBack');
+    } finally {
+      await http.close();
+    }
+  });
+
+  test(`${label} preview: a cycle-aligned £999 purchase with the same note is NOT pre-ticked`, async () => {
+    const t = await tables({
+      transactions: [
+        await txRow({ n: 1, date: '2026-10-03', amount: 2.99, description: 'Apple' }),
+        await txRow({ n: 2, date: '2026-09-03', amount: 999, description: 'Apple' }),
+        await txRow({ n: 3, date: '2026-08-04', amount: 2.99, description: 'Apple' }),
+      ],
+    });
+    const { http } = await boot(t);
+    try {
+      const { body } = await http.get(`/track/preview?transactionId=${id(1)}&interval=monthly`);
+      assert.deepEqual(body.likely.map((c) => c.id), [id(3)]);
+      assert.deepEqual(body.maybe.map((c) => c.id), [id(2)], 'offered, but unticked');
+    } finally {
+      await http.close();
+    }
+  });
+
+  test(`${label} CRITICAL: two marks of DIFFERENT expenses with the same note race — the later one undoes itself`, async () => {
+    const t = await tables({
+      transactions: [
+        await txRow({ n: 1, date: '2026-10-03', amount: 4.99, description: 'Spotify' }),
+        await txRow({ n: 2, date: '2026-09-03', amount: 4.99, description: 'Spotify' }),
+      ],
+    });
+    const { db, http } = await boot(t);
+    const { encodeWrite } = await import('../../lib/encryptionCodec.js');
+    try {
+      // While our request inserts, a concurrent one has already created a Spotify row.
+      const origFrom = db.from.bind(db);
+      let injected = false;
+      db.from = (table) => {
+        const q = origFrom(table);
+        if (table === 'recurrences' && !injected) {
+          const origInsert = q.insert.bind(q);
+          q.insert = (payload) => {
+            injected = true;
+            db.store.recurrences.push({
+              id: id(777), user_id: U, category_id: CAT, type: 'expense', interval: 'monthly',
+              auto_log: false, next_run_at: null, cancelled_at: null, created_at: '2000-01-01T00:00:00Z',
+              ...encodeWrite('recurrences', U, { amount: 4.99, description: 'Spotify' }, phase),
+            });
+            return origInsert({ ...payload, created_at: '2026-10-14T00:00:00Z' });
+          };
+        }
+        return q;
+      };
+      const res = await http.send('POST', '/track', { transactionId: id(1), interval: 'monthly', includeTransactionIds: [id(2)] });
+      assert.equal(res.status, 409, JSON.stringify(res.body));
+      assert.equal(res.body.existing.merchantKey, `manual:${id(777)}`);
+      const tracked = db.store.recurrences.filter((r) => r.auto_log === false);
+      assert.deepEqual(tracked.map((r) => r.id), [id(777)], 'our duplicate was deleted');
+      assert.ok(db.store.transactions.every((r) => r.recurrence_id == null), 'and every charge it linked was unlinked first');
+    } finally {
+      await http.close();
+    }
+  });
+
+  test(`${label} attach and detach touch ONLY the one expense named`, async () => {
+    const t = await tables({
+      recurrences: [await trackedRec()],
+      transactions: [
+        await txRow({ n: 1, date: '2026-10-03', amount: 10.99, description: 'Netflix', rec: T_REC }),
+        await txRow({ n: 2, date: '2026-11-03', amount: 10.99, description: 'Netflix', rec: T_REC }),
+        await txRow({ n: 3, date: '2026-12-03', amount: 10.99, description: 'Netflix' }),
+        await txRow({ n: 4, date: '2026-12-04', amount: 55, description: 'Groceries' }),
+      ],
+    });
+    const { db, http } = await boot(t);
+    try {
+      await http.send('POST', `/manual:${T_REC}/attach`, { transactionId: id(3) });
+      assert.equal(db.store.transactions.find((r) => r.id === id(4)).recurrence_id, null, 'an unrelated expense is untouched');
+      await http.send('POST', `/manual:${T_REC}/detach`, { transactionId: id(2) });
+      assert.equal(db.store.transactions.find((r) => r.id === id(1)).recurrence_id, T_REC, 'the other charge stays linked');
+      assert.equal(db.store.transactions.find((r) => r.id === id(3)).recurrence_id, T_REC);
     } finally {
       await http.close();
     }

@@ -19,6 +19,7 @@ import {
   cycleAligned,
   bestTrackedMatch,
   bestPreviewMatch,
+  isLaterCharge,
 } from '../lib/subscriptionMatch.js';
 
 const CAT = 'cat-ent';
@@ -229,4 +230,21 @@ test('the cancellation day is the user-local day passed in, not the UTC date of 
   // the matcher must use what it is given and never re-derive it from the instant.
   const p = proto({ cancelled_at: '2026-10-10T02:00:00Z', cancelledDay: '2026-10-09' });
   assert.equal(bestPreviewMatch(tx({ date: '2026-10-10' }), [p]).kind, 'finalOrBack');
+});
+
+test('preview offers a CANCELLED subscription only on an exact note', () => {
+  const cancelled = proto({ cancelled_at: '2026-10-10T00:00:00Z', cancelledDay: '2026-10-10' });
+  assert.equal(bestPreviewMatch(tx({ description: 'Netflix Kids', date: '2026-11-03' }), [cancelled]), null);
+  assert.equal(bestPreviewMatch(tx({ description: null, date: '2026-11-03' }), [cancelled]), null);
+});
+
+test('the latest charge has a stable tie-break when two share a date', () => {
+  const a = { id: 'a', date: '2026-10-03', created_at: '2026-10-03T09:00:00Z', amount: 1 };
+  const b = { id: 'b', date: '2026-10-03', created_at: '2026-10-03T10:00:00Z', amount: 2 };
+  assert.equal(isLaterCharge(b, a), true);
+  assert.equal(isLaterCharge(a, b), false);
+  const p1 = proto({ linked: [a, b].map((x) => ({ ...x, description: 'Netflix' })) });
+  const p2 = proto({ linked: [b, a].map((x) => ({ ...x, description: 'Netflix' })) });
+  assert.equal(p1.amount, 2);
+  assert.equal(p2.amount, 2, 'order of the input never changes the answer');
 });

@@ -42,6 +42,20 @@ export function within(a, b, pct) {
   return ratio(a, b) <= 1 + pct + 1e-9;
 }
 
+/**
+ * Is charge `a` later than `b`? Date first, then created_at, then id, so "the
+ * latest charge" (whose amount a tracked subscription follows) never flips between
+ * two requests when two charges share a date.
+ */
+export function isLaterCharge(a, b) {
+  if (!b) return true;
+  if (a.date !== b.date) return a.date > b.date;
+  const ac = a.created_at ?? '';
+  const bc = b.created_at ?? '';
+  if (ac !== bc) return ac > bc;
+  return String(a.id ?? '') > String(b.id ?? '');
+}
+
 function daysBetween(laterISO, earlierISO) {
   return Math.round(
     (Date.parse(`${laterISO}T00:00:00Z`) - Date.parse(`${earlierISO}T00:00:00Z`)) / 86_400_000,
@@ -62,10 +76,12 @@ export function prototypeOf(rec, linked = [], { cancelledDay = null } = {}) {
   const keys = new Set();
   if (ownKey) keys.add(ownKey);
   let latest = null;
+  let firstCharged = null;
   for (const t of linked) {
     const k = normaliseMerchant(t.description);
     if (k) keys.add(k);
-    if (!latest || t.date >= latest.date) latest = t;
+    if (isLaterCharge(t, latest)) latest = t;
+    if (!firstCharged || t.date < firstCharged) firstCharged = t.date;
   }
   const cancelled = !!rec.cancelled_at;
   return {
@@ -76,6 +92,7 @@ export function prototypeOf(rec, linked = [], { cancelledDay = null } = {}) {
     amount: latest ? Number(latest.amount) : Number(rec.amount),
     cadence: rec.interval,
     lastCharged: latest ? latest.date : null,
+    firstCharged,
     occurrences: linked.length,
     active: !cancelled,
     cancelledDay: cancelled ? (cancelledDay ?? String(rec.cancelled_at).slice(0, 10)) : null,
@@ -204,6 +221,9 @@ export function bestPreviewMatch(expense, protos) {
   for (const p of protos) {
     const strength = strengthOf(expense, p);
     if (!strength) continue;
+    // A cancelled subscription is offered only on an exact note — the same rule as
+    // the toast — so a weak look-alike never invites reactivating a cancelled service.
+    if (!p.active && strength !== 'exact') continue;
     candidates.push({ proto: p, kind: p.active ? 'attach' : cancelledKind(p, expense.date), strength });
   }
   const best = pickBest(candidates, expense);

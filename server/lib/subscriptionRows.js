@@ -11,7 +11,7 @@
  * (BUGS-FIXED 2026-09-23 #5).
  */
 import { manualMerchantKey, isTracked, subscriptionCost, nextExpectedFrom, CADENCE_DAYS } from './recurrences.js';
-import { prototypeOf, isSameSubscription } from './subscriptionMatch.js';
+import { prototypeOf, isSameSubscription, isLaterCharge } from './subscriptionMatch.js';
 
 const round2 = (n) => Math.round(Number(n) * 100) / 100;
 
@@ -62,7 +62,7 @@ export function buildDetectedRow(d, override, category) {
 export function buildManualRow(rec, linked, category) {
   const tracking = isTracked(rec);
   let latest = null;
-  for (const t of linked) if (!latest || t.date >= latest.date) latest = t;
+  for (const t of linked) if (isLaterCharge(t, latest)) latest = t;
   const lastCharged = latest ? latest.date : null;
   const amount = tracking && latest ? Number(latest.amount) : Number(rec.amount);
   const { monthlyCost, annualCost } = subscriptionCost(amount, rec.interval);
@@ -113,7 +113,15 @@ function detectedItem(d) {
  */
 export function suppressDetected(detected, protos) {
   return detected.filter((d) => !protos.some((p) => {
-    if (!isSameSubscription(detectedItem(d), p)) return false;
+    const item = detectedItem(d);
+    const strictlySame = isSameSubscription(item, p);
+    // Its own history: the exact marked note, and every detected charge is from
+    // BEFORE this subscription's first attached charge. That is the old price of the
+    // same service (Disney+ at £1.99 before it became £7.99) — whatever the amount —
+    // not a different one, so it must not come back as a second row.
+    const ownHistory = !!item.key && item.key === p.ownKey
+      && !!p.firstCharged && d.lastCharged <= p.firstCharged;
+    if (!strictlySame && !ownHistory) return false;
     return p.active || d.lastCharged <= p.cancelledDay;
   }));
 }
