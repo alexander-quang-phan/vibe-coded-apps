@@ -1,8 +1,8 @@
 # Subscription marking — design
 
-**Date:** 2026-10-13 · **Status:** approved in chat; revised after a 3-lens red-team review and verification rounds 2–4 (round 4 led to deleting
-silent no-note matching altogether); awaiting
-Alex's review of this written spec · **Phase:** 17
+**Date:** 2026-10-13 · **Status:** approved in chat; revised after a 3-lens red-team review and
+verification rounds 2–5 (round 4 led to deleting silent no-note matching altogether; looping
+stopped at round 5 per the validator-loop rule); awaiting Alex's review of this written spec · **Phase:** 17
 
 ## Goal
 
@@ -90,7 +90,10 @@ a subscription" on the inferred row). The Quick Add prompt makes it rare.
 2. **Subscriptions → "Add a subscription"** (header button). A dialog with a search box lists
    unlinked expenses from the **last 13 months**, newest first (long enough to reach a yearly
    charge). It has its own server query. Tapping one leads to the same choices as above, then
-   **"Track it"**.
+   **"Track it"**. This dialog has no note field, so where the Edit dialog says "change the note",
+   it offers **"Change its note in Transactions"**, which opens `/transactions?edit=<id>` with that
+   expense's edit dialog open (Transactions gains that query parameter). A "Trim already spots this"
+   result there says "It's already on this page" and scrolls to the row.
 3. **After logging a matching expense in Quick Add,** a toast asks **"Is this your Netflix
    subscription?"** with **Yes** and **No**, for about 12 seconds.
    - For an **active** subscription it only appears when the expense is dated **near an expected
@@ -190,29 +193,44 @@ devMock must never import from a route.)
 
 New pure module **`server/lib/subscriptionMatch.js`**, unit-tested. Every caller uses it.
 
-**`prototypeOf(subscription)`** = `{ keys, category_id, amount, cadence, lastCharged }`, where `keys`
-is the set of merchant keys (`normaliseMerchant`, the single normaliser in `lib/merchant.js`) of the
-subscription's own description **and of every attached charge**, and `amount` / `lastCharged` are
-the derived figures. A note that changed over time ("Spotify" → "Spotify Premium") is recognised
-once one such charge is attached.
+**`prototypeOf(subscription)`** = `{ ownKey, keys, category_id, amount, cadence, lastCharged }`:
+- `ownKey` is the merchant key (`normaliseMerchant`, the single normaliser in `lib/merchant.js`) of
+  the note the subscription was **marked with**;
+- `keys` adds the keys of **every attached charge**, so a note that changed over time ("Spotify" →
+  "Spotify Premium") is still recognised when asking;
+- `amount` and `lastCharged` are the derived figures.
 
-**Dates.** `cancelled_at` is a UTC instant. Every comparison with a transaction date first converts
-it to the user's own day: `dayInZone(await userTimeZone(uid), new Date(cancelled_at))`
-(`lib/month.js`, `lib/userZone.js`). Transaction dates are already the user's local days.
+**Only `ownKey` is ever used silently.** Absorbed `keys` are asking-only (round 5: attaching a
+lazily noted "Apple" charge to "Apple Music" must never make "apple" an exact key that silently
+hides iCloud).
+
+**Dates.** `cancelled_at` is a UTC instant. Every comparison with a transaction date uses the
+**cancellation day** in the user's own zone. The matcher stays pure: it **takes that day as an
+argument and never imports `lib/userZone.js`**, which imports `lib/supabase.js` and would kill
+devMock. Routes compute it with `dayInZone(await userTimeZone(uid), new Date(cancelled_at))`, and
+devMock passes its mock zone. Transaction dates are already the user's local days.
 
 **`nameStrength(expenseOrRow, proto)`** → `'exact' | 'firstWord' | 'none'`:
-- `'exact'`: the item's two-word key is in `proto.keys`;
+- `'exact'`: the item's two-word key is in `proto.keys` (own or absorbed);
 - `'firstWord'`: otherwise, its first word equals the first word of any key;
 - `'none'`: different names, or either side has no key.
 
 A detected row's key is its `merchantKey`; a synthetic `auto:` key counts as having no key.
 
-**`isSameSubscription(item, proto)` — the only SILENT match:** `nameStrength === 'exact'` and
-amounts within ±30%. Nothing else is ever silent: not first-word, and not no-note.
+**`isSameSubscription(item, proto)` — the only SILENT match:** the item's key equals
+**`proto.ownKey`** and amounts are within ±30%. Nothing else is ever silent: not absorbed keys, not
+first-word, not no-note. Used only for hiding a detected row and for preview's "Trim already spots
+this".
+
+**`isExactNote(item, proto)`** — `nameStrength === 'exact'` at **any amount**. Used for `/track`'s
+409 and preview's `strength: 'exact'`. These are not silent: they turn into an offer Alex
+confirms. A price jump (Disney+ £1.99 → £7.99) must still be recognised as the same subscription,
+or nothing could ever attach the new charge and marking it would create a duplicate (round 5).
 
 **`looksLikeSameCharge(expense, proto)` — ASKING paths only.** The expense must be an expense with
 no `recurrence_id`. Then either:
-- `nameStrength` is `'exact'` or `'firstWord'`, and amounts are within ±30%; or
+- `nameStrength` is `'exact'` (**any amount**: a person confirms it), or `'firstWord'` with amounts
+  within ±30%; or
 - **the expense has no note** (whatever the subscription has): same `category_id`, amounts within
   ±20% (wide enough to catch a typical price rise, because a person confirms it). A **named**
   expense never matches an unnamed subscription: Alex named it, so it is probably something else.
@@ -245,8 +263,13 @@ same ranking, but **no cycle check, zero-charge included**, because Alex is choo
   cancelled service, with no reactivation);
 - cancelled, after → `kind: 'reactivate'`.
 
-Plus `strength` (`'exact'` | `'weak'`), which tells the client whether "It's a different
-subscription" is offered (weak only; exact needs a different note).
+Plus `strength` (`'exact'` if `isExactNote`, else `'weak'`), which tells the client whether "It's a
+different subscription" is offered (weak only; exact needs a different note).
+
+**A charge after a cancellation, exact note** (a final charge in a notice period, or a
+resubscription): preview offers **both** "Add to Gym (final charge)" (attach without reactivating)
+and "Is Gym back?" (reactivate). The toast does the same: its two buttons are **"It's back"** and
+**"Final charge"**, and ignoring it does nothing.
 
 **Detector primitives only.** To compare a detected row, `finaliseDetection` gains one primitive,
 `lastAmount`. It never returns a transaction object. `GET /api/subscriptions` builds detected
@@ -269,7 +292,9 @@ Six new endpoints:
 Query: `transactionId` (uuid), optional `description`, `categoryId`, `amount` (the dialog's
 current values; omitted ones fall back to the saved row), and optional `interval`.
 
-The transaction must be the user's, an expense and unlinked (404 / 400 / 409). Returns:
+The transaction must be the user's, an expense and unlinked (404 / 400 / 409). A missing category
+(on the dialog's current values) is reported as `needsCategory: true`, so the section can say "Give
+it a category first" **before** Save, not after the PATCH. Returns:
 `{ existing: SubRef|null, detected: SubRef|null, likely: Cand[], maybe: Cand[] }`, where
 `SubRef = { merchantKey, name, amount, cadence, category }` (enough for the client's
 `subscriptionLabel`) and `Cand = { id, date, amount, description }`.
@@ -287,7 +312,9 @@ The user's unlinked expenses from the last 13 months (relative to the user's own
 `lib/userZone.js`). The order matters: read the **whole 13-month window, bounded by date, not by
 row count, paged by offset, advancing by the number of rows each page actually returned, ordered by `date` then `id`, until an **empty** page**. PostgREST silently caps a response at the project's max-rows, whose live
 value is not assumed: advancing by rows-returned and stopping only on an empty page is correct
-for any cap, and the `id` tie-breaker stops same-day rows being skipped or repeated at page edges; decode it; apply `q` (note or category name, in JS, since descriptions are encrypted
+for any cap, and the `id` tie-breaker keeps page edges stable. A write landing *between* pages
+can still shift one row, so results are **de-duplicated by id**; a row skipped that way reappears on
+the next load, which is acceptable for a list; decode it; apply `q` (note or category name, in JS, since descriptions are encrypted
 once Phase 9.5 is live); **then** take the newest 200. Limiting first and filtering second is the
 trap `lib/merchant.js` documents (0 matches instead of 3). Shape: `Cand` plus `categoryId`.
 
@@ -295,9 +322,10 @@ trap `lib/merchant.js` documents (0 matches instead of 3). Shape: `Cand` plus `c
 Body `{ transactionId, interval: 'monthly'|'weekly'|'annual', includeTransactionIds?: uuid[] (≤100) }`.
 1. Load the transaction (scoped). 404 if missing; 400 if income; 400 "Give this expense a category
    first" if `category_id` is null; 409 if already linked.
-2. If a tracked subscription `isSameSubscription` it (an **exact note** match; active, or
-   cancelled at any date) → **409** `{ error, existing: SubRef & { kind } }`, with `kind` computed
-   as in `bestPreviewMatch`. Weak resemblances never 409, so "It's a different subscription" always
+2. If a tracked subscription `isExactNote` it (exact note, **any amount**; active, or cancelled at
+   any date) → **409** `{ error, existing: SubRef & { kind, strength: 'exact' } }`, with `kind`
+   computed as in `bestPreviewMatch`. The client handles a 409 the same way in **both** dialogs: it
+   shows that offer. Weak resemblances never 409, so "It's a different subscription" always
    goes through, and two different no-note services are always trackable. There is no
    "declined key" to carry, and therefore no loop.
 3. Insert the recurrence via `encodeWrite` with `.select('id').single()`: `auto_log: false`,
@@ -452,8 +480,9 @@ PostgREST:
 - add a per-table error-injection hook;
 - an optional `maxRows` cap that mimics PostgREST (silently truncating), so the paging tests can
   fail if paging is missing;
-- chained `.order()` calls (today the fake keeps only the last), so the `date, id` tie-breaker
-  can be tested.
+- chained `.order()` calls (today the fake keeps only the last), and a recorded list of `.order()`
+  calls, so a test can assert `id` is the tie-breaker (a stable JS sort would otherwise hide its
+  absence). `maxRows` is applied **after** range/offset, as PostgREST does.
 
 A review checked the impact: every route write whose result is read already chains `.select`, and
 no test reads write results directly or references `gen-` ids, so roughly no existing tests should
@@ -492,21 +521,24 @@ guard.
   - one row that throws doesn't stop the other users' schedules;
   - existing behaviour is unchanged.
 - The subscriptions route suite, at all three encryption phases:
-  - preview `existing` (attach and reactivate kinds) / `detected` (strict only; "Apple TV" detected
+  - preview `existing` (attach, reactivate and final-charge offers; `strength`; `needsCategory`) /
+    `detected` (own note only; "Apple TV" detected
     does **not** block marking "Apple Music") / `likely` / `maybe`, using the dialog's override
     values;
   - `track/recent`: with more than 200 newer rows, a 300-day-old search match is still returned;
   - a tracked row with **zero** attached charges: GET returns 200 with null `lastCharged` and
     `nextExpected` and the stored amount, at all three phases;
-  - `/track`: happy path with stored columns per phase; 409 when an active tracked look-alike
-    exists; 409 plus no orphan row when the marked transaction is already linked; another user's
+  - `/track`: happy path with stored columns per phase; 409 (with `strength: 'exact'`) when an
+    exact-note tracked match exists **even at +300%**, then attach and confirm GET's amount follows; 409 plus no orphan row when the marked transaction is already linked; another user's
     ids, income ids and linked ids in `includeTransactionIds` all left alone; 400 income or no
     category; 404 for another user's transaction;
   - attach/detach ownership and conditional 409/404, and attach `reactivate`;
   - DELETE of tracked vs "Repeat this";
   - GET: `tracking`, derived amount, `lastCharged` and `nextExpected` (edit a linked charge → the
     figures follow), yearly cost;
-  - suppression: tracked "Netflix" plus detected "netflix" → one row; tracked "Apple Music" plus
+  - suppression: tracked "Netflix" plus detected "netflix" → one row; tracked "Apple Music" with an
+    attached charge noted "Apple" plus detected "apple" (iCloud) → **both** (absorbed keys are never
+    silent); tracked "Apple Music" plus
     detected "Apple TV" → **both**; a tracked **no-note** subscription plus a detected inferred row
     → **both** (the accepted, visible case); a detected named row is never hidden by a no-note
     tracked one; a cancelled tracked "Netflix" with 3 pre-cancel unlinked "netflix" charges → **no**
@@ -531,6 +563,13 @@ guard.
   - `annual` is accepted with `auto_log=false`, and `'yearly'` is rejected.
 - `npm test` stays green, with the real-PostgreSQL tests actually running. Report their count: a
   green total is not proof the whole suite ran (BUGS-FIXED 2026-09-23).
+
+## Docs (same session, per the definition of done)
+
+FEATURES.md (the Subscriptions section; also fixing its stale lines about the recurring executor
+and Task 6.2.1), ARCHITECTURE.md (schema: `auto_log`, `annual`, nullable `next_run_at`; the six
+endpoints), BUILD_PLAN.md (Phase 17), SECURITY.md (six new user-scoped endpoints, no new data
+class), and a BUGS-FIXED.md row for the category-delete cascade on recurrences.
 
 ## Rollout (order matters)
 
@@ -567,9 +606,12 @@ import. Ask Trim awareness. Storing a billing day.
   not guess, because a wrong guess would hide a different subscription invisibly:
   - a **no-note** tracked subscription whose later charges Alex declined or missed three times can
     also appear as an "inferred" detected row;
-  - a named plan change bigger than 30% (£4.99 → £10.99) that Alex didn't attach.
+  - a **different** note on a price-jumped charge (e.g. the note changed *and* the price rose more
+    than 30%).
 
-  Both are visible and have a one-tap fix: "Not a subscription" on the detected row.
+  Both are visible. The right fix is to **attach** the charges (the amount then follows the newest
+  one). "Not a subscription" on the detected row hides the duplicate but would leave the tracked
+  amount stale, so the copy points at attaching first.
 - **Two concurrent subscriptions with the identical note** (e.g. two separate "Apple" plans both
   noted "Apple") are treated as one. To keep them apart, give one a different note ("Apple TV").
 - `normaliseMerchant` keeps two words and strips diacritics ("Żabka" → "abka"). This is existing

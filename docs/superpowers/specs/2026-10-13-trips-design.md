@@ -1,8 +1,7 @@
 # Trips — design
 
 **Date:** 2026-10-13 · **Status:** design approved in chat (parts A, B, C and the nav tab); revised
-after a 3-lens red-team review (1 blocker, ~14 majors fixed) and a round-2 verification; written spec
-awaiting Alex's review ·
+after a 3-lens red-team review (1 blocker, ~14 majors fixed) and verification rounds 2–3; written spec awaiting Alex's review ·
 **Phase:** 18 (builds after Phase 17, subscription marking)
 
 ## Goal
@@ -131,8 +130,11 @@ themselves.
   off the trip and un-stars it in one tap (for the home phone bill caught by trip mode).
 - **Never stale, never slow.** `['trips']` is fetched when the app starts (with a staleTime), not
   only when Quick Add opens.
-  - A **separate seeding effect** sets only the tag and currency. It runs **on every open, after the
-    reset**, and again when trip data arrives or the date changes, while the tag is untouched.
+  - Seeding on open happens **inside the existing reset effect**, computed from `initialDate` and
+    the freshly reset values, not in a second effect. Two effects in one commit share a render's
+    closure, so a second effect would read the previous session's amount and flags. A separate
+    effect handles **later** changes only (trip data arriving, the date changing). It lists the
+    amount and the touched flags in its dependencies and acts only while the tag is untouched.
   - The reset clears the "tag touched" and "currency touched" flags on every open, so a ✕ applies
     to one entry, not the rest of the session. (Round-2 finding: keyed only on data and date, the
     dialog stays mounted between opens, so a second expense logged from the same page would be
@@ -143,13 +145,17 @@ themselves.
     "Checking your trips…". A refetch never resets typed fields.
 - **The stop's currency, including on day 1:** when the tag attaches with a stop currency, that
   currency is selected **immediately**.
-  - If the device remembers a rate for the pair (from any day), it is used at once, labelled "rate
-    from 12 Oct", while a fresh rate is fetched in the background.
+  - If the device remembers a rate for the pair from the **last 30 days**, it is used at once,
+    labelled with its full date ("rate from 12 Oct 2026"), while a fresh rate is fetched in the
+    background. **If that background refresh fails, the remembered rate stays**; the currency never
+    changes.
   - With no remembered rate, the **existing** foreign-entry gate applies: the chips stay disabled
     with "Getting today's € rate…" until the rate arrives. That is today's behaviour for any
     foreign entry, and happens once per currency per device.
-  - If the fetch fails, Quick Add falls back to the home currency with a one-line hint, so a
-    currency is never left selected without a usable rate.
+  - If the fetch fails, Quick Add uses the **existing "rate unavailable" path**: the currency stays,
+    Alex types the rate, and the chips stay gated until it is valid. It switches back to the home
+    currency **only while no amount is typed and no chip is armed**. Switching under a typed amount
+    would turn 4,500 forints into £4,500, the Phase 12 bug class (round 3).
 - **Outside trip dates:** the details section has a **Trip** picker listing non-archived trips.
 - **Simple mode:** the tag still applies and is sent (both submit paths).
 
@@ -169,8 +175,9 @@ themselves.
   - the dialog sends **`tripId` only when Alex changed the trip**, and **`isSpecial` only when Alex
     changed the box**. Re-saving a typo fix can then never re-derive (and silently flip) a
     hand-set star;
-  - picking a trip **clears the special group** in the dialog state, and the Special box shows
-    what the server will do (ticked for a keep-out trip);
+  - picking a trip **clears the special group** in the dialog state and **hides the group picker**
+    while a trip is selected. The Special box shows what the server will do (ticked for a keep-out
+    trip). "Changed" means touched in this visit;
   - **clearing a keep-out trip un-ticks Special**;
   - the picker **never changes the expense's currency** (the dialog's rate logic only fetches when
     Alex changes currency, so seeding one there would store a foreign amount at rate 1 — the
@@ -196,8 +203,12 @@ themselves.
   existing exclusion rule** (`lib/special.js`). Monthly budgets, the pace line, projections,
   affordability, wins and Analytics' "excl. special" chip therefore need **no change**.
 - **Keep-out off:** an expense joining the trip keeps its star exactly as it was, so it counts in
-  **both** the trip and the monthly budget. This is the same by every route (Quick Add, Edit,
-  bulk-add, conversion); joining never clears a hand-set star.
+  **both** the trip and the monthly budget. This is the same for Quick Add, Edit and bulk-add.
+  Two deliberate exceptions:
+  - **Conversion from a group** sets every moved expense's star from the switch. With keep-out off,
+    the editor says before saving: "These 23 expenses will count in their months' budgets again."
+  - **Moving from a keep-out trip to a keep-out-off one** un-stars, because it is "leaving" the
+    keep-out trip.
 - **Leaving a trip** (trip cleared, or ✕ / "Not trip spending"): if the old trip was keep-out and
   no explicit `isSpecial` was sent, the star is cleared. This is the mirror image of joining.
 - **Override one expense:** the row star still works, and un-starring keeps the expense on the trip.
@@ -368,8 +379,8 @@ and added to `routeMountTable.test.js` `MOUNTS`. Mandatory conventions:
 
 | Endpoint | Does |
 |---|---|
-| `GET /api/trips` | All trips (name, dates, switch, archived, stops, category budgets, status) with their headline figures (`spent`, `remaining`, `perDayLeft`, `overBy`; for past trips the final under/over). These come from **one lean transactions query** (`trip_id, amount, date, category_id, trip_stop_id` where `trip_id is not null`, expenses only), **paged with `.range()`** until a short page, so the 1,000-row cap can never truncate it silently, and no per-trip calls are needed. Feeds the Trips page, the Dashboard card and Quick Add. |
-| `GET /api/trips/:id` | One trip, its full `summariseTrip`, and its expenses as **full transaction rows** (`presentRows` with `TX_LIST_COLUMNS`, which the shared edit dialog needs). Paged with `.range()` until a short page, so the 1,000-row cap never truncates silently. |
+| `GET /api/trips` | All trips (name, dates, switch, archived, stops, category budgets, status) with their headline figures (`spent`, `remaining`, `perDayLeft`, `overBy`; for past trips the final under/over). These come from **one lean transactions query** (`trip_id, amount, date, category_id, trip_stop_id` where `trip_id is not null`, expenses only), **paged the Phase 17 way** (order by `date` then `id`, advance by the rows each page returned, stop on an **empty** page, de-duplicate by id), so the database's row cap can never truncate it silently, and no per-trip calls are needed. Feeds the Trips page, the Dashboard card and Quick Add. |
+| `GET /api/trips/:id` | One trip, its full `summariseTrip`, and its expenses as **full transaction rows** (`presentRows` with `TX_LIST_COLUMNS`, which the shared edit dialog needs). Paged the same Phase 17 way. |
 | `POST /api/trips` | Body `{ name, startDate, endDate, totalBudget?, keepOutOfMonthly, stops[], categoryBudgets[] }`. The whole body is validated first: stops inside the dates, categories the user's expense categories, no duplicate category (a JS check, then 409). Then it inserts the trip, then the children (array-mapped `encodeWrite`). If a child insert fails, the trip is deleted (best effort; children cascade). For keep-out with the setting off, it turns the setting on and returns `specialEnabledNow: true`. |
 | `PATCH /api/trips/:id` | **The editor's single save.** Optional `{ name, startDate, endDate, totalBudget (null clears), keepOutOfMonthly, archived, stops[], categoryBudgets[] }`. The lists, when present, are the **full desired lists**, validated **together with the new dates**. **Stops** diff by id: an id must belong to this trip, no id means new, a missing id is deleted (after nulling overrides that point at it), so tagged expenses keep their stop identity. **Category budgets diff by `category_id`, not row id:** categories no longer present are deleted, kept categories get their amount updated, new categories are inserted. Swapping two lines is then just two amount updates, and the unique constraint can never trip midway. Apply order: **validate everything → deletes → updates → inserts**. The keep-out re-apply runs as described in "How money is counted". |
 | `DELETE /api/trips/:id?expenses=count\|keep\|restore` | Each mode handles the expenses in **one statement** that also nulls `trip_id` and `trip_stop_id`, so it can never break the trip-XOR-group CHECK partway: `count` → `is_special=false, trip_id=null, trip_stop_id=null`; `keep` → `trip_id=null, trip_stop_id=null`; `restore` (only with a surviving `source_group_id`) → `special_group_id=source, is_special=true, trip_id=null, trip_stop_id=null`. That is **all** of the trip's expenses, including ones added after conversion, and the confirm says how many. Only after that succeeds: unarchive the group (restore), then delete the trip. `GET /:id` returns `sourceGroup: { id, name }` (decoded) for the dialog label. |
@@ -399,7 +410,10 @@ and added to `routeMountTable.test.js` `MOUNTS`. Mandatory conventions:
   - leaving a keep-out trip (cleared, or moved to a keep-out-off trip) → `is_special = false`.
 
   A request that re-sends the **same** `tripId` never touches the star. An explicit `isSpecial`
-  (the row star, or a deliberate change in the Edit dialog) always wins.
+  (the row star, or a deliberate change in the Edit dialog) always wins. The derived star feeds
+  `effectiveSpecial` **before** the existing group guard runs, so "a group needs a special
+  expense" is judged on the final state. Leaving a keep-out trip while adding a group, without
+  `isSpecial`, is a 400, never an unstarred grouped row.
 - **Changing** `tripId` without a `tripStopId` clears the override stop.
 - **Override normalisation, server-side:** a `tripStopId` equal to `stopForDate(stops,
   effectiveDate)` is stored as **null**. It is just the derived city, and storing it would freeze
@@ -414,9 +428,18 @@ as `specialThisMonth`, so the panel line always reconciles with the hero chip. M
 and tested.
 
 **Changed: Phase 17 `POST /api/subscriptions/:key/attach` and `POST /api/subscriptions/track`.**
-Linking a trip-tagged charge to a subscription, by **either** route, also sets `trip_id` and
-`trip_stop_id` to null and un-stars it if that trip was keep-out. A subscription is home spending,
-and the two routes must agree.
+Linking a trip-tagged charge to a subscription, by **either** route, also takes it off the trip and
+un-stars it if that trip was keep-out. A subscription is home spending, and the two routes must
+agree.
+- **attach** (one known transaction): one update sets `recurrence_id`, nulls `trip_id` and
+  `trip_stop_id`, and sets `is_special = false` if its trip was keep-out.
+- **/track** (several rows): before linking, read the trip of each included id (scoped) and note
+  the keep-out ones. The link update also nulls `trip_id` and `trip_stop_id`. A second update
+  un-stars **only the returned ids** that were on keep-out trips. If that second update fails, the
+  response is still 201, with `unstarFailed: n`, and the toast says "Tracked — but n charges are
+  still starred; un-star them in Transactions".
+- The Track confirm mentions the trip removal when any included row is trip-tagged.
+- Mirrored in devMock and covered in the subscriptions suite.
 
 **Changed: timezone report (client `App.jsx`).** After the zone PATCH succeeds, invalidate
 `['trips']` and `['dashboard']` (today only `['me']`), so on arrival day the trip card and the
@@ -433,6 +456,9 @@ Quick Add tag agree on whether the trip has started.
 | `components/TripTag.jsx`, `components/TripPicker.jsx`, `components/TripCard.jsx` | Quick Add tag and chooser; the details/Edit picker; the Dashboard card. |
 | `components/TransactionEditDialog.jsx` | **Extracted** from `pages/Transactions.jsx` with its save mutation and Phase 17's Subscription section. Used by Transactions and TripDetail. |
 | `components/CategoryManager.jsx` | Export `CategoryDialog` with `lockType` and `onCreated` props. |
+| `components/QuickAddButton.jsx` | Forward `presetTripId` to the dialog. |
+| `server/routes/dashboard.js` | Add `trip_id` to `DASH_TX_COLUMNS` (needed for `specialOnTripsThisMonth`). |
+| `server/lib/fx.js` | A server copy of `QUOTABLE_CURRENCIES` for the stop-currency check, with a test that reads `client/src/lib/fx.js` and asserts the two lists are identical. |
 | `components/QuickAddDialog.jsx` | The seeding effect and touched-flags; the tag and the trip-dependent omission of `isSpecial` / `specialGroupId` in **both** `handleCategoryTap` and `handleSimpleLog`; the tag hidden for income; `presetTripId`; the "Not trip spending" toast action; the stop-currency seeding and rate memory. The "type it instead" parser **keeps the seeded currency**, which is visible on the currency chip. The parser cannot tell an explicit currency from its default and does not know EUR, so parser currency handling for trips is out of scope. Post-log toast order: the main toast, the shield toast, then Phase 17's subscription prompt last. |
 | `components/SpecialGroupsPanel.jsx`, Budgets page, `PaceLine.jsx`, Settings | The lines described in "Elsewhere". |
 | `lib/trips.js` | The `tripForDate` / `stopForDate` / `cityOf` mirror and labels. |
@@ -443,7 +469,7 @@ Quick Add tag agree on whether the trip has started.
 
 Mirror everything in the same session (BUGS-FIXED shape #2): the eight trips endpoints with the same
 guards and messages, the transactions rules (server-derived star, group clearing, override stop),
-the Phase 17 attach change, and from-group and delete-restore. **Import `lib/trips.js`**; never
+the Phase 17 attach **and /track** changes, `specialOnTripsThisMonth`, and from-group and delete-restore. **Import `lib/trips.js`**; never
 re-implement it. Seed one **active** trip around the mock's "today" with:
 - two stops, one in euros;
 - an overall budget, two category budgets and a stop budget;
@@ -488,12 +514,13 @@ filter always shows the current month. Record it in BUGS-FIXED.
     (the blocker's regression test);
   - an explicit `isSpecial` wins; leaving a keep-out trip un-stars; **re-sending the same `tripId`
     leaves the star alone**; joining a keep-out-off trip **keeps** an existing star; setting a trip
-    clears a group; a resulting trip-plus-group → 400; a `tripStopId` equal to the derived stop is
-    stored as null;
+    clears a group; a resulting trip-plus-group → 400; leaving a keep-out trip plus a group and no
+    `isSpecial` → 400; a `tripStopId` equal to the derived stop is stored as null;
   - stored `trip_id` after POST **and** PATCH; changing trip clears the override stop; an override
     stop from another trip → 400; income → 400; another user's trip → 404.
-- The subscriptions suite (Phase 17's attach): a trip-tagged charge comes off the trip and is
-  un-starred.
+- The subscriptions suite (Phase 17's attach **and** /track): trip-tagged charges come off the
+  trip; only rows from keep-out trips are un-starred; an injected un-star failure gives 201 with
+  `unstarFailed`.
 - `encodeWrite` throws on an array (codec test). `routeMountTable.test.js` lists `/api/trips`.
   `encryptionScope.test.js` passes with the registry, 018, 018a and 019 in agreement.
 - **Migration test** (opt-in real PostgreSQL). **Setup first:** the `anon`, `authenticated` and
@@ -511,6 +538,8 @@ filter always shows the current month. Record it in BUGS-FIXED.
 - Log **two expenses in a row** from the same page inside a keep-out trip with a euro stop: both are
   tagged and in EUR. Repeat on a device with no remembered rate (day 1).
 - Fix a typo on a hand-un-starred trip expense via Edit: its star doesn't change.
+- ✕ one entry, reopen Quick Add: the next entry is tagged again.
+- Force `/api/fx` to return `rate: null` after typing an amount: the currency does not switch.
 - Postpone a trip with stops in one save.
 - Nav at 375, 768 and 1024px.
 
