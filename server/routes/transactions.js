@@ -5,7 +5,11 @@ import { applyLogEvent } from '../lib/gamification.js';
 import { parseTransactionText } from '../lib/parser.js';
 import { nextRunDate, manualMerchantKey } from '../lib/recurrences.js';
 import { convertToBase } from '../lib/fx.js';
-import { selectFor, decodeRow, encodeWrite, presentRow, presentRows } from '../lib/encryptionCodec.js';
+import { selectFor, decodeRow, decodeRows, encodeWrite, presentRow, presentRows } from '../lib/encryptionCodec.js';
+import { userTimeZone } from '../lib/userZone.js';
+import { dayInZone } from '../lib/month.js';
+import { trackedPrototypes, categoryShape } from '../lib/subscriptionRows.js';
+import { bestTrackedMatch } from '../lib/subscriptionMatch.js';
 
 const router = Router();
 
@@ -24,6 +28,69 @@ const TX_LIST_COLUMNS =
 const TX_WRITE_COLUMNS =
   'id, amount, type, description, date, category_id, is_special, special_group_id, is_recurring, recurrence_id, original_amount, original_currency, fx_rate, created_at';
 const REC_COLUMNS = 'id, category_id, type, amount, description, interval, next_run_at';
+
+/**
+ * Phase 17 — should Quick Add ask "Is this your Netflix subscription?"
+ *
+ * Answers with the ONE tracked subscription to ask about, or null. Never writes:
+ * Alex decides. One cheap existence read first, so a user with no tracked
+ * subscriptions pays a single indexed query and nothing more.
+ */
+async function findSubscriptionMatch(userId, tx) {
+  const { data: any, error: anyErr } = await supabase
+    .from('recurrences')
+    .select('id')
+    .eq('user_id', userId)
+    .eq('auto_log', false)
+    .limit(1);
+  if (anyErr) throw anyErr;
+  if (!any?.length) return null;
+
+  const [recRes, zone] = await Promise.all([
+    supabase
+      .from('recurrences')
+      .select(selectFor('recurrences', 'id, category_id, amount, description, interval, cancelled_at, auto_log'))
+      .eq('user_id', userId)
+      .eq('auto_log', false),
+    userTimeZone(userId),
+  ]);
+  if (recRes.error) throw recRes.error;
+  const recs = decodeRows('recurrences', userId, recRes.data);
+  if (!recs.length) return null;
+
+  const { data: linkedRaw, error: linkedErr } = await supabase
+    .from('transactions')
+    .select(selectFor('transactions', 'id, amount, description, date, recurrence_id, created_at'))
+    .eq('user_id', userId)
+    .in('recurrence_id', recs.map((r) => r.id));
+  if (linkedErr) throw linkedErr;
+  const linkedById = new Map();
+  for (const t of decodeRows('transactions', userId, linkedRaw ?? [])) {
+    const arr = linkedById.get(t.recurrence_id) ?? [];
+    arr.push(t);
+    linkedById.set(t.recurrence_id, arr);
+  }
+
+  const protos = trackedPrototypes(recs, linkedById, (ts) => dayInZone(zone, new Date(ts)));
+  const best = bestTrackedMatch(tx, protos);
+  if (!best) return null;
+
+  const rec = recs.find((r) => r.id === best.proto.id);
+  const { data: cat } = await supabase
+    .from('categories')
+    .select(selectFor('categories', 'id, name, icon, color'))
+    .eq('id', best.proto.category_id)
+    .eq('user_id', userId)
+    .maybeSingle();
+  return {
+    merchantKey: manualMerchantKey(best.proto.id),
+    name: rec?.description || null,
+    amount: Number(best.proto.amount),
+    cadence: best.proto.cadence,
+    category: categoryShape(cat ? decodeRow('categories', userId, cat) : null),
+    kind: best.kind,
+  };
+}
 
 const isoDate = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Expected YYYY-MM-DD');
 
@@ -276,6 +343,9 @@ router.post('/', async (req, res, next) => {
           description: description || null,
           interval: parsed.data.recurring.interval,
           next_run_at: initialNextRunAt,
+          // Explicit, not left to the database default, so Postgres, the test
+          // fake and devMock agree: this schedule logs itself every cycle.
+          auto_log: true,
         }))
         .select(selectFor('recurrences', REC_COLUMNS))
         .single();
@@ -342,6 +412,25 @@ router.post('/', async (req, res, next) => {
 
     console.log('[tx:create]', { userId: req.user.id, txId: tx.id });
 
+    // Phase 17: an expense that looks like a tracked subscription earns a question
+    // in Quick Add. Purely advisory — a failure here must never fail the create.
+    let subscriptionMatch = null;
+    if (type === 'expense' && !recurrence) {
+      try {
+        subscriptionMatch = await findSubscriptionMatch(req.user.id, {
+          id: tx.id,
+          type,
+          recurrence_id: null,
+          description: description || null,
+          category_id: categoryId,
+          amount: storedAmount,
+          date: txDate,
+        });
+      } catch (matchErr) {
+        console.error('[tx:create] subscription match failed', { userId: req.user.id, txId: tx.id });
+      }
+    }
+
     res.status(201).json({
       transaction: presentRow('transactions', req.user.id, tx, TX_WRITE_COLUMNS),
       delta,
@@ -355,6 +444,7 @@ router.post('/', async (req, res, next) => {
             merchantKey: manualMerchantKey(recurrence.id),
           }
         : null,
+      subscriptionMatch,
     });
   } catch (err) {
     next(err);

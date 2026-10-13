@@ -51,9 +51,9 @@ export function runTransactionsRouteSuite(phase) {
     rpc: (...args) => currentDb.rpc(...args),
   };
 
-  async function boot(tables) {
+  async function boot(tables, opts) {
     const { fakeSupabase, serve } = await import('./routeHarness.js');
-    currentDb = fakeSupabase(tables ?? (await seed(phase)));
+    currentDb = fakeSupabase(tables ?? (await seed(phase)), opts);
     if (!mocked) {
       mock.module('../../lib/supabase.js', { exports: { supabase: supabaseProxy } });
       mocked = true;
@@ -210,6 +210,7 @@ export function runTransactionsRouteSuite(phase) {
       assert.equal(body.transaction.is_recurring, true);
 
       const rec = db.store.recurrences.at(-1);
+      assert.equal(rec.auto_log, true, 'Repeat-this writes auto_log explicitly (Phase 17)');
       if (phase === 'off') {
         assert.equal(rec.amount, 9.99);
         assert.equal(rec.description, 'Netflix');
@@ -340,6 +341,95 @@ export function runTransactionsRouteSuite(phase) {
       });
       assert.equal(status, 200, JSON.stringify(body));
       assert.equal(body.transaction.description, 'Tesco Express 9999');
+    } finally {
+      await http.close();
+    }
+  });
+
+  // --- Phase 17: "Is this your Netflix subscription?" ---------------------------
+
+  const T_REC = '55555555-5555-4555-8555-555555555555';
+  async function withTracked({ cancelled_at = null, extra = [] } = {}) {
+    const { encodeWrite } = await import('../../lib/encryptionCodec.js');
+    const base = await seed(phase);
+    base.recurrences = [{
+      id: T_REC, user_id: U, category_id: CAT, type: 'expense', interval: 'monthly', auto_log: false,
+      next_run_at: null, last_run_at: null, cancelled_at, created_at: '2026-08-01T00:00:00Z',
+      ...encodeWrite('recurrences', U, { amount: 10.99, description: 'Netflix' }, phase),
+    }];
+    base.transactions.push({
+      id: '44444444-4444-4444-8444-444444444444', user_id: U, category_id: CAT, type: 'expense',
+      date: '2026-10-03', is_special: false, special_group_id: null, is_recurring: false,
+      recurrence_id: T_REC, original_currency: null, fx_rate: null, created_at: '2026-10-03T09:00:00Z',
+      ...encodeWrite('transactions', U, { amount: 10.99, description: 'Netflix', original_amount: null }, phase),
+    }, ...extra);
+    return base;
+  }
+  const logNetflix = (http, date, extra = {}) => http.send('POST', '/', {
+    categoryId: CAT, amount: 10.99, type: 'expense', description: 'Netflix', date, ...extra,
+  });
+
+  test(`${label} create: a charge near the expected date asks about the tracked subscription`, async () => {
+    const { http } = await boot(await withTracked());
+    try {
+      const { status, body } = await logNetflix(http, '2026-11-02');
+      assert.equal(status, 201, JSON.stringify(body));
+      assert.equal(body.subscriptionMatch.merchantKey, `manual:${T_REC}`);
+      assert.equal(body.subscriptionMatch.kind, 'attach');
+      assert.equal(body.subscriptionMatch.name, 'Netflix');
+      assert.equal(body.subscriptionMatch.category.name, 'Groceries');
+      assert.ok(!JSON.stringify(body).includes('_enc'));
+    } finally {
+      await http.close();
+    }
+  });
+
+  test(`${label} create: a cancelled subscription asks "is it back?" after the cancellation`, async () => {
+    const { http } = await boot(await withTracked({ cancelled_at: '2026-10-10T12:00:00Z' }));
+    try {
+      const { body } = await logNetflix(http, '2026-12-20');
+      assert.equal(body.subscriptionMatch.kind, 'finalOrBack');
+    } finally {
+      await http.close();
+    }
+  });
+
+  test(`${label} create: mid-cycle, or with nothing tracked, there is no question`, async () => {
+    const tracked = await boot(await withTracked());
+    try {
+      assert.equal((await logNetflix(tracked.http, '2026-10-18')).body.subscriptionMatch, null);
+    } finally {
+      await tracked.http.close();
+    }
+    const plain = await boot();
+    try {
+      const res = await logNetflix(plain.http, '2026-11-02');
+      assert.equal(res.body.subscriptionMatch, null);
+      const recReads = plain.db.calls.filter((c) => c.table === 'recurrences' && c.op === 'select');
+      assert.equal(recReads.length, 1, 'one cheap existence check, nothing more');
+    } finally {
+      await plain.http.close();
+    }
+  });
+
+  test(`${label} create: a failing subscription lookup never fails the create`, async () => {
+    const { db, http } = await boot(await withTracked(), { failOn: (t, op) => t === 'recurrences' && op === 'select' });
+    try {
+      const before = db.store.transactions.length;
+      const { status, body } = await logNetflix(http, '2026-11-02');
+      assert.equal(status, 201, JSON.stringify(body));
+      assert.equal(body.subscriptionMatch, null);
+      assert.equal(db.store.transactions.length, before + 1, 'the expense was saved');
+    } finally {
+      await http.close();
+    }
+  });
+
+  test(`${label} create: a Repeat-this opt-in is never asked about`, async () => {
+    const { http } = await boot(await withTracked());
+    try {
+      const { body } = await logNetflix(http, '2026-11-02', { recurring: { interval: 'monthly' } });
+      assert.equal(body.subscriptionMatch, null);
     } finally {
       await http.close();
     }
