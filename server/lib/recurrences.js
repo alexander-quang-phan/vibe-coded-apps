@@ -77,9 +77,58 @@ export function advanceToFuture(fromISODate, interval, anchorDay, todayISO) {
   return next;
 }
 
-/** Rows due to fire: not cancelled, and scheduled today or earlier. */
+/**
+ * Rows due to fire: auto-logging, not cancelled, and scheduled today or earlier.
+ *
+ * FAILS CLOSED (Phase 17). A tracked subscription (`auto_log = false`) must never
+ * create a transaction, so this fires only on an explicit `auto_log === true` and a
+ * real date. A row whose `auto_log` was not selected — `undefined` — is not fired.
+ * This is the third of three independent guards; the other two are the
+ * `.eq('auto_log', true)` filters on the select and the claim in runRecurrences.js.
+ */
 export function dueRecurrences(rows, todayISO) {
-  return rows.filter((r) => !r.cancelled_at && r.next_run_at <= todayISO);
+  return rows.filter(
+    (r) => r.auto_log === true && r.next_run_at && !r.cancelled_at && r.next_run_at <= todayISO,
+  );
+}
+
+/** Days per cadence, for every cadence a subscription row can carry. */
+export const CADENCE_DAYS = Object.freeze({ weekly: 7, monthly: 30, annual: 365 });
+
+function round2(n) {
+  return Math.round(n * 100) / 100;
+}
+
+/**
+ * Monthly and annual cost of one charge at a cadence. The ONE definition: the
+ * route, devMock and the client all use these figures. Before Phase 17 any
+ * non-monthly manual row was costed as weekly, which would have priced a yearly
+ * subscription at 52 times its amount.
+ */
+export function subscriptionCost(amount, cadence) {
+  const a = Number(amount);
+  if (cadence === 'weekly') return { monthlyCost: round2((a * 52) / 12), annualCost: round2(a * 52) };
+  if (cadence === 'annual') return { monthlyCost: round2(a / 12), annualCost: round2(a) };
+  return { monthlyCost: round2(a), annualCost: round2(a * 12) };
+}
+
+/**
+ * A subscription Alex marked himself (tracked, never auto-logged). FAILS CLOSED:
+ * only an explicit `false` counts, so a row read without its `auto_log` column is
+ * never mistaken for one — and so can never be removed or hand-edited as one.
+ */
+export function isTracked(r) {
+  return r?.auto_log === false;
+}
+
+/**
+ * The next expected charge: the last one plus one cycle of days. The same rule
+ * detected subscriptions use (lib/subscriptions.js imports this). Null when
+ * nothing is attached — computing from null would throw and 500 the whole page.
+ */
+export function nextExpectedFrom(lastCharged, cadence) {
+  if (!lastCharged) return null;
+  return addDaysISO(lastCharged, CADENCE_DAYS[cadence] ?? CADENCE_DAYS.monthly);
 }
 
 /** The /subscriptions row key for a manually-marked recurrence. */

@@ -5,6 +5,10 @@ import {
   advanceToFuture,
   dueRecurrences,
   manualMerchantKey,
+  CADENCE_DAYS,
+  subscriptionCost,
+  isTracked,
+  nextExpectedFrom,
   utcDayOfMonth,
 } from '../lib/recurrences.js';
 
@@ -73,10 +77,10 @@ test('advanceToFuture fast-forwards past several missed periods in one jump (no 
 
 test('dueRecurrences includes rows due today or earlier and excludes cancelled/future rows', () => {
   const rows = [
-    { id: 'a', next_run_at: '2026-07-17', cancelled_at: null },
-    { id: 'b', next_run_at: '2026-07-18', cancelled_at: null },
-    { id: 'c', next_run_at: '2026-07-19', cancelled_at: null }, // future
-    { id: 'd', next_run_at: '2026-07-10', cancelled_at: '2026-07-11T00:00:00Z' }, // cancelled
+    { id: 'a', auto_log: true, next_run_at: '2026-07-17', cancelled_at: null },
+    { id: 'b', auto_log: true, next_run_at: '2026-07-18', cancelled_at: null },
+    { id: 'c', auto_log: true, next_run_at: '2026-07-19', cancelled_at: null }, // future
+    { id: 'd', auto_log: true, next_run_at: '2026-07-10', cancelled_at: '2026-07-11T00:00:00Z' }, // cancelled
   ];
   const due = dueRecurrences(rows, '2026-07-18');
   assert.deepEqual(due.map((r) => r.id), ['a', 'b']);
@@ -90,4 +94,40 @@ test('manualMerchantKey formats the /subscriptions row key', () => {
 
 test('utcDayOfMonth reads the day from a timestamptz string', () => {
   assert.equal(utcDayOfMonth('2026-07-18T09:30:00.000Z'), 18);
+});
+
+// --- Phase 17: tracked subscriptions -------------------------------------------
+
+test('CRITICAL: dueRecurrences FAILS CLOSED — only auto_log === true can ever fire', () => {
+  const rows = [
+    { id: 'auto', auto_log: true, next_run_at: '2026-07-01', cancelled_at: null },
+    { id: 'tracked', auto_log: false, next_run_at: '2026-07-01', cancelled_at: null },
+    { id: 'missing', next_run_at: '2026-07-01', cancelled_at: null }, // auto_log not selected
+    { id: 'nullDate', auto_log: true, next_run_at: null, cancelled_at: null },
+  ];
+  assert.deepEqual(dueRecurrences(rows, '2026-07-18').map((r) => r.id), ['auto']);
+});
+
+test('isTracked fails closed: only an explicit false is tracked', () => {
+  assert.equal(isTracked({ auto_log: false }), true);
+  assert.equal(isTracked({ auto_log: true }), false);
+  assert.equal(isTracked({}), false, 'a row whose auto_log was not selected must NOT read as tracked');
+  assert.equal(isTracked(null), false);
+});
+
+test('CADENCE_DAYS covers every cadence a row can have', () => {
+  assert.deepEqual(CADENCE_DAYS, { weekly: 7, monthly: 30, annual: 365 });
+});
+
+test('subscriptionCost prices each cadence (a yearly row is NOT costed as weekly)', () => {
+  assert.deepEqual(subscriptionCost(10, 'monthly'), { monthlyCost: 10, annualCost: 120 });
+  assert.deepEqual(subscriptionCost(12, 'weekly'), { monthlyCost: 52, annualCost: 624 });
+  assert.deepEqual(subscriptionCost(95, 'annual'), { monthlyCost: 7.92, annualCost: 95 });
+});
+
+test('nextExpectedFrom adds one cycle, and is null with nothing attached', () => {
+  assert.equal(nextExpectedFrom('2026-10-03', 'monthly'), '2026-11-02');
+  assert.equal(nextExpectedFrom('2026-10-03', 'weekly'), '2026-10-10');
+  assert.equal(nextExpectedFrom('2026-02-01', 'annual'), '2027-02-01');
+  assert.equal(nextExpectedFrom(null, 'monthly'), null, 'zero attached charges must not throw');
 });

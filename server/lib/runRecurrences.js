@@ -36,8 +36,11 @@ async function timezonesByUser(userIds) {
   return new Map((data ?? []).map((r) => [r.user_id, r.timezone || DEFAULT_TIMEZONE]));
 }
 
+// `auto_log` MUST be selected: dueRecurrences and processOne both refuse to fire a
+// row unless it explicitly says `auto_log === true` (Phase 17), so leaving it out
+// would quietly stop every Repeat-this schedule rather than fail loudly.
 const RECURRENCE_COLUMNS =
-  'id, user_id, category_id, type, amount, description, interval, next_run_at, last_run_at, cancelled_at, created_at';
+  'id, user_id, category_id, type, amount, description, interval, next_run_at, last_run_at, cancelled_at, created_at, auto_log';
 
 /**
  * Claim one due recurrence and insert its transaction. Claim-first order:
@@ -69,7 +72,13 @@ const RECURRENCE_COLUMNS =
 // `row` arrives DECODED from runRecurrences() below, so `row.amount` and
 // `row.description` are plaintext here; `encodeWrite` re-encrypts them for the
 // transaction, and derives the merchant blind index from the description.
-async function processOne(row, today) {
+export async function processOne(row, today) {
+  // Phase 17 guard, BEFORE any date maths: a tracked subscription (auto_log false)
+  // must never create a transaction, and it has no next_run_at for
+  // advanceToFuture to work from — it would throw on a null date or an 'annual'
+  // interval. Returning here keeps one odd row from aborting the whole sweep.
+  if (row.auto_log !== true || !row.next_run_at) return { outcome: 'skipped' };
+
   const anchorDay = utcDayOfMonth(row.created_at);
   const newNextRunAt = advanceToFuture(row.next_run_at, row.interval, anchorDay, today);
 
@@ -79,6 +88,9 @@ async function processOne(row, today) {
     .eq('id', row.id)
     .eq('next_run_at', row.next_run_at)
     .is('cancelled_at', null)
+    // Guard 2 of 3: the stored row must STILL be auto-logging at claim time. If it
+    // became tracked after this sweep read it, the claim matches nothing.
+    .eq('auto_log', true)
     .select('id')
     .maybeSingle();
 
@@ -132,6 +144,9 @@ export async function runRecurrences() {
     .from('recurrences')
     .select(selectFor('recurrences', RECURRENCE_COLUMNS))
     .is('cancelled_at', null)
+    // Guard 1 of 3: tracked subscriptions are never even read. (A NULL next_run_at
+    // also never satisfies the `lte` below, which is independent of this.)
+    .eq('auto_log', true)
     .lte('next_run_at', horizon);
   if (error) throw error;
 
@@ -162,7 +177,14 @@ export async function runRecurrences() {
   }
 
   for (const { row, today } of work) {
-    const result = await processOne(row, today);
+    // One bad row is an error for that row, never an abort of every remaining
+    // user's schedules for the night.
+    let result;
+    try {
+      result = await processOne(row, today);
+    } catch (error) {
+      result = { outcome: 'error', error };
+    }
     const bucket = perUser.get(row.user_id) ?? { created: 0, skipped: 0, errors: 0 };
     if (result.outcome === 'created') {
       created += 1;

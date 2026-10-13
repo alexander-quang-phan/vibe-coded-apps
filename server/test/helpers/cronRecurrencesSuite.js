@@ -31,7 +31,7 @@ async function seed(phase) {
   return {
     recurrences: [
       {
-        id: REC, user_id: U, category_id: CAT, type: 'expense', interval: 'monthly',
+        id: REC, user_id: U, category_id: CAT, type: 'expense', interval: 'monthly', auto_log: true,
         next_run_at: yesterday(), last_run_at: null, cancelled_at: null,
         created_at: '2026-07-05T00:00:00Z',
         ...encodeWrite('recurrences', U, { amount: 9.99, description: 'Netflix' }, phase),
@@ -39,7 +39,7 @@ async function seed(phase) {
       // A SECOND user, so the per-row key derivation is exercised: one shared
       // key would decrypt both, and a wrong one would decrypt neither.
       {
-        id: REC2, user_id: U2, category_id: CAT, type: 'expense', interval: 'monthly',
+        id: REC2, user_id: U2, category_id: CAT, type: 'expense', interval: 'monthly', auto_log: true,
         next_run_at: yesterday(), last_run_at: null, cancelled_at: null,
         created_at: '2026-07-05T00:00:00Z',
         ...encodeWrite('recurrences', U2, { amount: 42.5, description: 'PureGym' }, phase),
@@ -211,13 +211,13 @@ export function runCronRecurrencesSuite(phase) {
     const { db, runRecurrences } = await boot({
       recurrences: [
         {
-          id: REC, user_id: U, category_id: CAT, type: 'expense', interval: 'monthly',
+          id: REC, user_id: U, category_id: CAT, type: 'expense', interval: 'monthly', auto_log: true,
           next_run_at: past, last_run_at: null, cancelled_at: null,
           created_at: '2026-01-01T00:00:00Z',
           ...encodeWrite('recurrences', U, { amount: 9.99, description: 'Netflix' }, phase),
         },
         {
-          id: REC2, user_id: U2, category_id: CAT, type: 'expense', interval: 'monthly',
+          id: REC2, user_id: U2, category_id: CAT, type: 'expense', interval: 'monthly', auto_log: true,
           next_run_at: past, last_run_at: null, cancelled_at: null,
           created_at: '2026-01-01T00:00:00Z',
           ...encodeWrite('recurrences', U2, { amount: 42.5, description: 'PureGym' }, phase),
@@ -246,5 +246,71 @@ export function runCronRecurrencesSuite(phase) {
     // last_run_at follows the same clock as the transaction it recorded.
     const recEast = db.store.recurrences.find((r) => r.id === REC);
     assert.equal(recEast.last_run_at, dayInZone(EAST));
+  });
+
+  // --- Phase 17: tracked subscriptions must never fire --------------------------
+
+  const tracked = async (overrides = {}) => {
+    const { encodeWrite } = await import('../../lib/encryptionCodec.js');
+    return {
+      id: '66666666-6666-4666-8666-666666666666', user_id: U, category_id: CAT, type: 'expense',
+      interval: 'monthly', auto_log: false, next_run_at: null, last_run_at: null,
+      cancelled_at: null, created_at: '2026-07-05T00:00:00Z',
+      ...encodeWrite('recurrences', U, { amount: 4.99, description: 'Spotify' }, phase),
+      ...overrides,
+    };
+  };
+
+  test(`${label} CRITICAL: a tracked subscription is never fired, even with a due date`, async () => {
+    const tables = await seed(phase);
+    // A due next_run_at should never exist on a tracked row (the 017a check forbids
+    // the reverse, not this), so this is the worst case: only auto_log protects it.
+    tables.recurrences.push(await tracked({ next_run_at: yesterday() }));
+    const { db, runRecurrences } = await boot(tables);
+    const result = await runRecurrences();
+    assert.equal(result.errors, 0, JSON.stringify(result));
+    const fired = db.store.transactions.filter((t) => t.recurrence_id === '66666666-6666-4666-8666-666666666666');
+    assert.equal(fired.length, 0, 'the tracked row must create nothing');
+    assert.equal(result.created, 2, 'the two Repeat-this rows still fire');
+  });
+
+  test(`${label} CRITICAL: guard 2 — the claim refuses a row that became tracked after it was read`, async () => {
+    // A stale read: the sweep's in-memory copy still says auto-logging, but the
+    // stored row has since been switched to tracked. Only the claim's own
+    // .eq('auto_log', true) can stop it — remove that filter and this fails.
+    const tables = await seed(phase);
+    const stored = await tracked({ next_run_at: yesterday() });
+    tables.recurrences = [stored];
+    const { db } = await boot(tables);
+    const { processOne } = await import('../../lib/runRecurrences.js');
+    const { decodeRow } = await import('../../lib/encryptionCodec.js');
+    const inMemory = { ...decodeRow('recurrences', U, { ...stored }), auto_log: true };
+    const result = await processOne(inMemory, today());
+    assert.equal(result.outcome, 'skipped');
+    assert.equal(db.store.transactions.length, 0, 'nothing inserted');
+    assert.equal(db.store.recurrences[0].last_run_at, null, 'nothing claimed');
+  });
+
+  test(`${label} the early return skips tracked rows with no date or a yearly cadence, without throwing`, async () => {
+    const { processOne } = await import('../../lib/runRecurrences.js');
+    await boot();
+    for (const row of [
+      { id: 'x', user_id: U, auto_log: false, next_run_at: null, interval: 'monthly' },
+      { id: 'y', user_id: U, auto_log: false, next_run_at: null, interval: 'annual' },
+    ]) {
+      const result = await processOne(row, today());
+      assert.equal(result.outcome, 'skipped', JSON.stringify(row));
+    }
+  });
+
+  test(`${label} one row that throws does not stop the other users' schedules`, async () => {
+    const tables = await seed(phase);
+    // A corrupt interval makes advanceToFuture throw for user U only.
+    tables.recurrences[0].interval = 'fortnightly';
+    const { db, runRecurrences } = await boot(tables);
+    const result = await runRecurrences();
+    assert.equal(result.errors, 1, JSON.stringify(result));
+    assert.equal(result.created, 1, 'user U2 still gets their charge');
+    assert.ok(db.store.transactions.find((t) => t.recurrence_id === REC2));
   });
 }

@@ -11,6 +11,7 @@
 //      same key and inherit the user-given name from the override.
 
 import { normaliseMerchant, prettifyMerchant } from './merchant.js';
+import { nextExpectedFrom } from './recurrences.js';
 
 const MIN_OCCURRENCES = 3;
 const MONTHLY_DAYS = 30;
@@ -28,11 +29,6 @@ function diffDays(laterISO, earlierISO) {
   const a = new Date(`${laterISO}T00:00:00Z`).getTime();
   const b = new Date(`${earlierISO}T00:00:00Z`).getTime();
   return Math.round((a - b) / 86_400_000);
-}
-
-function addDays(iso, days) {
-  const t = new Date(`${iso}T00:00:00Z`).getTime() + days * 86_400_000;
-  return new Date(t).toISOString().slice(0, 10);
 }
 
 function median(arr) {
@@ -227,10 +223,15 @@ function finaliseDetection({
     monthlyCost: round2(monthlyCost),
     annualCost: round2(annualCost),
     lastCharged: lastTx.date,
-    nextExpected: addDays(lastTx.date, cadenceDays),
+    // One rule for "next expected", shared with tracked subscriptions.
+    nextExpected: nextExpectedFrom(lastTx.date, cadence),
     totalPaid: round2(totalPaid),
     occurrences: unique.length,
     categoryId: lastTx.category_id ?? null,
+    // A primitive, never the transaction itself: GET /api/subscriptions compares
+    // detected rows with tracked ones using it, and a decoded transaction must
+    // never be able to reach the response (BUGS-FIXED 2026-09-23 #5).
+    lastAmount: round2(Number(lastTx.amount)),
   };
 }
 
