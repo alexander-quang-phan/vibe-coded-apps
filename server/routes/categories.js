@@ -241,22 +241,38 @@ router.delete('/:id', async (req, res, next) => {
         .json({ error: "This category is your reassign safety net — it can't be deleted." });
     }
 
-    const { count: txCount, error: txCountErr } = await supabase
-      .from('transactions')
-      .select('id', { count: 'exact', head: true })
-      .eq('user_id', req.user.id)
-      .eq('category_id', id);
+    // Phase 17: subscriptions and Repeat-this schedules live in `recurrences`, whose
+    // category_id is ON DELETE CASCADE. Deleting a category used to delete every
+    // schedule and every subscription in it — silently, and even with a reassign,
+    // because only transactions were moved. Count them, and move them too.
+    const [{ count: txCount, error: txCountErr }, { count: recCount, error: recCountErr }] = await Promise.all([
+      supabase
+        .from('transactions')
+        .select('id', { count: 'exact', head: true })
+        .eq('user_id', req.user.id)
+        .eq('category_id', id),
+      supabase
+        .from('recurrences')
+        .select('id', { count: 'exact', head: true })
+        .eq('user_id', req.user.id)
+        .eq('category_id', id),
+    ]);
     if (txCountErr) throw txCountErr;
+    if (recCountErr) throw recCountErr;
 
     const reassignTo = req.query.reassign_to;
+    const inUse = (txCount ?? 0) > 0 || (recCount ?? 0) > 0;
 
-    if (txCount > 0 && !reassignTo) {
-      return res
-        .status(409)
-        .json({ error: 'Category has transactions', transactionCount: txCount });
+    if (inUse && !reassignTo) {
+      return res.status(409).json({
+        error: 'Category is in use',
+        transactionCount: txCount ?? 0,
+        subscriptionCount: recCount ?? 0,
+      });
     }
 
-    if (txCount > 0 && reassignTo) {
+    if (inUse && reassignTo) {
+      // These checks run whenever a target is used, whatever is being moved.
       if (!UUID_RE.test(reassignTo)) {
         return res.status(400).json({ error: 'Invalid reassign_to id' });
       }
@@ -275,12 +291,20 @@ router.delete('/:id', async (req, res, next) => {
         return res.status(400).json({ error: 'Reassign target must be the same type' });
       }
 
-      const { error: reassignErr } = await supabase
-        .from('transactions')
-        .update({ category_id: reassignTo })
-        .eq('user_id', req.user.id)
-        .eq('category_id', id);
+      const [{ error: reassignErr }, { error: recReassignErr }] = await Promise.all([
+        supabase
+          .from('transactions')
+          .update({ category_id: reassignTo })
+          .eq('user_id', req.user.id)
+          .eq('category_id', id),
+        supabase
+          .from('recurrences')
+          .update({ category_id: reassignTo })
+          .eq('user_id', req.user.id)
+          .eq('category_id', id),
+      ]);
       if (reassignErr) throw reassignErr;
+      if (recReassignErr) throw recReassignErr;
     }
 
     // Cascade in the schema removes the budget on this category too.

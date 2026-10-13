@@ -195,6 +195,13 @@ function ReassignDialog({ open, onOpenChange, target, candidates, onConfirm, sub
 
   if (!target) return null;
   const txCount = target.transactionCount ?? 0;
+  const subCount = target.subscriptionCount ?? 0;
+  // Name what is actually in the category: transactions, subscriptions, or both.
+  const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
+  const contents = [
+    txCount ? plural(txCount, 'transaction', 'transactions') : null,
+    subCount ? plural(subCount, 'subscription', 'subscriptions') : null,
+  ].filter(Boolean).join(' and ');
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -202,8 +209,8 @@ function ReassignDialog({ open, onOpenChange, target, candidates, onConfirm, sub
         <DialogHeader>
           <DialogTitle>Reassign before deleting</DialogTitle>
           <DialogDescription>
-            “{target.name}” has {txCount} {txCount === 1 ? 'transaction' : 'transactions'}. Pick a
-            category to move them to first.
+            “{target.name}” has {contents}. Pick a category to move{' '}
+            {txCount + subCount === 1 ? 'it' : 'them'} to first.
           </DialogDescription>
         </DialogHeader>
 
@@ -214,7 +221,7 @@ function ReassignDialog({ open, onOpenChange, target, candidates, onConfirm, sub
           </p>
         ) : (
           <div className="space-y-1.5">
-            <Label>Move transactions to</Label>
+            <Label>Move {subCount && !txCount ? 'subscriptions' : 'transactions'} to</Label>
             <Select value={reassignTo} onValueChange={setReassignTo}>
               <SelectTrigger>
                 <SelectValue />
@@ -346,11 +353,18 @@ export function CategoryManager() {
       setReassignFor(null);
     },
     onError: (err, vars) => {
-      if (err?.status === 409 && err?.body?.transactionCount && !vars.reassignTo) {
-        // Re-prompt with reassign dialog using the count from the server.
+      // Re-prompt with the reassign dialog using the counts from the server. A
+      // category holding only subscriptions counts too — deleting it used to wipe
+      // them silently (Phase 17).
+      const inUse = err?.body?.transactionCount || err?.body?.subscriptionCount;
+      if (err?.status === 409 && inUse && !vars.reassignTo) {
         const target = categories.find((c) => c.id === vars.id);
         if (target) {
-          setReassignFor({ ...target, transactionCount: err.body.transactionCount });
+          setReassignFor({
+            ...target,
+            transactionCount: err.body.transactionCount ?? 0,
+            subscriptionCount: err.body.subscriptionCount ?? 0,
+          });
           return;
         }
       }
