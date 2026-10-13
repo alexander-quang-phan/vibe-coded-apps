@@ -20,7 +20,17 @@ const DialogOverlay = forwardRef(({ className, ...props }, ref) => (
 ));
 DialogOverlay.displayName = DialogPrimitive.Overlay.displayName;
 
-const DialogContent = forwardRef(({ className, children, ...props }, ref) => (
+// A tap on a toast is not "outside the dialog". Without this, Radix treats it as
+// one and closes the open dialog — answering Quick Add's subscription toast while
+// logging the next expense would throw away the half-typed entry.
+function ignoreToastTaps(callerHandler) {
+  return (event) => {
+    if (event.target?.closest?.('[data-sonner-toaster]')) event.preventDefault();
+    callerHandler?.(event);
+  };
+}
+
+const DialogContent = forwardRef(({ className, children, onInteractOutside, ...props }, ref) => (
   <DialogPortal>
     <DialogOverlay />
     <DialogPrimitive.Content
@@ -44,6 +54,7 @@ const DialogContent = forwardRef(({ className, children, ...props }, ref) => (
         'max-h-[92dvh]',
         className,
       )}
+      onInteractOutside={ignoreToastTaps(onInteractOutside)}
       {...props}
     >
       {/* Only the CONTENT scrolls — the close button below stays pinned to the

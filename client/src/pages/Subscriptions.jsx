@@ -1,7 +1,10 @@
 import { useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
+import { Plus } from 'lucide-react';
 import { Card, CardContent } from '@/components/ui/card';
+import { Button } from '@/components/ui/button';
+import { AddSubscriptionDialog } from '@/components/AddSubscriptionDialog';
 import { Skeleton } from '@/components/ui/skeleton';
 import { useApi } from '@/hooks/useApi';
 import { SubscriptionRow } from '@/components/SubscriptionRow';
@@ -57,8 +60,9 @@ function EmptyState() {
         <div className="space-y-1">
           <p className="font-medium">No recurring charges yet</p>
           <p className="text-sm text-muted-foreground">
-            Once you've got 3+ regular charges from the same merchant they'll show up here
-            automatically — or tick "Repeat this" when you log one, and it'll appear straight away.
+            Trim spots regular charges after three of them. Know one already? Tap{' '}
+            <span className="font-medium text-foreground">Add a subscription</span> above, or open
+            the expense in Transactions → Edit → “This is a subscription”.
           </p>
         </div>
       </CardContent>
@@ -70,6 +74,7 @@ export default function Subscriptions() {
   const api = useApi();
   const queryClient = useQueryClient();
   const [pendingKey, setPendingKey] = useState(null);
+  const [adding, setAdding] = useState(false);
 
   const { data, isLoading, isError, error, refetch } = useQuery({
     queryKey: ['subscriptions'],
@@ -152,6 +157,31 @@ export default function Subscriptions() {
     onSettled: () => setPendingKey(null),
   });
 
+  // Phase 17 — remove a subscription marked by mistake. Its charges stay.
+  const removeMutation = useMutation({
+    mutationFn: ({ merchantKey }) => api.del(`/api/subscriptions/${encodeURIComponent(merchantKey)}`),
+    onMutate: ({ merchantKey }) => setPendingKey(merchantKey),
+    onSuccess: (_data, { sub }) => {
+      invalidateMoney(queryClient);
+      toast.success(`Removed ${subscriptionLabel(sub, currency)}`, { description: 'Its charges are still in Transactions.' });
+    },
+    onError: (err) => toast.error(err?.message || 'Could not remove it'),
+    onSettled: () => setPendingKey(null),
+  });
+
+  function handleRemove(sub) {
+    removeMutation.mutate({ merchantKey: sub.merchantKey, sub });
+  }
+
+  /** "It's already on this page" from the Add dialog: scroll to that row. */
+  function scrollToSubscription(merchantKey) {
+    requestAnimationFrame(() => {
+      document
+        .querySelector(`[data-subscription-key="${CSS.escape(merchantKey)}"]`)
+        ?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    });
+  }
+
   function handleToggle(sub, nextStatus) {
     toggleMutation.mutate({ merchantKey: sub.merchantKey, status: nextStatus, sub });
   }
@@ -166,12 +196,26 @@ export default function Subscriptions() {
 
   return (
     <div className="space-y-5 pb-12">
-      <header className="space-y-1">
-        <p className="text-sm text-muted-foreground">
-          Recurring charges — the ones Trim spotted, plus any you marked yourself.
-        </p>
-        <h1 className="text-3xl font-bold tracking-tight">Subscriptions</h1>
+      <header className="flex items-end justify-between gap-3">
+        <div className="space-y-1">
+          <p className="text-sm text-muted-foreground">
+            Recurring charges — the ones Trim spotted, plus any you marked yourself.
+          </p>
+          <h1 className="text-3xl font-bold tracking-tight">Subscriptions</h1>
+        </div>
+        <Button onClick={() => setAdding(true)} className="shrink-0">
+          <Plus className="h-4 w-4" aria-hidden />
+          <span className="hidden sm:inline">Add a subscription</span>
+          <span className="sm:hidden">Add</span>
+        </Button>
       </header>
+
+      <AddSubscriptionDialog
+        open={adding}
+        onOpenChange={setAdding}
+        currency={currency}
+        onDetected={scrollToSubscription}
+      />
 
       {isLoading ? (
         <div className="space-y-3">
@@ -215,6 +259,7 @@ export default function Subscriptions() {
                     onToggle={handleToggle}
                     onRename={handleRename}
                     onEditAmount={handleEditAmount}
+                    onRemove={handleRemove}
                     pending={pendingKey === sub.merchantKey}
                   />
                 ))}
@@ -236,6 +281,7 @@ export default function Subscriptions() {
                     onToggle={handleToggle}
                     onRename={handleRename}
                     onEditAmount={handleEditAmount}
+                    onRemove={handleRemove}
                     pending={pendingKey === sub.merchantKey}
                   />
                 ))}
@@ -257,6 +303,7 @@ export default function Subscriptions() {
                     onToggle={handleToggle}
                     onRename={handleRename}
                     onEditAmount={handleEditAmount}
+                    onRemove={handleRemove}
                     pending={pendingKey === sub.merchantKey}
                   />
                 ))}

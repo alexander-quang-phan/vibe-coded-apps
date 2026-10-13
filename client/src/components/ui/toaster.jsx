@@ -7,6 +7,10 @@ export function Toaster() {
       richColors
       closeButton
       theme="system"
+      // Radix dialogs set pointer-events:none on <body> while open, and sonner
+      // renders inside it — without this, a toast's buttons (Quick Add's "Is this
+      // your Netflix subscription?") cannot be tapped while any dialog is open.
+      style={{ pointerEvents: 'auto' }}
       toastOptions={{
         classNames: {
           toast:

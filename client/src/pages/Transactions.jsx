@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useSearchParams } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router-dom';
 import { toast } from 'sonner';
-import { Download, Pencil, Repeat, Search, Star, Trash2 } from 'lucide-react';
+import { BadgeCheck, Download, Pencil, Repeat, Search, Star, Trash2 } from 'lucide-react';
 import {
   Dialog,
   DialogContent,
@@ -32,6 +32,13 @@ import { QuickAddButton } from '@/components/QuickAddButton';
 import { formatMoney, formatDate, todayISO, thisMonthISO } from '@/lib/format';
 import { cn } from '@/lib/utils';
 import { invalidateMoney } from '@/lib/invalidate';
+import { SubscriptionMarker } from '@/components/SubscriptionMarker';
+import { subscriptionLabel } from '@/lib/subscriptions';
+import {
+  runSubscriptionAction,
+  subscriptionActionMessage,
+  isActionReady,
+} from '@/lib/subscriptionActions';
 
 function csvEscape(v) {
   const s = String(v ?? '');
@@ -72,10 +79,27 @@ function EditDialog({
   const [entryCurrency, setEntryCurrency] = useState(currency);
   const [rate, setRate] = useState('1');
   const [rateState, setRateState] = useState('idle');
+  // Phase 17 — the Subscription section. Applied by Save, after the field edits.
+  const [markOpen, setMarkOpen] = useState(false);
+  const [subAction, setSubAction] = useState(null);
+  const [detach, setDetach] = useState(false);
   const api = useApi();
+
+  // "Part of Netflix": the name comes from the Subscriptions list.
+  const linkedKey = tx?.recurrence_id ? `manual:${tx.recurrence_id}` : null;
+  const { data: subsData } = useQuery({
+    queryKey: ['subscriptions'],
+    queryFn: () => api.get('/api/subscriptions'),
+    enabled: open && !!linkedKey,
+  });
+  const linkedSub = (subsData?.subscriptions ?? []).find((x) => x.merchantKey === linkedKey) ?? null;
+  const linkedLabel = linkedSub ? subscriptionLabel(linkedSub, currency) : 'a subscription you marked';
 
   useEffect(() => {
     if (!tx || !open) return;
+    setMarkOpen(false);
+    setSubAction(null);
+    setDetach(false);
     // Seed from the row's own currency, so opening an existing euro expense
     // shows euros and its stored rate rather than silently reverting to base.
     const wasForeign = !!tx.original_currency;
@@ -231,6 +255,68 @@ function EditDialog({
               className="rounded-lg border border-border/60 bg-secondary/30 px-3 py-2"
             />
           ) : null}
+
+          {/* Phase 17 — mark it yourself, instead of waiting for three charges. */}
+          {tx.type === 'expense' ? (
+            <div className="space-y-2 rounded-lg border border-border/60 bg-secondary/30 px-3 py-2">
+              <p className="flex items-center gap-2 text-sm font-medium">
+                <BadgeCheck className="h-4 w-4 text-primary" aria-hidden />
+                Subscription
+              </p>
+              {tx.is_recurring ? (
+                <p className="text-xs text-muted-foreground">
+                  Logged automatically by a repeating schedule —{' '}
+                  <Link to="/subscriptions" className="font-medium text-primary hover:underline">manage it on Subscriptions</Link>.
+                </p>
+              ) : tx.recurrence_id ? (
+                <label className="flex items-center justify-between gap-3 text-sm">
+                  <span>
+                    Part of <span className="font-medium">{linkedLabel}</span>
+                  </span>
+                  <span className="flex items-center gap-2 text-xs text-muted-foreground">
+                    Remove from it
+                    <input
+                      type="checkbox"
+                      className="h-4 w-4 accent-primary"
+                      checked={detach}
+                      onChange={(e) => setDetach(e.target.checked)}
+                    />
+                  </span>
+                </label>
+              ) : markOpen ? (
+                <>
+                  <SubscriptionMarker
+                    transactionId={tx.id}
+                    currency={currency}
+                    values={{
+                      description: description.trim(),
+                      categoryId,
+                      // The matcher compares home-currency amounts; a foreign entry's
+                      // field holds the original, so convert it the way Save will.
+                      amount: isForeign ? amountNum * Number(rate) : amountNum,
+                      date,
+                    }}
+                    onActionChange={setSubAction}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setMarkOpen(false);
+                      setSubAction(null);
+                    }}
+                    className="text-xs text-muted-foreground underline-offset-4 hover:text-foreground hover:underline"
+                  >
+                    Not a subscription
+                  </button>
+                </>
+              ) : (
+                <Button type="button" variant="outline" size="sm" onClick={() => setMarkOpen(true)}>
+                  <Repeat className="h-3.5 w-3.5" aria-hidden />
+                  This is a subscription
+                </Button>
+              )}
+            </div>
+          ) : null}
         </div>
 
         <DialogFooter>
@@ -259,9 +345,14 @@ function EditDialog({
                   : tx.original_currency
                     ? { foreign: null }
                     : {}),
-              })
+              }, detach
+                ? { type: 'detach', merchantKey: linkedKey, label: linkedLabel }
+                : markOpen && isActionReady(subAction) ? subAction : null)
             }
-            disabled={saving || !isValidMoney(amount) || !categoryId || !date || !rateValid}
+            disabled={
+              saving || !isValidMoney(amount) || !categoryId || !date || !rateValid
+              || (markOpen && !isActionReady(subAction))
+            }
           >
             {saving ? 'Saving…' : 'Save'}
           </Button>
@@ -274,7 +365,7 @@ function EditDialog({
 export default function Transactions() {
   const api = useApi();
   const queryClient = useQueryClient();
-  const [searchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = useSearchParams();
   // Deep link from Analytics' Monthly history (Task 9.4): ?month=YYYY-MM seeds the filter.
   // Bounded 01-12 to match the server route: a loose \d{2} would let "?month=2026-13"
   // seed the filter, rendering an "Invalid Date" option and an empty list.
@@ -365,7 +456,8 @@ export default function Transactions() {
       if (categoryFilter !== 'all' && t.category_id !== categoryFilter) return false;
       if (monthFilter !== 'all' && !t.date.startsWith(monthFilter)) return false;
       if (specialEnabled && specialFilter && !t.is_special) return false;
-      if (recurringFilter && !t.is_recurring) return false;
+      // Every subscription charge: Repeat-this ones and ones Alex marked himself.
+      if (recurringFilter && !(t.is_recurring || t.recurrence_id)) return false;
       if (specialGroupFilter && t.special_group_id !== specialGroupFilter) return false;
       if (query) {
         const cat = catsById.get(t.category_id)?.name?.toLowerCase() ?? '';
@@ -395,15 +487,55 @@ export default function Transactions() {
     onError: (err) => toast.error(err?.message || 'Could not delete'),
   });
 
+  // Phase 17: Save PATCHes the fields exactly as before, THEN applies the
+  // Subscription section's action. If that second step fails, the edit is already
+  // saved, so the dialog stays open and says so plainly.
   const updateMutation = useMutation({
-    mutationFn: ({ id, payload }) => api.patch(`/api/transactions/${id}`, payload),
-    onSuccess: () => {
+    mutationFn: async ({ id, payload, subAction }) => {
+      await api.patch(`/api/transactions/${id}`, payload);
+      if (!subAction) return { subAction: null };
+      try {
+        await runSubscriptionAction(api, id, subAction);
+        return { subAction };
+      } catch (subError) {
+        return { subAction, subError };
+      }
+    },
+    onSuccess: ({ subAction, subError }) => {
       invalidateMoney(queryClient);
-      toast.success('Updated');
+      if (subError) {
+        if (subError.status === 409 && subError.body?.existing) {
+          // The Subscription section re-asks the server and now shows the offer.
+          toast('You already track this one', { description: 'Choose “Add to …” in the Subscription section.' });
+        } else {
+          toast.error("Saved — but couldn't mark it as a subscription. Try again.");
+        }
+        return;
+      }
+      if (subAction) {
+        const m = subscriptionActionMessage(subAction);
+        toast.success(m.title, { description: m.description });
+      } else {
+        toast.success('Updated');
+      }
       setEditing(null);
     },
     onError: (err) => toast.error(err?.message || 'Could not update'),
   });
+
+  // Deep link: /transactions?month=YYYY-MM&edit=<id> opens that expense's edit
+  // dialog (the Subscriptions page's "Change its note in Transactions"). The month
+  // makes sure it is loaded even when it's older than the newest 200 rows.
+  const editParam = searchParams.get('edit');
+  useEffect(() => {
+    if (!editParam || !data) return;
+    const hit = (data.transactions ?? []).find((t) => t.id === editParam);
+    if (hit) setEditing(hit);
+    else toast("Couldn't find that expense here — try another month.");
+    const next = new URLSearchParams(searchParams);
+    next.delete('edit');
+    setSearchParams(next, { replace: true });
+  }, [editParam, data, searchParams, setSearchParams]);
 
   function handleExport() {
     const header = ['Date', 'Type', 'Category', 'Description', 'Amount'];
@@ -622,6 +754,11 @@ export default function Transactions() {
                           <Repeat className="h-2.5 w-2.5" aria-hidden />
                           Recurring
                         </span>
+                      ) : t.recurrence_id ? (
+                        <span className="inline-flex shrink-0 items-center gap-0.5 rounded-full border border-primary/30 bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium text-primary">
+                          <BadgeCheck className="h-2.5 w-2.5" aria-hidden />
+                          Subscription
+                        </span>
                       ) : null}
                     </p>
                   </div>
@@ -690,7 +827,7 @@ export default function Transactions() {
         saving={updateMutation.isPending}
         specialEnabled={specialEnabled}
         currency={currency}
-        onSave={(payload) => updateMutation.mutate({ id: editing.id, payload })}
+        onSave={(payload, subAction) => updateMutation.mutate({ id: editing.id, payload, subAction })}
       />
 
       {/* Adding used to be Dashboard-only: spotting a gap while filtered to a

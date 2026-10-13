@@ -21,6 +21,8 @@ import { useApi } from '@/hooks/useApi';
 import { cn } from '@/lib/utils';
 import { todayISO } from '@/lib/format';
 import { invalidateMoney } from '@/lib/invalidate';
+import { subscriptionLabel } from '@/lib/subscriptions';
+import { runSubscriptionAction, subscriptionActionMessage } from '@/lib/subscriptionActions';
 import {
   celebrateLevelUp,
   celebrateStreakMilestone,
@@ -189,6 +191,37 @@ export function QuickAddDialog({
   const rateValid = !isForeign || (rate !== '' && Number.isFinite(fxRate) && fxRate > 0);
   const canSubmit = amountValid && rateValid;
 
+  // Phase 17 — "Is this your Netflix subscription?" Asked, never assumed: Yes
+  // attaches the charge, No (or ignoring it) leaves it alone. The answer runs after
+  // this dialog has closed, so it uses only values captured here.
+  function askAboutSubscription(match, transactionId) {
+    const label = subscriptionLabel(match, currency);
+    const attach = (reactivate) => {
+      const action = { type: 'attach', merchantKey: match.merchantKey, reactivate, label };
+      runSubscriptionAction(api, transactionId, action)
+        .then(() => {
+          invalidateMoney(queryClient);
+          const m = subscriptionActionMessage(action);
+          toast.success(m.title, { description: m.description });
+        })
+        .catch((err) => toast.error(err?.message || "Couldn't add it to the subscription"));
+    };
+    if (match.kind === 'finalOrBack') {
+      toast(`A ${label} charge after you cancelled it`, {
+        description: 'Is it back, or was this the final charge?',
+        duration: 12000,
+        action: { label: "It's back", onClick: () => attach(true) },
+        cancel: { label: 'Final charge', onClick: () => attach(false) },
+      });
+    } else {
+      toast(`Is this your ${label} subscription?`, {
+        duration: 12000,
+        action: { label: 'Yes', onClick: () => attach(false) },
+        cancel: { label: 'No', onClick: () => {} },
+      });
+    }
+  }
+
   const mutation = useMutation({
     mutationFn: (payload) => api.post('/api/transactions', payload),
     onSuccess: (res) => {
@@ -222,6 +255,12 @@ export function QuickAddDialog({
         toast('Streak shield used 🛡️', {
           description: 'You missed yesterday but we saved your streak.',
         });
+      }
+
+      // LAST, outside the else-if chain above, so a level-up or streak toast can
+      // never swallow it, and it sits on top of the stack where its buttons show.
+      if (res?.subscriptionMatch && res?.transaction?.id) {
+        askAboutSubscription(res.subscriptionMatch, res.transaction.id);
       }
 
       onOpenChange(false);

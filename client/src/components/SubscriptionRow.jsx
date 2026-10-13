@@ -8,7 +8,7 @@ import { formatMoney, formatDate } from '@/lib/format';
 import { subscriptionLabel, cadenceLabel as cadenceLabelFor } from '@/lib/subscriptions';
 import { cn } from '@/lib/utils';
 
-export function SubscriptionRow({ subscription, currency, onToggle, onRename, onEditAmount, pending }) {
+export function SubscriptionRow({ subscription, currency, onToggle, onRename, onEditAmount, onRemove, pending }) {
   const sub = subscription;
   const cancelled = sub.status === 'cancelled';
   const dismissed = sub.status === 'dismissed';
@@ -24,6 +24,10 @@ export function SubscriptionRow({ subscription, currency, onToggle, onRename, on
   //   • 'dismissed'  — 400 "cannot be dismissed — cancel it instead"
   // In exchange they gain an amount edit, which detected rows can't have.
   const manual = sub.source === 'manual';
+  // Phase 17 — two kinds of manual row. "Logs itself" (Repeat this) keeps its
+  // amount edit; "Marked by you" (tracked) follows its latest charge instead, and
+  // can be removed outright if it was marked by mistake.
+  const tracked = manual && sub.tracking === true;
 
   // Unnamed inferred rows open the rename form by default — naming them is
   // the whole point (Task 6.2.1). Everything else gets a quiet Rename button.
@@ -42,7 +46,10 @@ export function SubscriptionRow({ subscription, currency, onToggle, onRename, on
   }
 
   return (
-    <Card className={cn('border-border/60 bg-card/70 backdrop-blur', inactive && 'opacity-70')}>
+    <Card
+      data-subscription-key={sub.merchantKey}
+      className={cn('border-border/60 bg-card/70 backdrop-blur scroll-mt-24', inactive && 'opacity-70')}
+    >
       <CardContent className="flex flex-col gap-4 p-5">
         <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
           <div className="flex min-w-0 items-center gap-3">
@@ -59,9 +66,13 @@ export function SubscriptionRow({ subscription, currency, onToggle, onRename, on
                 <span className="rounded-full border border-border/60 bg-secondary/40 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
                   {cadenceLabel}
                 </span>
-                {manual ? (
+                {tracked ? (
+                  <span className="rounded-full border border-primary/30 bg-primary/10 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-primary">
+                    Marked by you
+                  </span>
+                ) : manual ? (
                   <span className="rounded-full border border-amber-400/30 bg-amber-400/10 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-amber-600 dark:text-amber-400">
-                    Manually marked
+                    Logs itself
                   </span>
                 ) : null}
                 {needsName ? (
@@ -69,7 +80,7 @@ export function SubscriptionRow({ subscription, currency, onToggle, onRename, on
                     Inferred
                   </span>
                 ) : null}
-                {manual && !editingAmount && !cancelled ? (
+                {manual && !tracked && !editingAmount && !cancelled ? (
                   <button
                     type="button"
                     onClick={() => setEditingAmount(true)}
@@ -95,6 +106,7 @@ export function SubscriptionRow({ subscription, currency, onToggle, onRename, on
               <p className="truncate text-xs text-muted-foreground">
                 {cat?.name ?? 'Uncategorised'} ·{' '}
                 {sub.occurrences === 1 ? '1 charge so far' : `${sub.occurrences} charges so far`}
+                {tracked && sub.occurrences > 0 ? ' · cost follows your latest charge' : ''}
               </p>
             </div>
           </div>
@@ -136,6 +148,18 @@ export function SubscriptionRow({ subscription, currency, onToggle, onRename, on
                   className="text-xs text-muted-foreground underline-offset-4 hover:text-foreground hover:underline disabled:opacity-50"
                 >
                   Not a subscription
+                </button>
+              ) : null}
+              {tracked && onRemove ? (
+                <button
+                  type="button"
+                  disabled={pending}
+                  onClick={() => {
+                    if (confirm(`Remove ${label}? Its charges stay in Transactions.`)) onRemove(sub);
+                  }}
+                  className="text-xs text-muted-foreground underline-offset-4 hover:text-foreground hover:underline disabled:opacity-50"
+                >
+                  Remove
                 </button>
               ) : null}
             </div>

@@ -7,7 +7,8 @@ import { formatMoney } from './format';
 // Task 6.12a added a third cadence. This used to be
 // `cadence === 'annual' ? 'Annual' : 'Monthly'`, which silently labelled every
 // manually-marked WEEKLY recurrence "Monthly" — the server sends 'weekly'.
-const CADENCE_LABELS = { annual: 'Annual', monthly: 'Monthly', weekly: 'Weekly' };
+// Phase 17: "Yearly", matching the new cadence pill (the server value stays 'annual').
+const CADENCE_LABELS = { annual: 'Yearly', monthly: 'Monthly', weekly: 'Weekly' };
 
 export function cadenceLabel(cadence) {
   return CADENCE_LABELS[cadence] ?? 'Monthly';
