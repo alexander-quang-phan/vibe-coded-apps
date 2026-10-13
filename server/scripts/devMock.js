@@ -403,8 +403,10 @@ app.get('/api/transactions', (req, res) => {
   const month = /^\d{4}-(0[1-9]|1[0-2])$/.test(req.query.month ?? '') ? req.query.month : null;
   let list = transactions;
   if (month) {
-    const { firstISO, nextFirstISO } = monthBounds(new Date(`${month}-01T00:00:00Z`));
-    list = list.filter((t) => t.date >= firstISO && t.date < nextFirstISO);
+    // Mirrors routes/transactions.js: the requested month's own bounds. This used
+    // to call monthBounds(new Date(...)) — a Date where a ZONE is expected — so the
+    // mock always answered with the current month, whatever was asked.
+    list = list.filter((t) => t.date >= `${month}-01` && t.date < `${addMonths(month, 1)}-01`);
   }
   const sorted = [...list].sort(
     (a, b) => b.date.localeCompare(a.date) || b.created_at.localeCompare(a.created_at),

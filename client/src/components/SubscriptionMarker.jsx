@@ -7,6 +7,7 @@ import { useApi } from '@/hooks/useApi';
 import { formatMoney, formatDate } from '@/lib/format';
 import { subscriptionLabel } from '@/lib/subscriptions';
 import { cn } from '@/lib/utils';
+import { NO_ACTION } from '@/lib/subscriptionActions';
 
 const CADENCES = [
   { value: 'monthly', label: 'Monthly' },
@@ -136,7 +137,8 @@ export function SubscriptionMarker({
   const label = existing ? subscriptionLabel(existing, currency) : null;
 
   useEffect(() => {
-    if (!data || data.needsCategory) return onActionChange(null);
+    if (!data) return onActionChange(null);
+    if (data.needsCategory) return onActionChange(NO_ACTION);
     if (mode === 'existing') {
       if (!existingChoice) return onActionChange(null);
       return onActionChange({
@@ -146,7 +148,7 @@ export function SubscriptionMarker({
         label,
       });
     }
-    if (mode === 'detected') return onActionChange(null);
+    if (mode === 'detected') return onActionChange(NO_ACTION);
     return onActionChange(cadence ? { type: 'track', interval: cadence, includeIds: [...ticked] } : null);
     // onActionChange is the parent's setState; stable enough for this effect.
     // eslint-disable-next-line react-hooks/exhaustive-deps

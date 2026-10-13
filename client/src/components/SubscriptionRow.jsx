@@ -61,22 +61,24 @@ export function SubscriptionRow({ subscription, currency, onToggle, onRename, on
               {cat?.icon ?? '🔁'}
             </div>
             <div className="min-w-0">
-              <div className="flex items-center gap-2">
-                <h3 className="truncate text-base font-semibold leading-tight">{label}</h3>
-                <span className="rounded-full border border-border/60 bg-secondary/40 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+              {/* Wraps on a phone: the tags drop below the name instead of squeezing
+                  it down to "Co…" (Phase 17's longer tags made that obvious). */}
+              <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                <h3 className="max-w-full truncate text-base font-semibold leading-tight">{label}</h3>
+                <span className="whitespace-nowrap rounded-full border border-border/60 bg-secondary/40 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
                   {cadenceLabel}
                 </span>
                 {tracked ? (
-                  <span className="rounded-full border border-primary/30 bg-primary/10 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-primary">
+                  <span className="whitespace-nowrap rounded-full border border-primary/30 bg-primary/10 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-primary">
                     Marked by you
                   </span>
                 ) : manual ? (
-                  <span className="rounded-full border border-amber-400/30 bg-amber-400/10 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-amber-600 dark:text-amber-400">
+                  <span className="whitespace-nowrap rounded-full border border-amber-400/30 bg-amber-400/10 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-amber-600 dark:text-amber-400">
                     Logs itself
                   </span>
                 ) : null}
                 {needsName ? (
-                  <span className="rounded-full border border-primary/30 bg-primary/10 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-primary">
+                  <span className="whitespace-nowrap rounded-full border border-primary/30 bg-primary/10 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-primary">
                     Inferred
                   </span>
                 ) : null}

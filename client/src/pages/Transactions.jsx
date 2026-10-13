@@ -38,6 +38,7 @@ import {
   runSubscriptionAction,
   subscriptionActionMessage,
   isActionReady,
+  allowsSave,
 } from '@/lib/subscriptionActions';
 
 function csvEscape(v) {
@@ -351,7 +352,7 @@ function EditDialog({
             }
             disabled={
               saving || !isValidMoney(amount) || !categoryId || !date || !rateValid
-              || (markOpen && !isActionReady(subAction))
+              || (markOpen && !allowsSave(subAction))
             }
           >
             {saving ? 'Saving…' : 'Save'}

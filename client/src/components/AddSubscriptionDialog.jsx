@@ -92,7 +92,7 @@ export function AddSubscriptionDialog({ open, onOpenChange, currency, onDetected
         <DialogHeader>
           <DialogTitle>Add a subscription</DialogTitle>
           <DialogDescription>
-            {picked ? 'How often is it charged?' : 'Pick a charge you already logged — it shows up straight away.'}
+            {picked ? 'Tell Trim what this charge is.' : 'Pick a charge you already logged — it shows up straight away.'}
           </DialogDescription>
         </DialogHeader>
 
