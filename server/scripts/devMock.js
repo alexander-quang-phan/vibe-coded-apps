@@ -19,12 +19,22 @@ import { randomUUID, timingSafeEqual } from 'node:crypto';
 import { applyLogEvent, titleForLevel, levelProgress } from '../lib/gamification.js';
 import { detectSubscriptions } from '../lib/subscriptions.js';
 import { suggestCategoryName } from '../lib/categoryKeywords.js';
-import { nextRunDate, dueRecurrences, manualMerchantKey } from '../lib/recurrences.js';
+import { nextRunDate, dueRecurrences, manualMerchantKey, isTracked } from '../lib/recurrences.js';
+// Phase 17 — the SAME matcher and row builder the real route uses, imported
+// rather than re-implemented, so the mock page cannot drift from the real one.
+import {
+  buildDetectedRow, buildManualRow, trackedPrototypes, suppressDetected, summarise, categoryShape,
+} from '../lib/subscriptionRows.js';
+import {
+  prototypeOf, bestPreviewMatch, bestTrackedMatch, exactNoteConflict, sameAsDetected,
+  looksLikeSameCharge, nameStrength, cycleAligned, within,
+} from '../lib/subscriptionMatch.js';
+import { normaliseMerchant } from '../lib/merchant.js';
 import { isSingleEmoji } from '../lib/emoji.js';
 import { resolveTotalBudget, buildPace } from '../lib/overallBudget.js';
 import { buildRunningAverage } from '../lib/runningAverage.js';
 import { convertToBase } from '../lib/fx.js';
-import { dayInZone, monthBounds } from '../lib/month.js';
+import { dayInZone, monthBounds, addMonths } from '../lib/month.js';
 import { monthlyEquivalentLimit } from '../lib/budgetPeriod.js';
 
 const PORT = process.env.PORT || 3001;
@@ -158,6 +168,7 @@ function seedRecurrence({ categoryName, amount, description, interval, dAgo, can
     last_run_at: null,
     cancelled_at: cancelled ? new Date().toISOString() : null,
     created_at: createdAt,
+    auto_log: true, // Repeat-this: explicit, exactly as the real route writes it
   });
   transactions.push({
     id: randomUUID(),
@@ -181,6 +192,27 @@ seedRecurrence({
   dAgo: 200,
   cancelled: true,
 });
+
+// Phase 17 — a subscription Alex MARKED himself (tracked, never auto-logged), with
+// one attached charge, one unlinked look-alike near its next date (so Quick Add's
+// "Is this your Disney Plus subscription?" and the attach paths have something to
+// show), and one older look-alike (so "Other charges like this one" lists it).
+{
+  const id = randomUUID();
+  const ent = cat('Entertainment').id;
+  recurrences.push({
+    id, user_id: USER.id, category_id: ent, type: 'expense', amount: 7.99,
+    description: 'Disney Plus', interval: 'monthly', next_run_at: null, last_run_at: null,
+    cancelled_at: null, created_at: new Date(Date.now() - 25 * 86_400_000).toISOString(),
+    auto_log: false,
+  });
+  const charge = (dAgo, recId) => ({
+    id: randomUUID(), amount: 7.99, type: 'expense', description: 'Disney Plus',
+    date: daysAgoISO(dAgo), category_id: ent, is_recurring: false, is_special: false,
+    recurrence_id: recId, created_at: new Date(Date.now() - dAgo * 86_400_000).toISOString(),
+  });
+  transactions.push(charge(25, id), charge(0, null), charge(55, null));
+}
 
 let budgets = [
   ['Groceries', 260], ['Food', 120], ['Transport', 80],
@@ -343,11 +375,24 @@ app.delete('/api/categories/:id', (req, res) => {
     return res.status(403).json({ error: 'This category is the reassign safety net.' });
   }
   const referencing = transactions.filter((t) => t.category_id === c.id);
+  const referencingRecs = recurrences.filter((r) => r.category_id === c.id);
   const reassignTo = req.query.reassign_to;
-  if (referencing.length > 0 && !reassignTo) {
-    return res.status(409).json({ error: 'Category has transactions', transactionCount: referencing.length });
+  const inUse = referencing.length > 0 || referencingRecs.length > 0;
+  if (inUse && !reassignTo) {
+    return res.status(409).json({
+      error: 'Category is in use',
+      transactionCount: referencing.length,
+      subscriptionCount: referencingRecs.length,
+    });
   }
-  if (reassignTo) for (const t of referencing) t.category_id = reassignTo;
+  if (inUse && reassignTo) {
+    if (reassignTo === c.id) return res.status(400).json({ error: 'Cannot reassign to the category being deleted' });
+    const target = catById(reassignTo);
+    if (!target) return res.status(404).json({ error: 'Reassign target not found' });
+    if (target.type !== c.type) return res.status(400).json({ error: 'Reassign target must be the same type' });
+    for (const t of referencing) t.category_id = reassignTo;
+    for (const r of referencingRecs) r.category_id = reassignTo;
+  }
   budgets = budgets.filter((b) => b.category_id !== c.id);
   categories.splice(categories.indexOf(c), 1);
   res.status(204).end();
@@ -409,13 +454,15 @@ app.post('/api/transactions', (req, res) => {
       user_id: USER.id,
       category_id: categoryId,
       type,
-      amount,
+      // The CONVERTED figure, as the real route stores (was the client amount).
+      amount: storedAmount,
       description: description || null,
       interval: recurring.interval,
       next_run_at: nextRunDate(txDate, recurring.interval, anchorDay),
       last_run_at: null,
       cancelled_at: null,
       created_at: new Date().toISOString(),
+      auto_log: true,
     };
     recurrences.push(recurrence);
   }
@@ -439,9 +486,16 @@ app.post('/api/transactions', (req, res) => {
   transactions.push(tx);
   const { next, delta } = applyLogEvent(stats, clientToday || todayUTC());
   stats = { ...stats, ...next };
+  // Phase 17 — mirrors routes/transactions.js findSubscriptionMatch.
+  let subscriptionMatch = null;
+  if (type === 'expense' && !recurrence) {
+    const best = bestTrackedMatch({ ...tx, recurrence_id: null }, mockState().protos);
+    if (best) subscriptionMatch = { ...mockSubRef(best.proto), kind: best.kind };
+  }
   res.status(201).json({
     transaction: tx,
     delta,
+    subscriptionMatch,
     recurrence: recurrence
       ? {
           id: recurrence.id,
@@ -492,6 +546,15 @@ app.patch('/api/transactions/:id', (req, res) => {
         : tx.special_group_id;
   if (effectiveGroup && !effectiveSpecial) {
     return res.status(400).json({ error: 'Only special expenses can belong to a group' });
+  }
+  // Guard the RESULTING state, as the real route does since 2026-09-23 #2 — a type
+  // change alone must not leave an income row under an expense category.
+  if (categoryId !== undefined || type !== undefined) {
+    const effectiveCat = catById(categoryId !== undefined ? categoryId : tx.category_id);
+    if (!effectiveCat) return res.status(404).json({ error: 'Category not found' });
+    if (effectiveCat.type !== effectiveType) {
+      return res.status(400).json({ error: 'Category type does not match transaction type' });
+    }
   }
   if (categoryId !== undefined) tx.category_id = categoryId;
   if (amount !== undefined) tx.amount = amount;
@@ -974,95 +1037,245 @@ app.get('/api/wins', (_req, res) => {
   });
 });
 
-const CADENCE_DAYS = { monthly: 30, weekly: 7 };
+// ---------------------------------------------------------------------------
+// Subscriptions — Phase 17. Every handler below mirrors routes/subscriptions.js,
+// with the same guards and messages, and builds rows through the SAME shared
+// lib/subscriptionRows.js + lib/subscriptionMatch.js the real route uses.
+// ---------------------------------------------------------------------------
+const MOCK_UUID = /^[0-9a-f-]{36}$/i;
+const MOCK_MANUAL_KEY = /^manual:[0-9a-f-]{36}$/i;
+const MOCK_INTERVALS = ['monthly', 'weekly', 'annual'];
+
+/** What the real loadState() returns, from the in-memory arrays. */
+function mockState() {
+  const expenses = transactions.filter((t) => t.type === 'expense');
+  const linkedById = new Map();
+  for (const t of expenses) {
+    if (!t.recurrence_id) continue;
+    const arr = linkedById.get(t.recurrence_id) ?? [];
+    arr.push(t);
+    linkedById.set(t.recurrence_id, arr);
+  }
+  const protos = trackedPrototypes(recurrences, linkedById, (ts) => dayInZone(mockZone, new Date(ts)));
+  return { expenses, linkedById, protos };
+}
+
+function mockSubRef(proto) {
+  const r = recurrences.find((x) => x.id === proto.id);
+  return {
+    merchantKey: manualMerchantKey(proto.id),
+    name: r?.description || null,
+    amount: Number(proto.amount),
+    cadence: proto.cadence,
+    category: categoryShape(catById(proto.category_id)),
+  };
+}
+
+const mockCandidate = (t) => ({ id: t.id, date: t.date, amount: Number(t.amount), description: t.description ?? null });
 
 app.get('/api/subscriptions', (_req, res) => {
-  const expenseTx = transactions.filter((t) => t.type === 'expense');
-  // Manually-marked transactions carry a recurrence_id — exclude them from
-  // the auto-detector input so they aren't ALSO counted as a detected sub.
-  const autoInput = expenseTx.filter((t) => !t.recurrence_id);
-  const byRecurrenceId = new Map();
-  for (const t of expenseTx) {
-    if (!t.recurrence_id) continue;
-    const arr = byRecurrenceId.get(t.recurrence_id) ?? [];
-    arr.push(t);
-    byRecurrenceId.set(t.recurrence_id, arr);
-  }
-
-  const detected = detectSubscriptions(autoInput);
-  const autoSubscriptions = detected.map((d) => {
-    const o = subscriptionOverrides.get(d.merchantKey);
-    return {
-      ...d,
-      category: catShape(catById(d.categoryId)),
-      status: o?.status ?? 'active',
-      displayName: o?.display_name ?? null,
-      decidedAt: o?.decided_at ?? null,
-      source: 'auto',
-    };
-  });
-
-  const manualSubscriptions = recurrences.map((r) => {
-    const linked = byRecurrenceId.get(r.id) ?? [];
-    const amount = Number(r.amount);
-    const monthlyCost = round2(r.interval === 'monthly' ? amount : amount * (52 / 12));
-    const annualCost = round2(r.interval === 'monthly' ? amount * 12 : amount * 52);
-    return {
-      merchantKey: manualMerchantKey(r.id),
-      name: r.description || null,
-      inferred: false,
-      cadence: r.interval,
-      cadenceDays: CADENCE_DAYS[r.interval],
-      amount: round2(amount),
-      monthlyCost,
-      annualCost,
-      lastCharged: linked.length ? linked.map((t) => t.date).sort().at(-1) : null,
-      nextExpected: r.next_run_at,
-      totalPaid: round2(linked.reduce((sum, t) => sum + Number(t.amount), 0)),
-      occurrences: linked.length,
-      categoryId: r.category_id,
-      category: catShape(catById(r.category_id)),
-      status: r.cancelled_at ? 'cancelled' : 'active',
-      displayName: null,
-      decidedAt: r.cancelled_at ?? null,
-      source: 'manual',
-    };
-  });
-
+  const { expenses, linkedById, protos } = mockState();
+  const autoInput = expenses.filter((t) => !t.recurrence_id);
+  const detected = suppressDetected(detectSubscriptions(autoInput), protos);
+  const autoSubscriptions = detected.map((d) =>
+    buildDetectedRow(d, subscriptionOverrides.get(d.merchantKey), d.categoryId ? catById(d.categoryId) : null));
+  const manualSubscriptions = recurrences.map((r) =>
+    buildManualRow(r, linkedById.get(r.id) ?? [], catById(r.category_id)));
   const subscriptions = [...autoSubscriptions, ...manualSubscriptions];
-  const active = subscriptions.filter((s) => s.status === 'active');
-  const cancelled = subscriptions.filter((s) => s.status === 'cancelled');
-  const dismissed = subscriptions.filter((s) => s.status === 'dismissed');
-  const sum = (arr) => round2(arr.reduce((t, s) => t + s.monthlyCost, 0));
+  res.json({ subscriptions, summary: summarise(subscriptions) });
+});
+
+app.get('/api/subscriptions/track/preview', (req, res) => {
+  const q = req.query;
+  if (!MOCK_UUID.test(q.transactionId ?? '')) return res.status(400).json({ error: 'Invalid preview request' });
+  if (q.interval !== undefined && !MOCK_INTERVALS.includes(q.interval)) return res.status(400).json({ error: 'Invalid preview request' });
+  const tx = transactions.find((t) => t.id === q.transactionId);
+  if (!tx) return res.status(404).json({ error: 'Transaction not found' });
+  if (tx.type !== 'expense') return res.status(400).json({ error: 'Only expenses can be subscriptions' });
+  if (tx.recurrence_id) return res.status(409).json({ error: 'Already part of a subscription' });
+
+  const expense = {
+    id: tx.id, type: 'expense', recurrence_id: null,
+    date: q.date ?? tx.date,
+    description: q.description !== undefined ? (String(q.description).trim() || null) : tx.description,
+    category_id: q.categoryId ?? tx.category_id,
+    amount: q.amount !== undefined ? Number(q.amount) : Number(tx.amount),
+  };
+  const { expenses, protos } = mockState();
+  const best = bestPreviewMatch(expense, protos);
+  const existing = best ? { ...mockSubRef(best.proto), kind: best.kind, strength: best.strength } : null;
+
+  const autoInput = expenses.filter((t) => !t.recurrence_id);
+  const det = suppressDetected(detectSubscriptions(autoInput), protos).find((d) =>
+    (subscriptionOverrides.get(d.merchantKey)?.status ?? 'active') !== 'dismissed' && sameAsDetected(expense, d));
+  const detected = det
+    ? {
+      merchantKey: det.merchantKey,
+      name: subscriptionOverrides.get(det.merchantKey)?.display_name ?? det.name,
+      amount: det.amount,
+      cadence: det.cadence,
+      category: categoryShape(det.categoryId ? catById(det.categoryId) : null),
+    }
+    : null;
+
+  let likely = [];
+  let maybe = [];
+  if (q.interval) {
+    const self = prototypeOf(
+      { id: null, description: expense.description, category_id: expense.category_id, amount: expense.amount, interval: q.interval },
+      [{ date: expense.date, amount: expense.amount, description: expense.description }],
+    );
+    const others = autoInput
+      .filter((t) => t.id !== expense.id && looksLikeSameCharge(t, self))
+      .sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0));
+    for (const t of others) {
+      const exact = nameStrength(normaliseMerchant(t.description), self) === 'exact';
+      if (exact && within(t.amount, expense.amount, 0.30) && cycleAligned(t.date, expense.date, q.interval)) likely.push(t);
+      else maybe.push(t);
+    }
+    likely = likely.slice(0, 24);
+    maybe = maybe.slice(0, Math.max(0, 24 - likely.length));
+  }
   res.json({
-    subscriptions,
-    summary: {
-      activeCount: active.length,
-      cancelledCount: cancelled.length,
-      dismissedCount: dismissed.length,
-      activeMonthly: sum(active),
-      activeAnnual: round2(sum(active) * 12),
-      cancelledMonthly: sum(cancelled),
-      cancelledAnnual: round2(sum(cancelled) * 12),
-    },
+    needsCategory: !expense.category_id,
+    existing,
+    detected,
+    likely: likely.map(mockCandidate),
+    maybe: maybe.map(mockCandidate),
   });
+});
+
+app.get('/api/subscriptions/track/recent', (req, res) => {
+  const since = `${addMonths(todayUTC().slice(0, 7), -13)}-01`;
+  const needle = String(req.query.q ?? '').trim().toLowerCase();
+  const rows = transactions
+    .filter((t) => t.type === 'expense' && !t.recurrence_id && t.date >= since)
+    .sort((a, b) => b.date.localeCompare(a.date) || b.id.localeCompare(a.id))
+    .filter((t) => {
+      if (!needle) return true;
+      return (t.description ?? '').toLowerCase().includes(needle)
+        || (catById(t.category_id)?.name ?? '').toLowerCase().includes(needle);
+    })
+    .slice(0, 200)
+    .map((t) => ({ ...mockCandidate(t), categoryId: t.category_id ?? null }));
+  res.json({ transactions: rows });
+});
+
+app.post('/api/subscriptions/track', (req, res) => {
+  const { transactionId, interval, includeTransactionIds = [] } = req.body ?? {};
+  if (!MOCK_UUID.test(transactionId ?? '') || !MOCK_INTERVALS.includes(interval)
+    || !Array.isArray(includeTransactionIds) || includeTransactionIds.length > 100
+    || includeTransactionIds.some((x) => !MOCK_UUID.test(String(x)))) {
+    return res.status(400).json({ error: 'Invalid subscription' });
+  }
+  const tx = transactions.find((t) => t.id === transactionId);
+  if (!tx) return res.status(404).json({ error: 'Transaction not found' });
+  if (tx.type !== 'expense') return res.status(400).json({ error: 'Only expenses can be subscriptions' });
+  if (!tx.category_id) return res.status(400).json({ error: 'Give this expense a category first' });
+  if (tx.recurrence_id) return res.status(409).json({ error: 'Already part of a subscription' });
+  const conflict = exactNoteConflict(tx, mockState().protos);
+  if (conflict) {
+    return res.status(409).json({
+      error: 'You already track this subscription',
+      existing: { ...mockSubRef(conflict.proto), kind: conflict.kind, strength: 'exact' },
+    });
+  }
+  const id = randomUUID();
+  recurrences.push({
+    id, user_id: USER.id, category_id: tx.category_id, type: 'expense', amount: Number(tx.amount),
+    description: tx.description || null, interval, next_run_at: null, last_run_at: null,
+    cancelled_at: null, created_at: new Date().toISOString(), auto_log: false,
+  });
+  let linkedCount = 0;
+  for (const tid of new Set([transactionId, ...includeTransactionIds])) {
+    const t = transactions.find((x) => x.id === tid);
+    if (t && t.type === 'expense' && !t.recurrence_id) {
+      t.recurrence_id = id;
+      linkedCount += 1;
+    }
+  }
+  res.status(201).json({ subscription: { merchantKey: manualMerchantKey(id), linkedCount } });
+});
+
+/** Resolve a manual key to a TRACKED recurrence, or send the same errors as the route. */
+function mockTrackedFromKey(req, res) {
+  const key = decodeURIComponent(req.params.merchantKey);
+  if (!MOCK_MANUAL_KEY.test(key)) {
+    res.status(400).json({ error: 'Only subscriptions you marked can be changed here' });
+    return null;
+  }
+  const r = recurrences.find((x) => x.id === key.slice('manual:'.length));
+  if (!r) {
+    res.status(404).json({ error: 'Subscription not found' });
+    return null;
+  }
+  if (!isTracked(r)) {
+    res.status(400).json({ error: "Repeat-this schedules aren't changed by hand — cancel it instead" });
+    return null;
+  }
+  return r;
+}
+
+app.post('/api/subscriptions/:merchantKey/attach', (req, res) => {
+  const { transactionId, reactivate } = req.body ?? {};
+  if (!MOCK_UUID.test(transactionId ?? '')) return res.status(400).json({ error: 'Invalid request' });
+  const r = mockTrackedFromKey(req, res);
+  if (!r) return;
+  const t = transactions.find((x) => x.id === transactionId);
+  if (!t || t.type !== 'expense' || t.recurrence_id) {
+    return res.status(409).json({ error: "That expense can't be added — it may already be part of a subscription" });
+  }
+  t.recurrence_id = r.id;
+  if (reactivate && r.cancelled_at) r.cancelled_at = null; // only AFTER the link succeeded
+  res.json({ ok: true });
+});
+
+app.post('/api/subscriptions/:merchantKey/detach', (req, res) => {
+  const { transactionId } = req.body ?? {};
+  if (!MOCK_UUID.test(transactionId ?? '')) return res.status(400).json({ error: 'Invalid request' });
+  const r = mockTrackedFromKey(req, res);
+  if (!r) return;
+  const t = transactions.find((x) => x.id === transactionId && x.recurrence_id === r.id);
+  if (!t) return res.status(404).json({ error: "That expense isn't part of this subscription" });
+  t.recurrence_id = null;
+  res.json({ ok: true });
+});
+
+app.delete('/api/subscriptions/:merchantKey', (req, res) => {
+  const r = mockTrackedFromKey(req, res);
+  if (!r) return;
+  for (const t of transactions) if (t.recurrence_id === r.id) t.recurrence_id = null;
+  recurrences = recurrences.filter((x) => x.id !== r.id);
+  res.status(204).end();
 });
 
 app.patch('/api/subscriptions/:merchantKey', (req, res) => {
   const merchantKey = decodeURIComponent(req.params.merchantKey);
+  const validKey = /^[a-z0-9 ]{1,100}$/.test(merchantKey)
+    || /^auto:(?:[a-f0-9-]{36}|none):\d+:(?:monthly|annual)$/.test(merchantKey)
+    || MOCK_MANUAL_KEY.test(merchantKey);
+  if (!validKey) return res.status(400).json({ error: 'Invalid merchant key' });
+  const { status, amount, displayName } = req.body ?? {};
+  if (status !== undefined && !['active', 'cancelled', 'dismissed'].includes(status)) {
+    return res.status(400).json({ error: 'Invalid update' });
+  }
 
   if (merchantKey.startsWith('manual:')) {
-    const recurrenceId = merchantKey.slice('manual:'.length);
-    const r = recurrences.find((x) => x.id === recurrenceId);
-    if (!r) return res.status(404).json({ error: 'Recurrence not found' });
-    if (req.body?.status === 'dismissed') {
-      return res
-        .status(400)
-        .json({ error: 'Manually-marked recurrences cannot be dismissed — cancel it instead.' });
+    if (status === undefined && amount === undefined) return res.status(400).json({ error: 'Invalid update' });
+    if (amount !== undefined && !(typeof amount === 'number' && amount > 0 && amount <= 1_000_000_000)) {
+      return res.status(400).json({ error: 'Invalid update' });
     }
-    if (req.body?.status === 'cancelled') r.cancelled_at = new Date().toISOString();
-    else if (req.body?.status === 'active') r.cancelled_at = null;
-    if (req.body?.amount !== undefined) r.amount = req.body.amount;
+    const r = recurrences.find((x) => x.id === merchantKey.slice('manual:'.length));
+    if (status === 'dismissed') {
+      return res.status(400).json({ error: 'Manually-marked recurrences cannot be dismissed — cancel it instead.' });
+    }
+    if (!r) return res.status(404).json({ error: 'Recurrence not found' });
+    if (amount !== undefined && isTracked(r)) {
+      return res.status(400).json({ error: "A subscription you marked follows your latest charge — its amount can't be edited." });
+    }
+    if (status === 'cancelled') r.cancelled_at = new Date().toISOString();
+    else if (status === 'active') r.cancelled_at = null;
+    if (amount !== undefined) r.amount = amount;
     return res.json({
       recurrence: {
         merchantKey: manualMerchantKey(r.id),
@@ -1073,13 +1286,16 @@ app.patch('/api/subscriptions/:merchantKey', (req, res) => {
     });
   }
 
+  if (status === undefined && displayName === undefined) return res.status(400).json({ error: 'Invalid update' });
+  let name = displayName;
+  if (typeof name === 'string') {
+    name = name.trim() || null;
+    if (name && name.length > 40) return res.status(400).json({ error: 'Display name must be 40 characters or fewer.' });
+  }
   const existing = subscriptionOverrides.get(merchantKey);
   const merged = {
-    status: req.body?.status ?? existing?.status ?? 'active',
-    display_name:
-      req.body?.displayName !== undefined
-        ? (req.body.displayName?.trim() || null)
-        : existing?.display_name ?? null,
+    status: status ?? existing?.status ?? 'active',
+    display_name: name !== undefined ? name : existing?.display_name ?? null,
     decided_at: new Date().toISOString(),
   };
   subscriptionOverrides.set(merchantKey, merged);
@@ -1111,31 +1327,37 @@ app.all('/api/cron/recurrences', (req, res) => {
   if (!valid) return res.status(401).json({ error: 'Unauthorized' });
 
   const today = todayUTC();
+  // dueRecurrences FAILS CLOSED: only auto_log === true with a real date can fire,
+  // so tracked subscriptions (auto_log false) are never touched — as in production.
   const due = dueRecurrences(recurrences, today);
   let created = 0;
   const skipped = 0;
-  const errors = 0;
+  let errors = 0;
   for (const r of due) {
-    const anchorDay = Number(String(r.created_at).slice(8, 10));
-    let next = nextRunDate(r.next_run_at, r.interval, anchorDay);
-    while (next <= today) next = nextRunDate(next, r.interval, anchorDay);
-    r.next_run_at = next;
-    r.last_run_at = today;
-    // Cron-created transactions award NO XP and do NOT extend the streak —
-    // stats is intentionally untouched here (Alex's decision, 2026-07-18).
-    transactions.push({
-      id: randomUUID(),
-      amount: r.amount,
-      type: r.type,
-      description: r.description,
-      date: today,
-      category_id: r.category_id,
-      is_recurring: true,
-      is_special: false,
-      recurrence_id: r.id,
-      created_at: new Date().toISOString(),
-    });
-    created += 1;
+    try {
+      const anchorDay = Number(String(r.created_at).slice(8, 10));
+      let next = nextRunDate(r.next_run_at, r.interval, anchorDay);
+      while (next <= today) next = nextRunDate(next, r.interval, anchorDay);
+      r.next_run_at = next;
+      r.last_run_at = today;
+      // Cron-created transactions award NO XP and do NOT extend the streak —
+      // stats is intentionally untouched here (Alex's decision, 2026-07-18).
+      transactions.push({
+        id: randomUUID(),
+        amount: r.amount,
+        type: r.type,
+        description: r.description,
+        date: today,
+        category_id: r.category_id,
+        is_recurring: true,
+        is_special: false,
+        recurrence_id: r.id,
+        created_at: new Date().toISOString(),
+      });
+      created += 1;
+    } catch {
+      errors += 1; // one bad row never stops the rest, as in lib/runRecurrences.js
+    }
   }
   res.json({ created, skipped, errors });
 });
