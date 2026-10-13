@@ -1,148 +1,130 @@
-# Chat Handoff — updated 2026-09-23 (SECURITY AUDIT of all three apps + P1/P2/P3 fixes — UNCOMMITTED, and BLOCKED on one Vercel env var)
+# Chat Handoff — updated 2026-10-13 (TWO SPECS WRITTEN: subscription marking + trips — awaiting Alex's review, no code yet)
 
 ## DUAL-AGENT BATON  (both models: update this the MOMENT you finish work)
-- Current stage:  **STAGE 6 RED-TEAM equivalent COMPLETE; all fixes written but NOT committed, NOT
-                  deployed.** A full security audit ran across Trim, LifeChat and Morning Briefing.
-                  The P1 (auth), the P2 (rate limit) and 9 of 13 P3s are FIXED in the working tree,
-                  each with tests, each RED/GREEN-verified against the unfixed code. Suite is
-                  **507 passing, 0 skipped**. Nothing is committed.
-                  **Do not push until Alex sets `ALLOWED_EMAILS` in Vercel.**
-- Model A is:     Claude Code (audit + fix). Model B / verifier: **Codex — still unavailable** for
-                  security work (withholds output as a "cybersecurity request"), so the adversarial
-                  pass was done by a fan-out of Claude subagents plus by-hand verification instead.
-- Up next:        **Alex** — (1) put the full 7-user `ALLOWED_EMAILS` list in the `trim-api` Vercel
-                  env, (2) then commit + deploy. Order matters, see the DEPLOY BLOCKER below.
-- Last actor did: Claude Code, 2026-09-23 — audited all three apps; fixed P1 + P2 + 9 P3s; added
-                  `server/test/auth.test.js` (11) and `server/test/routeMountTable.test.js` (19);
-                  extended the transactions and cron suites; extended both BUGS-FIXED ledgers;
-                  updated SECURITY.md + DEPLOY.md; sanitised the project ref out of the public repo;
-                  `npm audit fix`; removed both stale worktrees. Auth changed, so SECURITY.md was
-                  mandatory and was done.
-
-## ⚠ DEPLOY BLOCKER — read before committing or pushing anything
-`server/middleware/auth.js` now **refuses to boot** if `ALLOWED_EMAILS` is unset (fail-closed, the
-same pattern as `SUPABASE_URL`). That variable is **not yet in the Vercel `trim-api` project**.
-
-If this reaches `main` before the env var is set, the API will not start — total outage, not a
-degraded mode. Correct order:
-  1. Set `ALLOWED_EMAILS` in the `trim-api` Vercel project = **all 7 real users' emails**,
-     comma-separated. Only Alex's own address is in local `server/.env` right now; the other six
-     are unknown to this session (deliberately — reading 7 friends' addresses out of `auth.users`
-     was not done without asking). Get them with:
-     `select email from auth.users order by created_at;`
-  2. Verify: `vercel env ls production` on `trim-api` shows `ALLOWED_EMAILS`.
-  3. Then commit, push, deploy, and re-check `/api/health` returns 200.
-
-Note the project's own history here: a correct fix once sat **uncommitted for 17 days** and Alex kept
-seeing a bug that was already solved. Do not let these edits rot the same way — but do not push them
-ahead of the env var either.
+- Current stage:  **DESIGN DONE, SPEC REVIEW PENDING.** Two specs are written, red-teamed, verified
+                  and committed on branch `feature/subscription-marking`. **No product code yet.**
+                  Nothing is on `main`; the branch is not pushed.
+- Model A is:     Claude Code (design, red team via Claude subagents). Ordinary feature work, so it
+                  stays single-model per CLAUDE.md. **Exception:** Phase 18 (trips) edits the
+                  unapplied Phase 9.5 migrations 018/018a/019, so it needs an independent review
+                  before merge (`code-reviewer` + `plan-verifier` agents; Codex refuses security work).
+- Up next:        **Alex** — review both specs (PDFs). Then Claude: `writing-plans` for Phase 17.
+- Last actor did: Claude Code, 2026-10-13 — explored 4 subsystems, designed both features with Alex
+                  section by section, wrote both specs, ran a 3-lens red team on each plus
+                  verification rounds (subscriptions 5, trips 3), stopped per the validator-loop
+                  rule, made PDFs, filed 5 unrelated bugs as separate tasks.
+- **The 23 Sep "DEPLOY BLOCKER" is RESOLVED** — `ALLOWED_EMAILS` was set and deployed the same day
+  (BUILD_PLAN 16.5, commit `3236ab0`). The old baton below it was stale.
 
 ## Goal
-Alex asked (22 Sep): validate all app infrastructure and plans — "make sure security is flawless and
-there are no private API key leaks or anything, and the users data won't be leaked, and there are no
-bugs or errors with the apps so far." Scope was all three apps, not just Trim.
+Alex (13 Oct): (1) **"Add feature … for trips where you have a set budget for certain categories
+like food or shopping or hotels and for the different cities. So I can budget better while on
+holiday. Usually I will have holidays marked as special expenses too."** — and he asked what the
+best way to incorporate it is. (2) **"I also don't see a way to mark a transaction as a
+subscription myself. If I know something is a subscription I could help by immediately marking it
+myself."**
 
 ## Current state
+**Done and committed** on `feature/subscription-marking` (`bd206a4`, `4529300`, `ab80799`):
+- `docs/superpowers/specs/2026-10-13-subscription-marking-design.md` (+ `.pdf`, 14 pp) — **Phase 17**
+- `docs/superpowers/specs/2026-10-13-trips-design.md` (+ `.pdf`, 16 pp) — **Phase 18**
 
-**Audit: COMPLETE.** Full report (kept OUTSIDE this public repo on purpose):
-`../SECURITY-AUDIT-2026-09-22.md` + `.pdf`.
+**Verified facts this session (not assumptions):**
+- Live DB (read-only schema query, 13 Oct): migrations **014–017 applied; 012, 018, 018a, 019 NOT
+  applied** (no `*_enc` column, no barrier function). One code reader claimed otherwise — wrong.
+  This is why new tables can go in as `017a`/`017b` and be folded into the unapplied 018/018a/019.
+- `encryptionScope.test.js:179` requires `019` to sort LAST, so the next migration can't be `020`.
+- Today the only manual subscription path is Quick Add's hidden **"Repeat this"** (auto-logs
+  nightly). There is no way to mark an already-logged transaction; overrides can't make a row appear;
+  the detector needs 3 charges.
+- Both server and client use the new `sb_` Supabase key formats; no code reads `SUPABASE_JWT_SECRET`.
 
-Headline: **no key leaks, no data leaks, no failing tests.** No secret has ever been committed to any
-of the three repos — every diff in all history was scanned, not just the current tree. All 14 Trim
-routes are correctly user-scoped. Trim 459/459 tests passed before changes, 470/470 after.
+**Not started:** implementation plans, any code, migrations 017a/017b, BUILD_PLAN/FEATURES updates
+for Phases 17–18 (they come with the build, per the definition of done).
 
-**Fixed this session (in the working tree, UNCOMMITTED):**
-1. **P1 — open signup let any stranger use Trim and spend `ANTHROPIC_API_KEY`.** `requireAuth`
-   verified tokens perfectly but never checked *which* account held them; signup is open and email
-   confirmation is off. Fixed with an `ALLOWED_EMAILS` allowlist returning 403, failing closed at
-   boot. `server/middleware/auth.js`.
-2. **P2 — rate limits did not hold in production.** Both limiters used in-memory storage, but the
-   live deploy is Vercel *serverless*, so counters were per-instance. The `/api/ask` ceiling is now
-   counted in Postgres. `server/routes/ask.js`.
-3. **`server/test/auth.test.js` — NEW, 11 tests.** Nothing previously loaded the real auth
-   middleware; every route suite stubs auth away. Covers the allowlist, the token checks, and the
-   fail-closed boot guard (in a child process, since it calls `process.exit(1)`).
-4. **`BUGS-FIXED.md` — appended to (it already existed).** The ledger was created 2026-09-22 and
-   was committed but MISSING from the working tree, so an `ls` check wrongly reported it absent and
-   the first write overwrote it. Restored from HEAD and re-applied additively: the two 2026-09-23
-   fixes, three new named failure shapes, and a "traps that have not bitten yet" section that
-   records invariants rather than exploits, because this repo is public.
-5. SECURITY.md + DEPLOY.md document `ALLOWED_EMAILS`; the "email confirmation OFF" checklist line
-   now says out loud that the allowlist is what makes that safe.
-
-**Verified, not assumed:** `npm test` 470/470 · server boots on the real `.env` · `client npm run
-build` passes · the new Postgres count query was run against the live database to confirm the
-`role='user'` filter discriminates (2 of 4 rows).
-
-**Confirmed NOT exploited:** `auth.users` holds exactly 7 accounts, latest signup 16 Jul, **zero in
-the last 30 days**. `ask_messages` has 4 rows ever, 1 user, most recent 12 Jul — the Anthropic key
-was never burned. The P1 was a real hole that nobody found.
-
-**Encryption is still inert and untouched** — production has neither `ENCRYPTION_PHASE` nor
-`DATA_ENCRYPTION_KEY`, consistent with the 2026-09-23 Phase 15 check. Worth stating plainly because
-it is easy to misread the docs: **Trim's data is not currently encrypted at rest.**
+**Encryption is still inert in production** (unchanged).
 
 ## Key decisions (and why)
-- **Fail closed at boot, not per-request, for `ALLOWED_EMAILS`** — matches the existing
-  `SUPABASE_URL` / `CRON_SECRET` pattern. An unset allowlist must never silently mean "admit
-  everyone", which is the whole bug being fixed. Cost: it creates the deploy blocker above, which
-  is the correct trade (a loud outage beats a silent open door).
-- **403, not 401, for a non-allowlisted account** — the credential is genuine; the account just
-  isn't invited, so retrying with a fresh token will never help.
-- **The ask cap moved to Postgres rather than a Redis/store add-on** — the data was already there,
-  it is one indexed query, and it needs no new dependency or service.
-- **Counted BEFORE the user-message insert** — otherwise a rejected turn leaves a stray row and
-  inflates the caller's own quota.
-- **`BUGS-FIXED.md` records invariants, not exploits** — the repo is public, and some audit findings
-  are still open. The exploitable detail stays in the out-of-repo report.
-- **Did not commit** — Alex asked for fixes, not a deploy, and pushing ahead of the env var would
-  take the API down.
-- **Did not read the other 6 users' emails** — reading friends' addresses out of `auth.users` is a
-  privacy step worth asking about first, and aggregate counts answered the abuse question.
+Subscription marking (Phase 17):
+- **Track only** — marking never auto-logs; Alex keeps logging charges. (Avoids duplicates; stays
+  compatible with future bank import.) "Repeat this" stays for auto-logging.
+- **Ask before attaching** — a Quick Add toast "Is this your Netflix subscription?"; nothing attaches
+  silently.
+- Mark from **Transactions → Edit** and an **"Add a subscription"** button on /subscriptions; adds
+  **yearly**.
+- **Reuse `recurrences`** with `auto_log boolean` (false = tracked); the nightly job has 3
+  independent guards so a tracked row can never fire. Migration `017a_subscription_tracking.sql`.
+- **Amount / next date / last charged are DERIVED from attached charges at read time**, never stored.
+- **Trim acts silently only on an exact note match** (the note the subscription was marked with).
+  Everything weaker only ever asks. Silent no-note matching was **deleted** after rounds 2–4 kept
+  finding ways it hid a different subscription; the accepted cost is a visible, fixable duplicate.
+- Fixes an existing bug: deleting a category silently cascade-deletes its schedules.
 
-## Files that matter (this session)
-- `../SECURITY-AUDIT-2026-09-22.md` / `.pdf` — the full report, all three apps. **Outside the repo
-  by design** (it lists still-open findings; this repo is public).
-- `server/middleware/auth.js` — the P1 fix. **Changed, uncommitted.**
-- `server/routes/ask.js` — the P2 fix. **Changed, uncommitted.**
-- `server/test/auth.test.js` — **NEW**, 11 tests, the first coverage of real auth.
-- `BUGS-FIXED.md` — extended, not created (it dated from 2026-09-22). Now additive-only vs HEAD.
-- `SECURITY.md` (credential table + confirmation-off line), `DEPLOY.md` (server env table) — updated.
-- `server/.env.example` — documents `ALLOWED_EMAILS`. `server/.env` has Alex's address only.
-- Backups of the pre-edit files: `/tmp/auth.js.bak`, `/tmp/ask.js.bak` (ephemeral — git is the real
-  record once committed).
+Trips (Phase 18):
+- **Separate trips with a per-trip switch** "Keep this trip out of my monthly budget" (Alex chose
+  this over building on special groups). Switch on → trip expenses are starred special, so the ONE
+  existing exclusion rule (`lib/special.js`) handles all monthly figures.
+- **Stops with dates; city derived from the expense date** at read time — `trip_stop_id` is only an
+  explicit override. Removes a whole class of stale data.
+- **Budgets:** overall + per-category (whole trip) + one total per city. **Home currency.**
+- **Encrypted** names and budgets; migration `017b_trips.sql` + in-place edits to unapplied
+  018/018a/019 (re-check the live DB first).
+- **"Start from a special group"** converts holiday groups (dates entered by Alex, not guessed).
+- **Own "Trips" nav tab**; desktop nav moves from `md` to `lg` (it already overflows at md).
+- Trip mode in Quick Add keeps the **3-tap** path; Quick Add never sends `isSpecial` while a trip is
+  attached (the red team's blocker).
+- **Out of v1:** VND stops (rate service doesn't quote VND), local-currency budgets, Ask Trim.
+
+Process:
+- **Verification stopped per the `validator-loop` skill** — subscriptions hit 5 rounds with the
+  blocker count no longer shrinking; trips hit the 3-round cap. Residual risk is the kind a further
+  round finds only in edge cases; both specs list their known limits.
+
+## Files that matter
+- The two specs + PDFs above (newest, the source of truth for Phases 17–18).
+- `BUGS-FIXED.md` — read before coding; the specs reference its recorded shapes repeatedly.
+- `server/routes/subscriptions.js`, `lib/subscriptions.js`, `lib/recurrences.js`,
+  `lib/runRecurrences.js`, `routes/transactions.js`, `routes/categories.js`,
+  `client/src/components/QuickAddDialog.jsx`, `pages/Transactions.jsx`, `pages/Subscriptions.jsx`,
+  `components/SubscriptionRow.jsx` — what Phase 17 touches.
+- `server/test/helpers/routeHarness.js` — must be made stricter FIRST (data:null without
+  `.select()`, UUID ids, `count`, error injection, `maxRows`, chained `order`).
 
 ## Next steps (in order)
-1. **Alex: set `ALLOWED_EMAILS` (all 7 emails) in the `trim-api` Vercel project.** Blocks everything.
-2. Commit + push + deploy, then confirm `/api/health` is 200 and a real login still works.
-   Note the 23 Sep P3 sweep also touched `routes/transactions.js`, `routes/categories.js`,
-   `routes/ask.js`, `lib/runRecurrences.js`, `lib/recurrences.js` and
-   `migrations/009_lock_down_definer_functions.sql` — 009 must be **re-run** on any database built
-   from an earlier replay, since the old version aborted before applying either revoke.
-3. **LifeChat's Supabase project is `INACTIVE`** (free-tier idle pause) — the app will not load until
-   Alex restores it from the dashboard. Separate repo, unrelated to these edits.
-4. `npm audit fix` in `server/`, `client/` and LifeChat (3 and 4 transitive advisories, fixes exist).
-5. ~~The P3 sweep~~ **DONE 23 Sep** — fx bound, PATCH type invariant, migration 009, cron
-   timezone, the two phase-`enc` bugs, LifeChat's cache-on-signout, the project ref, the spike
-   header, `*.pem`, `npm audit fix`, both worktrees. Details in `BUGS-FIXED.md`.
-6. **Still open, all decisions rather than defects** (full list in the report's last section):
-   Trim client's 4 advisories need *major* bumps (vite 8, react-router-dom 7) — I verified the
-   react-router open redirect is NOT reachable here and the vite ones are dev-server only, so this
-   is a judgement call, not urgent; whether the repo stays public; whether Trim gets an
-   account-deletion path; a `RECOVERY.md` for Trim; service-role key rotation; and recovering
-   `rls_auto_enable()`'s body out of the live project so the migrations folder is complete.
+1. **Alex: review both specs** (the PDFs). Approve, or say what to change.
+2. On approval of Phase 17: invoke **`superpowers:writing-plans`** → implementation plan → Alex
+   picks the execution method → build on `feature/subscription-marking`. Order inside the build:
+   harness first (run the whole suite) → migration 017a (**Alex runs it in the Supabase SQL editor;
+   give exact steps**) → server → devMock → client → tests → docs. Verify in the running UI with a
+   preview harness (no Supabase login for agents).
+3. Phase 18 (trips) in its own session(s): plan → **re-check live DB (012/018/018a still
+   unapplied)** → build → independent review → Alex runs 017b → deploy API then client.
+4. **Security housekeeping (needs Alex's OK):** delete the unused `SUPABASE_JWT_SECRET` line from
+   `server/.env` (a code reader's grep printed it into this session's transcript; not published).
+   Optionally revoke the legacy JWT secret in Supabase after confirming Vercel also uses `sb_` keys.
+5. Five unrelated bugs were filed as one-click side tasks: Simple-mode Quick Add drops Special/Repeat
+   flags; weekly budget card shows wrong left/over; `/api/transactions/parse` breaks at encryption
+   phase `enc`; stale docs reconcile; Phase 9.5 backfill may skip half-encrypted rows.
 
 ## Open questions for Alex
-- **Does Trim's repo stay public?** Nothing is leaked by it — checked for real personal data, emails
-  and keys, found only `example.com` placeholders — but it publishes the full authorization logic.
-- **Do you want an account-deletion path?** Seven people's financial data currently has no way to be
-  deleted, and no password-reset or session-revocation route exists either.
-- **Rotate the service-role key?** No evidence it ever leaked, so hygiene rather than remediation.
-- **Write a `RECOVERY.md` for Trim?** LifeChat has one; Trim has no backup/restore runbook, on a
-  free tier that pauses when idle.
+- Approve the two specs as written?
+- OK to delete the unused `SUPABASE_JWT_SECRET` from `server/.env`?
+- (Carried from 23 Sep, still open) repo public? account deletion path? rotate service-role key?
+  write `RECOVERY.md`?
 
 ## How to resume
 Start a new session in this folder and say: "Read @CHAT_HANDOFF.md and continue with next step 1."
+
+## Previous sessions
+
+### 2026-09-23 — Security audit of Trim, LifeChat and Morning Briefing (DONE, DEPLOYED)
+- No key leaks, no data leaks. Fixed P1 (open signup → `ALLOWED_EMAILS` allowlist, fail-closed at
+  boot, 403), P2 (`/api/ask` cap counted in Postgres, since in-memory limits don't survive
+  serverless), and 9 P3s. All committed and deployed 23 Sep (`a4a30ee`…`3236ab0`, BUILD_PLAN 16.5).
+- Full report kept **outside** the public repo: `../SECURITY-AUDIT-2026-09-22.md` / `.pdf`.
+- Still-open decisions from it: repo public?; account-deletion path; service-role key rotation;
+  `RECOVERY.md`; client major bumps (vite 8, react-router-dom 7 — judged not urgent); recover
+  `rls_auto_enable()`'s body into the migrations folder; LifeChat's Supabase project was paused.
 
 # Previous session — 2026-09-23 (Phase 15 Analytics chip SHIPPED AND LIVE)
 
