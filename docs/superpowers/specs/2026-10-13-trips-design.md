@@ -4,6 +4,63 @@
 after a 3-lens red-team review (1 blocker, ~14 majors fixed) and verification rounds 2–3; written spec awaiting Alex's review ·
 **Phase:** 18 (builds after Phase 17, subscription marking)
 
+## Corrections from the final validation (2026-10-14) — binding for the build
+
+A last implementer-style pass found 1 major, 19 warnings and 10 contradictions. Resolved here; where this
+section and the text below disagree, **this section wins**.
+
+**The major — the Special setting on every keep-out write.** Any write that leaves a trip with
+`keep_out_of_monthly = true` while Settings → Special expenses is off turns the setting on and returns
+`specialEnabledNow: true`: **POST**, **PATCH** (when the resulting value is true) and **from-group**. A route
+test for each; mirrored in devMock.
+
+**Server.**
+- PATCH `/api/transactions`'s existing-row read also selects `date` (override normalisation needs the
+  effective date).
+- Phase 17's **attach** pre-reads the transaction's `trip_id` and that trip's `keep_out_of_monthly`, then the
+  update filters on the `trip_id` it read. "Takes it off the trip" always happens; "un-stars" only for a
+  keep-out trip (the unconditional wording in "Elsewhere" is superseded).
+- **Stop updates write every encrypted stop field** (name and budget) whenever they write either, like trip
+  rows (the backfill keys on the first `_enc` column).
+- `GET /api/trips/:id/untagged` is **paged** the Phase 17 way before `q` is applied.
+- `untagged` **excludes rows with a `recurrence_id`** (subscription and Repeat-this charges are home spending).
+- `specialOnTripsThisMonth` uses the **same `specialEnabled` gate** as `specialThisMonth`.
+- The GET `/api/trips` payload includes **id and createdAt** for trips and stops (the client tie-break needs them).
+- **Overlapping stops are allowed**; validation only checks stops sit inside the trip dates. The total
+  order decides (so "consecutive stops may share a travel day" is an example, not a rule).
+- Stop currency: the quotable list **or the user's base** — so a VND-based user *can* set a VND stop; the
+  "VND not offered" line applies to everyone else.
+- From-group: if only the group archive fails, the trip and moved expenses stand and the empty group stays
+  **active** (not hidden) until the archive is retried; the panel hides only archived empty groups.
+- "Setting a trip clears the group" applies when `specialGroupId` is **omitted**; sending both non-null is 400.
+- The Dashboard card shows "£X left" for upcoming trips and "£Y/day" **only while on**.
+
+**Client.**
+- **Trips query failure never blocks logging:** the "Checking your trips…" gate applies only while loading,
+  with `retry: 1`; on error, Quick Add logs untagged and shows "Couldn't check your trips".
+- A per-open **"stop currency declined"** flag, set when a failed fetch switches back to home currency,
+  stops the seeding effect re-seeding it in a loop.
+- **Moving the date into a trip after an amount is typed** attaches the tag but does **not** change the
+  currency (the typed-amount rule wins over "selected immediately").
+- Once a category chip is **armed**, a background rate refresh does not swap the rate in.
+- In simple mode the editor **omits `categoryBudgets`** from the PATCH body (an empty list would delete them).
+- Every trip mutation ends with **`invalidateMoney(queryClient)`**.
+- The untagged query key includes `q`: `['trips', id, 'untagged', q]`.
+- The **trip toast** ("Logged to Italy ✈️" + "Not trip spending") always shows, outside the gamification
+  else-if chain.
+- In the Edit dialog, choosing a Phase 17 subscription action **disables the trip picker** (attaching would
+  take the trip back off), with a one-line explanation.
+- "Start from a special group" needs every expense date in the group: add a `dates` array to the group
+  response (or a group-expenses read) — named in the API section of the build.
+
+**Tests.** A **parity test** imports `client/src/lib/trips.js` (kept free of `@/` imports;
+`client/package.json` is `"type": "module"`) and runs the same total-order and `cityOf` cases against both
+copies — the "untestable client mirror" known limit no longer applies.
+
+**Docs (definition of done).** FEATURES.md, BUILD_PLAN.md, ARCHITECTURE.md (schema + the 8 endpoints),
+SECURITY.md (endpoint list + encrypted fields), the Phase 9.5 runbook counts at lines ~36, ~185 and ~210,
+and BUGS-FIXED rows for anything fixed. The client file table also needs `pages/Dashboard.jsx` (TripCard mount).
+
 ## Goal
 
 While on holiday, Alex wants a set budget per category (food, shopping, hotels) and per city, and

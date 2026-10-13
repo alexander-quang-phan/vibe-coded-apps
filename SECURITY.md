@@ -55,6 +55,13 @@ No route is exposed without `requireAuth` except `/api/health` **and `/api/cron/
 - Sit behind its own rate limiter (same `express-rate-limit` shape as `askLimiter`) as a backstop against a leaked URL or retry storm — the secret is the primary defence.
 - Log only per-user `{ created, skipped, errors }` counts — never amounts or descriptions.
 - Cron-created transactions never call `applyLogEvent` — no XP, no streak. Alex's decision (2026-07-18): the streak measures the daily habit of logging by hand, and auto-created rent at 3am would make it meaningless. Same rule as bank sync.
+- **Tracked subscriptions are never fired (Phase 17).** A recurrence with `auto_log = false` is one Alex marked to *track*, not to auto-log. Three independent guards keep the cron away from it: the select filters `auto_log = true`, the claim `UPDATE` re-checks it (so a row switched to tracked after the sweep read it is refused), and `dueRecurrences`/`processOne` fail closed on anything but an explicit `auto_log === true` with a real `next_run_at`. Each guard has a test that fails when it is removed. One bad row is an error for that row, never an abort of the sweep.
+
+## Subscription marking endpoints (Phase 17)
+
+`GET /api/subscriptions/track/preview`, `GET /track/recent`, `POST /track`, `POST /:key/attach`, `POST /:key/detach` and `DELETE /:key` sit under the existing authenticated `/api/subscriptions` mount — no new mount, no new data class (they read and link the user's own `transactions` and `recurrences`). Every query is scoped by `req.user.id`; every client-supplied transaction or recurrence id is ownership-checked by that scope, and the link updates are conditional (`.eq('user_id').eq('type','expense').is('recurrence_id', null)`), so another user's or an income row is simply not matched. attach/detach/DELETE accept only tracked `manual:` keys (`isTracked` fails closed: a row read without `auto_log` is never treated as tracked). None of them award XP. Reads go through `selectFor`/`decodeRows`; responses are built field by field.
+
+`DELETE /api/categories/:id` now counts and reassigns `recurrences` too, and validates the reassign target whenever one is used — previously the ON DELETE CASCADE silently deleted every subscription in a deleted category.
 
 ## Input validation
 

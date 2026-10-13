@@ -1,8 +1,36 @@
 # Subscription marking — design
 
-**Date:** 2026-10-13 · **Status:** approved in chat; revised after a 3-lens red-team review and
+**Date:** 2026-10-13 · **Status:** BUILT 2026-10-14 (see "As built"); approved in chat; revised after a 3-lens red-team review and
 verification rounds 2–5 (round 4 led to deleting silent no-note matching altogether; looping
 stopped at round 5 per the validator-loop rule); awaiting Alex's review of this written spec · **Phase:** 17
+
+## As built (2026-10-14) — this section and the code win over anything below
+
+Built on `feature/subscription-marking` (plan: `docs/superpowers/plans/2026-10-14-subscription-marking.md`).
+The final validation pass and the click-through found these; each is implemented and tested:
+
+- **A price jump never brings back the old row.** Besides the strict match, a detected row with the exact
+  marked note is hidden when all its charges predate the subscription's **first** attached charge — its own
+  history (Disney+ £1.99 → £7.99). `suppressDetected` in `lib/subscriptionRows.js`.
+- **Preview never points at a hidden row.** `detected` is computed after the same suppression as GET, and
+  the client gives `existing` precedence over `detected`.
+- **Preview takes the typed `date`** as well as note, category and amount; the Edit dialog sends a
+  foreign entry's amount converted to home currency.
+- **Cancelled subscriptions are offered in preview only on an exact note** (as in the toast). The offer
+  after a cancellation is "It's the final charge" / "… is back"; the toast's buttons are **"It's back" /
+  "Final charge"** (this supersedes "Yes/No" for that case).
+- **`likely` requires a similar amount (±30%)** as well as the exact note and cycle alignment.
+- **A same-note race between two different expenses** is caught by a re-check after the insert: the
+  later subscription unlinks its charges and deletes itself, then answers 409. Every rollback unlinks first.
+- **"Latest charge" has a stable tie-break** (date, then created_at, then id).
+- **`POST /api/transactions`** does one existence read (`auto_log = false limit 1`) and the full lookup only
+  when it hits.
+- **Informational states keep Save usable** (`NO_ACTION`): "Trim already spots this" and "needs a category"
+  are not pending choices.
+- The **test harness changes are done** (see the plan, Task 1) — not a to-do.
+- **Known limit, added:** prompts stop after `MAX_CYCLES` missed cycles (weekly 4, monthly 12, yearly 3);
+  the charge can still be attached from the Edit dialog. Two concurrent subscriptions with the identical
+  note are treated as one (give one a different note).
 
 ## Goal
 

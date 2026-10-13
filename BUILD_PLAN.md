@@ -1251,6 +1251,33 @@ mint.
 
 ---
 
+## Phase 17 — mark a subscription yourself (2026-10-13 → 2026-10-14) — BUILT, on `feature/subscription-marking`, NOT merged
+
+Alex: "I don't see a way to mark a transaction as a subscription myself." Spec:
+`docs/superpowers/specs/2026-10-13-subscription-marking-design.md` (red-teamed, 5 verification rounds + a
+final validation pass). Plan: `docs/superpowers/plans/2026-10-14-subscription-marking.md`.
+
+- [x] **17.1** Stricter test harness (data:null without `.select()`, UUID ids, `count`, `maxRows`, error injection, chained `order`).
+- [x] **17.2** Migration `017a_subscription_tracking.sql` (auto_log, nullable next_run_at + check, `annual`). Real-PostgreSQL test, shown to fail when broken.
+- [x] **17.3** Nightly job: three guards so a tracked row can never fire; per-row try/catch.
+- [x] **17.4** `lib/subscriptionMatch.js` (silent only on the exact marked note) + `lib/subscriptionRows.js` (derived tracked rows, strict suppression, summary).
+- [x] **17.5** `/api/subscriptions`: paged reads, derived rows, preview, recent, track, attach, detach, remove; tracked amount not editable.
+- [x] **17.6** `POST /api/transactions` returns `subscriptionMatch` (Quick Add's question); opt-in writes `auto_log: true`.
+- [x] **17.7** Category delete keeps subscriptions (count, reassign, validate) + client reassign dialog.
+- [x] **17.8** devMock mirrored through the shared libs; also fixed its `?month=` filter.
+- [x] **17.9** Client: Edit-dialog Subscription section, `?edit=` deep link, Subscription pill + filter, Add-a-subscription dialog, Marked-by-you/Logs-itself tags, Remove, Quick Add toast, toasts tappable over dialogs.
+- [x] **17.10** Verified in the running UI (real pages against the mock; throwaway harness deleted). Server suite **668 passing**.
+- [ ] **17.11 — Alex:** run `server/migrations/017a_subscription_tracking.sql` in the Supabase SQL editor **before** the API deploys (the API selects `auto_log`; deploying first 500s /subscriptions). Then merge to `main` and `/deploy` (API first).
+
+Still unverified without a real login: the flows against the real database (only the mock and the fake were exercised).
+
+## Phase 18 — trips (designed 2026-10-13, NOT built)
+
+Spec: `docs/superpowers/specs/2026-10-13-trips-design.md`. Separate trips with a per-trip "keep out of my
+monthly budget" switch; stops whose city is derived from the date; overall, per-category and per-city
+budgets; encrypted names and limits (in-place edits to the unapplied 018/018a/019); migration `017b_trips.sql`;
+its own Trips nav tab. Build in its own session after Phase 17 is merged; re-check the live DB first.
+
 ## Deferred further (flagged in FEATURES.md, don't start without explicit ask)
 
 **Deferred during Phase 6 plan review (2026-05-08):**

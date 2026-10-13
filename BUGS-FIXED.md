@@ -7,6 +7,37 @@ After fixing any real bug, append one row: what it was, why it mattered, how it 
 
 ---
 
+## 2026-10-14 — Deleting a category silently deleted its subscriptions (found while building Phase 17)
+
+**What it was.** `recurrences.category_id` is `ON DELETE CASCADE`, and `DELETE /api/categories/:id`
+counted and reassigned **transactions only**. A category holding only Repeat-this schedules (or, from
+Phase 17, subscriptions Alex marked) had a transaction count of 0, so it was deleted at once — and the
+cascade took every schedule in it with it. Even with a reassign, the schedules were not moved, so they
+were still deleted.
+
+**Why it mattered.** Silent data loss: a "Rent" schedule would simply stop logging, a marked Netflix would
+vanish from /subscriptions, and their charges would lose their link. Nothing on screen said so.
+
+**How it was fixed.** The route counts recurrences beside transactions (409 with `{ transactionCount,
+subscriptionCount }`), moves both on reassign, and validates the target whenever one is used (it used to
+validate only when transactions were moving). The client's reassign dialog opens for either count.
+`test/helpers/categoriesRouteSuite.js` (new, all three phases) — three of its four tests fail against the
+old code.
+
+## 2026-10-14 — devMock ignored `?month=` and always returned the current month
+
+**What it was.** The mock's `GET /api/transactions` called `monthBounds(new Date(...))`, passing a Date
+where `monthBounds` expects a **time zone**, so it always resolved the current month. The real route
+filters `${month}-01 ≤ date < next month`.
+
+**Why it mattered.** Route and mock disagreed (recurring shape #2): under `npm run dev:mock`, filtering
+Transactions to a past month or following Analytics' monthly-history link showed the wrong rows. It
+surfaced while verifying Phase 17's `?month=…&edit=<id>` deep link, which could not find a September row.
+
+**How it was fixed.** The mock now filters exactly as the route does.
+
+---
+
 ## 2026-09-23 — The audit P3 sweep: five defects that each had a bound, a guard or a clock in the wrong place
 
 Filed as one entry because they share one shape: a rule existed, and something stood outside it.
@@ -199,6 +230,12 @@ Three failure modes have now produced more than one bug each. Check for them by 
 6. **A bound on an input is not a bound on what's derived from it.** The zod schema caps `amount`,
    but a figure computed from `originalAmount × fxRate` escapes that cap unless re-checked. Still
    open at `routes/transactions.js:218` and `:478`.
+7. **Only act silently on certainty; ask about everything else.** (Phase 17, 2026-10-14.) Four review
+   rounds kept finding ways a "smart" silent match would hide a *different* subscription — two £10.99
+   no-note services billed days apart cannot be told apart from data — and a silent wrong hide shrinks a
+   money total with no way back. A duplicate is visible and fixable; a hide is not. So anything that changes
+   what the user sees without asking (hiding, refusing, merging) must rest on an exact, user-given
+   identifier (the note a subscription was marked with), and everything fuzzier must be a question.
 
 ## Traps that have not bitten yet (found by audit, 2026-09-22)
 

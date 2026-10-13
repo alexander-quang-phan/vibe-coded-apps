@@ -144,7 +144,8 @@ alongside purely for display and audit; all three are NULL for an ordinary same-
 - Row delete with confirm.
 - CSV export of the currently-filtered set.
 - **Special groups (Phase 10 B1):** the edit dialog carries the same optional group picker as Quick-Add, and a clearable amber chip appears when the page is deep-linked from the Dashboard panel via `?specialGroup=`.
-- **Recurring (Task 6.12b):** rows carrying `is_recurring` show a "Recurring" pill on the meta line, and a "Recurring" filter chip sits beside the Special one. Both read fields already on `GET /api/transactions` — no server change.
+- **Recurring (Task 6.12b):** rows carrying `is_recurring` show a "Recurring" pill on the meta line, and a "Recurring" filter chip sits beside the Special one.
+- **Subscriptions (Phase 17):** rows linked to a subscription Alex marked show a **"Subscription"** pill, and the Recurring filter now includes them. The edit dialog has a **Subscription** section ("This is a subscription", "Part of Netflix · Remove from it", or an info line for Repeat-this charges). `/transactions?month=YYYY-MM&edit=<id>` opens an expense's edit dialog (the month makes sure older rows are loaded).
 - **Special expenses (opt-in, Task 9.2):** when the pref is on, each expense row gets a one-tap star/unstar ghost button next to Edit — retroactively including or excluding a transaction from budget math without opening the edit dialog — plus a small star marker beside starred amounts and a "Special" filter chip alongside the type filter. The edit dialog carries the same checkbox. All of this is invisible when the pref is off.
 
 ### Budgets
@@ -179,17 +180,23 @@ alongside purely for display and audit; all three are NULL for an ordinary same-
 
 ### Subscriptions
 
-- **Manually-marked recurrences (Task 6.12b)** appear alongside detected ones, carrying `source: 'manual'` and a "Manually marked" pill. They deliberately expose a *different* action set, because the server rejects two of the detected-row actions for them: **no Rename** (`manualPatchSchema` has no `displayName`) and **no "Not a subscription"** (dismiss returns 400 — the user opted in deliberately, so cancel is the off-ramp). In exchange they get an **amount edit**, which applies to future charges only; transactions already logged keep the amount they were logged with and are never rewritten.
-- Cadence labels are a three-way map (`lib/subscriptions.js`): Annual / Monthly / **Weekly**. Before 6.12b everything non-annual was labelled "Monthly", which mislabelled every weekly manual recurrence.
+- **Mark it yourself (Phase 17, 2026-10-14).** Trim's detector needs three charges, but Alex often knows sooner. Three ways in, all **track only** — Trim never logs a charge for a subscription you marked:
+  - **Transactions → Edit → "This is a subscription"** (Monthly / Weekly / **Yearly**). Applied by the dialog's Save, after the field edits. It also lists "other charges that look like this one" — pre-ticked when they share the note, a similar amount and fall a whole cycle apart; others unticked under "Maybe these too?".
+  - **Subscriptions → "Add a subscription"**: pick from your unlinked expenses of the last 13 months (searchable), then the same choices.
+  - **Quick Add asks**: log a charge near a tracked subscription's expected date and a toast asks "Is this your Netflix subscription?" (Yes attaches it, No or ignoring does nothing). After a cancellation, an exact-note charge asks "It's back" / "Final charge" instead. The toast fires last, so a level-up toast can't hide it.
+  - **The one rule:** Trim acts *silently* only on an exact match with the note a subscription was marked with. Anything weaker (first word only, no note) is only ever **asked**. A silent wrong guess would hide a real subscription and shrink "Per month" with no way back; a duplicate is visible and fixable. So: a detected row is hidden behind a marked one only on that exact note (or as its own pre-price-jump history); marking a charge whose note matches one you already track offers "Add to …" instead of making a second.
+  - A marked subscription's **amount, last charged and next expected are worked out from its attached charges every time** — fix a typo'd charge and the cost follows. "Marked by you" rows have no amount edit, and can be **removed** (their charges stay, unlinked). Logic lives in `server/lib/subscriptionMatch.js` (matching) and `server/lib/subscriptionRows.js` (rows), shared by the route and devMock.
+- **Repeat-this recurrences (Task 6.12b)** — the Quick Add opt-in that logs itself — appear alongside detected ones with a **"Logs itself"** pill (was "Manually marked"). They deliberately expose a *different* action set, because the server rejects two of the detected-row actions for them: **no Rename** (`manualPatchSchema` has no `displayName`) and **no "Not a subscription"** (dismiss returns 400 — the user opted in deliberately, so cancel is the off-ramp). In exchange they get an **amount edit**, which applies to future charges only; transactions already logged keep the amount they were logged with and are never rewritten.
+- Cadence labels are a three-way map (`lib/subscriptions.js`): **Yearly** / Monthly / Weekly (Phase 17 renamed "Annual"; the server value stays `annual`). Before 6.12b everything non-annual was labelled "Monthly", which mislabelled every weekly manual recurrence.
 
-- Auto-detected list of recurring expenses, no manual marking required. Detection rule: ≥3 same-merchant charges at ~30-day or ~365-day intervals (±5d) with amounts within 10%.
+- Auto-detected list of recurring expenses. Detection rule: the **last 3** unique-date charges of a merchant at ~30-day or ~365-day intervals (±5d) with amounts within 10%; charges with no note are grouped by category and amount instead (Task 6.2.1). Weekly is never auto-detected — mark it yourself.
 - Each row shows monthly cost, annualised cost, last charged, next expected, and total paid lifetime.
 - "Mark cancelled" toggle moves the row to a Cancelled section and surfaces the saved annual amount; toggling back to Active restores it. Decisions persist in `subscription_overrides` so a new month of detection doesn't overwrite them.
 - Every active row gets a "Not a subscription" link that flips status to `dismissed` — separate from cancelled, no celebratory toast, excluded from the saved-money totals. (Originally inferred-rows-only; dogfooding showed described rows false-positive too — rent is a recurring charge but not a subscription.) Dismissed rows live in their own quiet section, restorable.
 - Renaming is a compact affordance: unnamed inferred rows open the name form by default (naming them is the point); every other row gets a small "Rename" pencil button instead of a permanently-open input.
 - No Dashboard mini-card anymore (Task 6.A) — the audit nudge is the summary strip at the top of /subscriptions.
 - Empty state on the page itself when no subs are detected — friendly placeholder, never hides the nav link.
-- **Known limitation (Task 6.2.1):** today's detector groups by transaction description text, so quick-logged transactions (no description, the 3-tap default) are invisible to it. Task 6.2.1 closes the gap with a `(category, amount-cluster, cadence)` fallback and inline naming on the audit page.
+- Quick-logged transactions with no note are detected by the `(category, amount-cluster, cadence)` fallback from Task 6.2.1, with inline naming on the audit page.
 
 ### Ask Trim (the marquee differentiator)
 
@@ -211,7 +218,7 @@ alongside purely for display and audit; all three are NULL for an ordinary same-
 - Simple mode toggle. Flipping it on without a `monthly_limit` set hands the user off to the SimpleMonthCard's inline limit form on the Dashboard rather than bouncing them around.
 - Display name.
 - **Special expenses toggle (opt-in, Task 9.2):** off by default. "Track gifts, trips and one-offs outside your monthly budget. Off by default — flip it on and a star appears in Quick-Add." Turning it off makes every past and future special flag dormant — server math and client UI both go back to treating every transaction as normal.
-- Manage categories (Task 6.11): rename, recolour, change icon, add new, delete with reassign-to-Other recovery flow. Default categories are personalisable but the seeded "Other" / "Other Income" are protected from deletion (they're the reassign safety net).
+- Manage categories (Task 6.11): rename, recolour, change icon, add new, delete with reassign-to-Other recovery flow. Since Phase 17 a category holding only subscriptions also asks where to move them — deleting it used to wipe its subscriptions and Repeat-this schedules silently. Default categories are personalisable but the seeded "Other" / "Other Income" are protected from deletion (they're the reassign safety net).
 - **Any-emoji icon picker (Phase 10 A3):** the old fixed 20-emoji palette is now just a one-tap shortcut row. Below it sits `client/src/components/EmojiPicker.jsx` — a "paste any emoji" field (on a phone, that's the emoji keyboard, which covers skin tones and everything not in the catalogue) plus a collapsed "Browse all emoji" panel with search and nine group tabs over ~1,135 emoji. No npm dependency; the catalogue (`client/src/lib/emojiData.js`) is dynamically imported so it's a separate ~26KB chunk that only loads when the browser is opened. Collapsed by default so the dialog still fits a phone screen with its Save button.
   - Validation moved from `z.string().max(8)` to **exactly one pictographic grapheme** (`server/lib/emoji.js`, mirrored client-side). The old UTF-16 bound rejected legitimate emoji — 👨‍👩‍👧‍👦 is 11 code units — while accepting `"hack"` and `"🍔🍔🍔🍔"`. The check also allows flags (regional-indicator pairs) and keycaps (`1️⃣`), neither of which is `Extended_Pictographic`. Same rule now applies to savings-goal emoji.
 
@@ -236,7 +243,6 @@ alongside purely for display and audit; all three are NULL for an ordinary same-
 These were in the original vision but intentionally punted past MVP:
 
 - **Weekly digest card** — Sunday summary with streak, XP, and a low-pressure tip.
-- **Recurring transactions executor** — `is_recurring` column is on the schema but no cron/Edge Function processes them yet.
 - **Profile / achievements page** — badges screen once badges are awarded.
 
 ## Planned — Trim Premium (designed 2026-07-15, not built)
