@@ -1,121 +1,89 @@
-# Chat Handoff — updated 2026-10-13 (TWO SPECS WRITTEN: subscription marking + trips — awaiting Alex's review, no code yet)
+# Chat Handoff — updated 2026-10-14 (PHASE 17 SUBSCRIPTION MARKING BUILT on a branch — needs migration 017a + merge; trips designed, not built)
 
 ## DUAL-AGENT BATON  (both models: update this the MOMENT you finish work)
-- Current stage:  **DESIGN DONE, SPEC REVIEW PENDING.** Two specs are written, red-teamed, verified
-                  and committed on branch `feature/subscription-marking`. **No product code yet.**
-                  Nothing is on `main`; the branch is not pushed.
-- Model A is:     Claude Code (design, red team via Claude subagents). Ordinary feature work, so it
-                  stays single-model per CLAUDE.md. **Exception:** Phase 18 (trips) edits the
-                  unapplied Phase 9.5 migrations 018/018a/019, so it needs an independent review
-                  before merge (`code-reviewer` + `plan-verifier` agents; Codex refuses security work).
-- Up next:        **Alex** — review both specs (PDFs). Then Claude: `writing-plans` for Phase 17.
-- Last actor did: Claude Code, 2026-10-13 — explored 4 subsystems, designed both features with Alex
-                  section by section, wrote both specs, ran a 3-lens red team on each plus
-                  verification rounds (subscriptions 5, trips 3), stopped per the validator-loop
-                  rule, made PDFs, filed 5 unrelated bugs as separate tasks.
-- **The 23 Sep "DEPLOY BLOCKER" is RESOLVED** — `ALLOWED_EMAILS` was set and deployed the same day
-  (BUILD_PLAN 16.5, commit `3236ab0`). The old baton below it was stale.
+- Current stage:  **Phase 17 BUILT and verified on branch `feature/subscription-marking`. NOT merged, NOT
+                  deployed.** The final independent branch review was (re)started 2026-10-14 — check its
+                  result before merging (if it never reported, re-run the `trim-phase17-branch-review`
+                  workflow).
+- Model A is:     Claude Code (design, build, verification). Single-model feature work per CLAUDE.md.
+                  Phase 18 (trips) edits the unapplied Phase 9.5 migrations → needs an independent review
+                  (code-reviewer + plan-verifier agents; Codex refuses security work).
+- Up next:        **Alex** — (1) run migration 017a in Supabase (steps below), (2) merge + deploy.
+                  Then: Phase 18 trips in its own session.
+- Last actor did: Claude Code, 2026-10-14 — final spec validation, implementation plan, built Phase 17,
+                  668 server tests, clicked through the real UI against devMock, docs, ledger, specs.
 
 ## Goal
-Alex (13 Oct): (1) **"Add feature … for trips where you have a set budget for certain categories
-like food or shopping or hotels and for the different cities. So I can budget better while on
-holiday. Usually I will have holidays marked as special expenses too."** — and he asked what the
-best way to incorporate it is. (2) **"I also don't see a way to mark a transaction as a
-subscription myself. If I know something is a subscription I could help by immediately marking it
-myself."**
+Alex (13 Oct): (1) trips with a set budget per category and per city, "so I can budget better while on
+holiday"; (2) "I don't see a way to mark a transaction as a subscription myself." On 14 Oct: "Build out what
+you think is ready. Validate one more time." → Phase 17 (subscriptions) was ready and is built; Phase 18
+(trips) is fully specced and waits for its own session.
 
 ## Current state
-**Done and committed** on `feature/subscription-marking` (`bd206a4`, `4529300`, `ab80799`):
-- `docs/superpowers/specs/2026-10-13-subscription-marking-design.md` (+ `.pdf`, 14 pp) — **Phase 17**
-- `docs/superpowers/specs/2026-10-13-trips-design.md` (+ `.pdf`, 16 pp) — **Phase 18**
+**Phase 17 — built, tested, verified, committed** on `feature/subscription-marking`:
+- Migration `server/migrations/017a_subscription_tracking.sql` (auto_log, nullable next_run_at + check,
+  `annual`). Real-PostgreSQL test proves it; **not yet applied to the live database**.
+- Server: `lib/subscriptionMatch.js`, `lib/subscriptionRows.js`, guarded nightly job, six new
+  `/api/subscriptions` endpoints, `subscriptionMatch` on transaction create, category delete keeps
+  subscriptions. devMock mirrored through the same libs (and its `?month=` bug fixed).
+- Client: Transactions → Edit "Subscription" section, `?month=…&edit=<id>` deep link, Subscription pill,
+  "Add a subscription" dialog, Marked-by-you / Logs-itself tags, Remove, Quick Add "Is this your …
+  subscription?" toast.
+- **Verified:** `npm test` 668/668 (real-PG tests ran); `client npm run build` passes; every flow clicked
+  through in the real pages against `npm run dev:mock` (throwaway harness, deleted). Phone screenshots in
+  `docs/superpowers/screenshots/`.
+- **Not verified:** anything against the real database or with a real login.
 
-**Verified facts this session (not assumptions):**
-- Live DB (read-only schema query, 13 Oct): migrations **014–017 applied; 012, 018, 018a, 019 NOT
-  applied** (no `*_enc` column, no barrier function). One code reader claimed otherwise — wrong.
-  This is why new tables can go in as `017a`/`017b` and be folded into the unapplied 018/018a/019.
-- `encryptionScope.test.js:179` requires `019` to sort LAST, so the next migration can't be `020`.
-- Today the only manual subscription path is Quick Add's hidden **"Repeat this"** (auto-logs
-  nightly). There is no way to mark an already-logged transaction; overrides can't make a row appear;
-  the detector needs 3 charges.
-- Both server and client use the new `sb_` Supabase key formats; no code reads `SUPABASE_JWT_SECRET`.
-
-**Not started:** implementation plans, any code, migrations 017a/017b, BUILD_PLAN/FEATURES updates
-for Phases 17–18 (they come with the build, per the definition of done).
-
-**Encryption is still inert in production** (unchanged).
+**Phase 18 — trips:** spec `docs/superpowers/specs/2026-10-13-trips-design.md` (+ PDF), including a
+binding "Corrections from the final validation" section. No code.
 
 ## Key decisions (and why)
-Subscription marking (Phase 17):
-- **Track only** — marking never auto-logs; Alex keeps logging charges. (Avoids duplicates; stays
-  compatible with future bank import.) "Repeat this" stays for auto-logging.
-- **Ask before attaching** — a Quick Add toast "Is this your Netflix subscription?"; nothing attaches
-  silently.
-- Mark from **Transactions → Edit** and an **"Add a subscription"** button on /subscriptions; adds
-  **yearly**.
-- **Reuse `recurrences`** with `auto_log boolean` (false = tracked); the nightly job has 3
-  independent guards so a tracked row can never fire. Migration `017a_subscription_tracking.sql`.
-- **Amount / next date / last charged are DERIVED from attached charges at read time**, never stored.
-- **Trim acts silently only on an exact note match** (the note the subscription was marked with).
-  Everything weaker only ever asks. Silent no-note matching was **deleted** after rounds 2–4 kept
-  finding ways it hid a different subscription; the accepted cost is a visible, fixable duplicate.
-- Fixes an existing bug: deleting a category silently cascade-deletes its schedules.
-
-Trips (Phase 18):
-- **Separate trips with a per-trip switch** "Keep this trip out of my monthly budget" (Alex chose
-  this over building on special groups). Switch on → trip expenses are starred special, so the ONE
-  existing exclusion rule (`lib/special.js`) handles all monthly figures.
-- **Stops with dates; city derived from the expense date** at read time — `trip_stop_id` is only an
-  explicit override. Removes a whole class of stale data.
-- **Budgets:** overall + per-category (whole trip) + one total per city. **Home currency.**
-- **Encrypted** names and budgets; migration `017b_trips.sql` + in-place edits to unapplied
-  018/018a/019 (re-check the live DB first).
-- **"Start from a special group"** converts holiday groups (dates entered by Alex, not guessed).
-- **Own "Trips" nav tab**; desktop nav moves from `md` to `lg` (it already overflows at md).
-- Trip mode in Quick Add keeps the **3-tap** path; Quick Add never sends `isSpecial` while a trip is
-  attached (the red team's blocker).
-- **Out of v1:** VND stops (rate service doesn't quote VND), local-currency budgets, Ask Trim.
-
-Process:
-- **Verification stopped per the `validator-loop` skill** — subscriptions hit 5 rounds with the
-  blocker count no longer shrinking; trips hit the 3-round cap. Residual risk is the kind a further
-  round finds only in edge cases; both specs list their known limits.
+- **Track only** — marking never auto-logs (no duplicates; bank-import safe). "Repeat this" stays for auto-logging.
+- **Ask before attaching** — Quick Add toast; never silent.
+- **Trim acts silently only on the exact note a subscription was marked with**; anything weaker only asks.
+  Four review rounds showed fuzzier silent matching hides *different* subscriptions (BUGS-FIXED shape #7).
+- **Derived, never stored:** a tracked subscription's amount / last / next come from its attached charges.
+- **Migration named 017a** because 019 must sort last (encryption scope test); 012/018/018a/019 verified
+  unapplied live on 2026-10-13.
+- **Trips:** separate trips with a per-trip keep-out switch; city derived from date; encrypted; own nav tab.
+- **Verification stopped per the validator-loop rule** (subscriptions 5 rounds, trips 3, plus one final pass).
 
 ## Files that matter
-- The two specs + PDFs above (newest, the source of truth for Phases 17–18).
-- `BUGS-FIXED.md` — read before coding; the specs reference its recorded shapes repeatedly.
-- `server/routes/subscriptions.js`, `lib/subscriptions.js`, `lib/recurrences.js`,
-  `lib/runRecurrences.js`, `routes/transactions.js`, `routes/categories.js`,
-  `client/src/components/QuickAddDialog.jsx`, `pages/Transactions.jsx`, `pages/Subscriptions.jsx`,
-  `components/SubscriptionRow.jsx` — what Phase 17 touches.
-- `server/test/helpers/routeHarness.js` — must be made stricter FIRST (data:null without
-  `.select()`, UUID ids, `count`, error injection, `maxRows`, chained `order`).
+- `docs/superpowers/specs/2026-10-13-subscription-marking-design.md` (read "As built" first) + PDF
+- `docs/superpowers/plans/2026-10-14-subscription-marking.md`
+- `docs/superpowers/specs/2026-10-13-trips-design.md` + PDF (Phase 18)
+- `server/lib/subscriptionMatch.js`, `server/lib/subscriptionRows.js`, `server/routes/subscriptions.js`
+- `BUGS-FIXED.md` (two new rows + shape #7), `BUILD_PLAN.md` (Phase 17 / 18)
 
 ## Next steps (in order)
-1. **Alex: review both specs** (the PDFs). Approve, or say what to change.
-2. On approval of Phase 17: invoke **`superpowers:writing-plans`** → implementation plan → Alex
-   picks the execution method → build on `feature/subscription-marking`. Order inside the build:
-   harness first (run the whole suite) → migration 017a (**Alex runs it in the Supabase SQL editor;
-   give exact steps**) → server → devMock → client → tests → docs. Verify in the running UI with a
-   preview harness (no Supabase login for agents).
-3. Phase 18 (trips) in its own session(s): plan → **re-check live DB (012/018/018a still
-   unapplied)** → build → independent review → Alex runs 017b → deploy API then client.
-4. **Security housekeeping (needs Alex's OK):** delete the unused `SUPABASE_JWT_SECRET` line from
-   `server/.env` (a code reader's grep printed it into this session's transcript; not published).
-   Optionally revoke the legacy JWT secret in Supabase after confirming Vercel also uses `sb_` keys.
-5. Five unrelated bugs were filed as one-click side tasks: Simple-mode Quick Add drops Special/Repeat
-   flags; weekly budget card shows wrong left/over; `/api/transactions/parse` breaks at encryption
-   phase `enc`; stale docs reconcile; Phase 9.5 backfill may skip half-encrypted rows.
+1. **Alex — apply migration 017a (5 minutes, before any deploy):**
+   1. Open supabase.com → your Trim project → **SQL Editor** → **New query**.
+   2. Open `server/migrations/017a_subscription_tracking.sql` from the repo, copy all of it, paste, click
+      **Run**. It is safe to run twice. Expect "Success. No rows returned".
+   3. Tell Claude it's done; Claude runs a read-only check that `recurrences.auto_log` exists.
+2. Check the final branch review's result (see baton); fix anything confirmed.
+3. Merge `feature/subscription-marking` → `main` and **`/deploy` (API first, then client)** — the deploy
+   skill. Deploying the API before step 1 would 500 the Subscriptions page.
+4. Alex: try it — Transactions → Edit any expense → "This is a subscription"; Subscriptions → "Add a
+   subscription"; log a charge one cycle later in Quick Add and answer the toast.
+5. **Phase 18 trips**, own session: plan → re-check live DB (012/018/018a still unapplied) → build.
+6. Open from 13 Oct: OK to delete the unused `SUPABASE_JWT_SECRET` from `server/.env`? (A reader's grep
+   printed it into the session transcript; not published.) Five unrelated bugs are filed as side tasks.
 
 ## Open questions for Alex
-- Approve the two specs as written?
-- OK to delete the unused `SUPABASE_JWT_SECRET` from `server/.env`?
-- (Carried from 23 Sep, still open) repo public? account deletion path? rotate service-role key?
-  write `RECOVERY.md`?
+- Delete the unused `SUPABASE_JWT_SECRET` line from `server/.env`?
+- (Carried from 23 Sep) repo public? account-deletion path? rotate service-role key? `RECOVERY.md`?
 
 ## How to resume
 Start a new session in this folder and say: "Read @CHAT_HANDOFF.md and continue with next step 1."
 
 ## Previous sessions
+
+### 2026-10-13 — Designed subscription marking and trips
+- Explored the code with 4 readers; designed both features with Alex section by section; wrote both
+  specs; 3-lens red teams plus verification rounds; stopped per the validator-loop rule; PDFs; filed 5
+  side-task bugs. Decisions are carried in "Key decisions" above.
+
 
 ### 2026-09-23 — Security audit of Trim, LifeChat and Morning Briefing (DONE, DEPLOYED)
 - No key leaks, no data leaks. Fixed P1 (open signup → `ALLOWED_EMAILS` allowlist, fail-closed at
