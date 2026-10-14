@@ -24,6 +24,7 @@ import { nextRunDate, dueRecurrences, manualMerchantKey, isTracked } from '../li
 // rather than re-implemented, so the mock page cannot drift from the real one.
 import {
   buildDetectedRow, buildManualRow, trackedPrototypes, suppressDetected, summarise, categoryShape,
+  repeatPrototypes, repeatingFor,
 } from '../lib/subscriptionRows.js';
 import {
   prototypeOf, bestPreviewMatch, bestTrackedMatch, exactNoteConflict, sameAsDetected,
@@ -1059,7 +1060,8 @@ function mockState() {
     linkedById.set(t.recurrence_id, arr);
   }
   const protos = trackedPrototypes(recurrences, linkedById, (ts) => dayInZone(mockZone, new Date(ts)));
-  return { expenses, linkedById, protos };
+  const repeatProtos = repeatPrototypes(recurrences, linkedById);
+  return { expenses, linkedById, protos, repeatProtos };
 }
 
 function mockSubRef(proto) {
@@ -1070,6 +1072,7 @@ function mockSubRef(proto) {
     amount: Number(proto.amount),
     cadence: proto.cadence,
     category: categoryShape(catById(proto.category_id)),
+    cancelled: !proto.active,
   };
 }
 
@@ -1103,9 +1106,11 @@ app.get('/api/subscriptions/track/preview', (req, res) => {
     category_id: q.categoryId ?? tx.category_id,
     amount: q.amount !== undefined ? Number(q.amount) : Number(tx.amount),
   };
-  const { expenses, protos } = mockState();
+  const { expenses, protos, repeatProtos } = mockState();
   const best = bestPreviewMatch(expense, protos);
   const existing = best ? { ...mockSubRef(best.proto), kind: best.kind, strength: best.strength } : null;
+  const rep = repeatingFor(expense, repeatProtos);
+  const repeating = rep ? mockSubRef(rep) : null;
 
   const autoInput = expenses.filter((t) => !t.recurrence_id);
   const det = suppressDetected(detectSubscriptions(autoInput), protos).find((d) =>
@@ -1141,6 +1146,7 @@ app.get('/api/subscriptions/track/preview', (req, res) => {
   res.json({
     needsCategory: !expense.category_id,
     existing,
+    repeating,
     detected,
     likely: likely.map(mockCandidate),
     maybe: maybe.map(mockCandidate),
@@ -1175,7 +1181,15 @@ app.post('/api/subscriptions/track', (req, res) => {
   if (tx.type !== 'expense') return res.status(400).json({ error: 'Only expenses can be subscriptions' });
   if (!tx.category_id) return res.status(400).json({ error: 'Give this expense a category first' });
   if (tx.recurrence_id) return res.status(409).json({ error: 'Already part of a subscription' });
-  const conflict = exactNoteConflict(tx, mockState().protos);
+  const state = mockState();
+  const rep = repeatingFor(tx, state.repeatProtos);
+  if (rep) {
+    return res.status(409).json({
+      error: 'Trim already logs this automatically — manage it on Subscriptions',
+      repeating: mockSubRef(rep),
+    });
+  }
+  const conflict = exactNoteConflict(tx, state.protos);
   if (conflict) {
     return res.status(409).json({
       error: 'You already track this subscription',
@@ -1357,8 +1371,9 @@ app.all('/api/cron/recurrences', (req, res) => {
         created_at: new Date().toISOString(),
       });
       created += 1;
-    } catch {
+    } catch (err) {
       errors += 1; // one bad row never stops the rest, as in lib/runRecurrences.js
+      console.error('[mock cron] recurrence failed', { recurrenceId: r.id, message: err?.message });
     }
   }
   res.json({ created, skipped, errors });

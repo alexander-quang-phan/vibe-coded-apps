@@ -78,6 +78,8 @@ export function AddSubscriptionDialog({ open, onOpenChange, currency, onDetected
       invalidateMoney(queryClient); // the marking panel re-asks and shows the offer
       if (err?.status === 409 && err?.body?.existing) {
         toast('You already track this one', { description: 'Choose “Add to …” instead.' });
+      } else if (err?.status === 409 && err?.body?.repeating) {
+        toast('Trim already logs this automatically', { description: 'It is already on this page.' });
       } else {
         toast.error(err?.message || "Couldn't save the subscription");
       }

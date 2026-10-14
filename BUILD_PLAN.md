@@ -1267,6 +1267,7 @@ final validation pass). Plan: `docs/superpowers/plans/2026-10-14-subscription-ma
 - [x] **17.8** devMock mirrored through the shared libs; also fixed its `?month=` filter.
 - [x] **17.9** Client: Edit-dialog Subscription section, `?edit=` deep link, Subscription pill + filter, Add-a-subscription dialog, Marked-by-you/Logs-itself tags, Remove, Quick Add toast, toasts tappable over dialogs.
 - [x] **17.10** Verified in the running UI (real pages against the mock; throwaway harness deleted). Server suite **668 passing**.
+- [x] **17.10b** Final independent branch review: 5 confirmed findings fixed (Repeat-this duplicate refused; narrower own-history; "different subscription" no longer sticks; only on-screen charges linked; Save waits for the panel) plus 9 lows; one known limit documented (spec "As built"). Re-verified in the running UI against the mock. Server suite **686 passing**.
 - [ ] **17.11 — Alex:** run `server/migrations/017a_subscription_tracking.sql` in the Supabase SQL editor **before** the API deploys (the API selects `auto_log`; deploying first 500s /subscriptions). Then merge to `main` and `/deploy` (API first).
 
 Still unverified without a real login: the flows against the real database (only the mock and the fake were exercised).

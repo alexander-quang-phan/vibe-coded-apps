@@ -521,9 +521,13 @@ export function runSubscriptionsRouteSuite(phase) {
   // --- recent ---------------------------------------------------------------------
 
   test(`${label} recent: an old yearly charge is found by search even behind 200+ newer expenses`, async () => {
-    const rows = [await txRow({ n: 1, date: '2026-01-15', amount: 95, description: 'Amazon Prime' })];
+    // Dates relative to today: the endpoint looks back 13 months from NOW, so fixed
+    // dates would start failing once they aged out of that window.
+    const DAY = 86400000;
+    const ago = (days) => new Date(Date.now() - days * DAY).toISOString().slice(0, 10);
+    const rows = [await txRow({ n: 1, date: ago(270), amount: 95, description: 'Amazon Prime' })];
     for (let i = 0; i < 205; i += 1) {
-      const d = new Date(Date.parse('2026-06-01T00:00:00Z') + i * 43200000).toISOString().slice(0, 10);
+      const d = ago(150 - i * 0.5);
       rows.push(await txRow({ n: 1000 + i, date: d, amount: 3, description: 'Coffee' }));
     }
     const { http } = await boot(await tables({ transactions: rows }), { maxRows: 120 });
@@ -543,8 +547,8 @@ export function runSubscriptionsRouteSuite(phase) {
   test(`${label} track: marks a subscription, links chosen charges, stores the right columns`, async () => {
     const t = await tables({
       transactions: [
-        await txRow({ n: 1, date: '2026-10-03', amount: 10.99, description: 'Netflix' }),
-        await txRow({ n: 2, date: '2026-09-03', amount: 10.99, description: 'Netflix' }),
+        await txRow({ n: 1, date: '2026-10-03', amount: 10.99, description: 'Crunchyroll' }),
+        await txRow({ n: 2, date: '2026-09-03', amount: 10.99, description: 'Crunchyroll' }),
         await txRow({ n: 3, date: '2026-09-03', amount: 50, description: 'Theirs', user: U2 }),
         await txRow({ n: 4, date: '2026-09-03', amount: 50, description: 'Salary', type: 'income' }),
         await txRow({ n: 5, date: '2026-08-03', amount: 10.99, description: 'Netflix', rec: REC }),
@@ -562,10 +566,10 @@ export function runSubscriptionsRouteSuite(phase) {
       assert.equal(stored.auto_log, false);
       assert.equal(stored.next_run_at, null);
       assert.equal(stored.interval, 'monthly');
-      if (phase === 'off') assert.equal(stored.description, 'Netflix');
+      if (phase === 'off') assert.equal(stored.description, 'Crunchyroll');
       else {
         const { decryptRegistered } = await import('../../lib/crypto.js');
-        assert.equal(decryptRegistered('recurrences.description', U, stored.description_enc), 'Netflix');
+        assert.equal(decryptRegistered('recurrences.description', U, stored.description_enc), 'Crunchyroll');
         if (phase === 'enc') assert.equal(stored.description, undefined);
       }
       assert.equal(db.store.transactions.find((r) => r.id === id(3)).recurrence_id, null, 'other user untouched');
@@ -596,6 +600,85 @@ export function runSubscriptionsRouteSuite(phase) {
       const att = await http.send('POST', `/manual:${T_REC}/attach`, { transactionId: id(2) });
       assert.equal(att.status, 200, JSON.stringify(att.body));
       assert.equal(sub((await http.get('/')).body, `manual:${T_REC}`).amount, 7.99);
+    } finally {
+      await http.close();
+    }
+  });
+
+  test(`${label} track: a note Trim already logs with Repeat-this is a 409 — never a second subscription`, async () => {
+    // The seed has an ACTIVE Repeat-this "Netflix" (REC). Marking a hand-added
+    // "Netflix" expense would put the same service on the page twice.
+    const t = await tables({
+      transactions: [await txRow({ n: 1, date: '2026-10-03', amount: 9.99, description: 'Netflix' })],
+    });
+    const { db, http } = await boot(t);
+    try {
+      const pv = await http.get(`/track/preview?transactionId=${id(1)}`);
+      assert.equal(pv.status, 200, JSON.stringify(pv.body));
+      assert.equal(pv.body.repeating?.merchantKey, `manual:${REC}`, 'preview names the Repeat-this schedule');
+      clean(pv.body);
+      const before = db.store.recurrences.length;
+      const res = await http.send('POST', '/track', { transactionId: id(1), interval: 'monthly' });
+      assert.equal(res.status, 409, JSON.stringify(res.body));
+      assert.equal(res.body.repeating.merchantKey, `manual:${REC}`);
+      assert.equal(db.store.recurrences.length, before, 'no second subscription');
+      assert.equal(db.store.transactions.find((r) => r.id === id(1)).recurrence_id, null, 'not attached to Repeat-this');
+    } finally {
+      await http.close();
+    }
+  });
+
+  test(`${label} track: a CANCELLED Repeat-this schedule does not block marking the same note`, async () => {
+    const t = await tables({
+      transactions: [await txRow({ n: 1, date: '2026-10-03', amount: 9.99, description: 'Netflix' })],
+    });
+    t.recurrences = t.recurrences.map((r) => (r.id === REC ? { ...r, cancelled_at: '2026-09-15T12:00:00Z' } : r));
+    const { http } = await boot(t);
+    try {
+      assert.equal((await http.get(`/track/preview?transactionId=${id(1)}`)).body.repeating, null);
+      const res = await http.send('POST', '/track', { transactionId: id(1), interval: 'monthly' });
+      assert.equal(res.status, 201, JSON.stringify(res.body));
+    } finally {
+      await http.close();
+    }
+  });
+
+  test(`${label} track: an exact note of a CANCELLED tracked subscription is still a 409 (answer final-or-back instead)`, async () => {
+    const t = await tables({
+      recurrences: [await trackedRec({ description: 'Disney Plus', amount: 7.99, cancelled_at: '2026-10-10T12:00:00Z' })],
+      transactions: [
+        await txRow({ n: 1, date: '2026-10-03', amount: 7.99, description: 'Disney Plus', rec: T_REC }),
+        await txRow({ n: 2, date: '2026-11-03', amount: 7.99, description: 'Disney Plus' }),
+      ],
+    });
+    const { db, http } = await boot(t);
+    try {
+      const before = db.store.recurrences.length;
+      const res = await http.send('POST', '/track', { transactionId: id(2), interval: 'monthly' });
+      assert.equal(res.status, 409, JSON.stringify(res.body));
+      assert.equal(res.body.existing.merchantKey, `manual:${T_REC}`);
+      assert.equal(res.body.existing.kind, 'finalOrBack');
+      assert.equal(res.body.existing.cancelled, true, 'the client can label it "(cancelled)"');
+      assert.equal(db.store.recurrences.length, before);
+    } finally {
+      await http.close();
+    }
+  });
+
+  test(`${label} preview: the cancellation DAY is the user's local day, not UTC`, async () => {
+    // 23:30 UTC on 10 Oct is already 11 Oct in Auckland (UTC+13 in October).
+    const t = await tables({
+      recurrences: [await trackedRec({ cancelled_at: '2026-10-10T23:30:00Z' })],
+      transactions: [
+        await txRow({ n: 1, date: '2026-10-03', amount: 10.99, description: 'Netflix', rec: T_REC }),
+        await txRow({ n: 2, date: '2026-10-11', amount: 10.99, description: 'Netflix' }),
+      ],
+    });
+    t.user_stats = [{ ...t.user_stats[0], timezone: 'Pacific/Auckland' }];
+    const { http } = await boot(t);
+    try {
+      const { body } = await http.get(`/track/preview?transactionId=${id(2)}`);
+      assert.equal(body.existing?.kind, 'attach', 'charged on the (local) cancellation day — not after it');
     } finally {
       await http.close();
     }
@@ -742,6 +825,46 @@ export function runSubscriptionsRouteSuite(phase) {
       const { body } = await http.get('/');
       assert.equal(autoRows(body).length, 0, 'no stale £1.99 row next to the £7.99 one');
       assert.equal(body.summary.activeMonthly, 7.99 + 9.99, 'Per month = Disney+ at £7.99 + the seeded Repeat-this £9.99');
+    } finally {
+      await http.close();
+    }
+  });
+
+  test(`${label} GET: a same-note run that ENDED LONG BEFORE the subscription started stays visible`, async () => {
+    const t = await tables({
+      recurrences: [await trackedRec({ description: 'Disney Plus', amount: 7.99 })],
+      transactions: [
+        await txRow({ n: 1, date: '2026-10-05', amount: 7.99, description: 'Disney Plus', rec: T_REC }),
+        // Jan–Mar at £1.99: seven months before the first attached charge — not the
+        // run this subscription continues, so hiding it would be a guess.
+        await txRow({ n: 10, date: '2026-01-05', amount: 1.99, description: 'Disney Plus' }),
+        await txRow({ n: 11, date: '2026-02-04', amount: 1.99, description: 'Disney Plus' }),
+        await txRow({ n: 12, date: '2026-03-06', amount: 1.99, description: 'Disney Plus' }),
+      ],
+    });
+    const { http } = await boot(t);
+    try {
+      assert.equal(autoRows((await http.get('/')).body).length, 1);
+    } finally {
+      await http.close();
+    }
+  });
+
+  test(`${label} GET: a same-note run on a DIFFERENT cadence stays visible`, async () => {
+    const t = await tables({
+      // A YEARLY plan marked by Alex; the detector finds a MONTHLY run of the same
+      // note just before it. (The detector only knows monthly and yearly.)
+      recurrences: [await trackedRec({ description: 'Disney Plus', amount: 79.9, interval: 'annual' })],
+      transactions: [
+        await txRow({ n: 1, date: '2026-10-05', amount: 79.9, description: 'Disney Plus', rec: T_REC }),
+        ...(await monthly(10, 'Disney Plus', 7.99)),
+      ],
+    });
+    const { http } = await boot(t);
+    try {
+      const rows = autoRows((await http.get('/')).body);
+      assert.equal(rows.length, 1);
+      assert.equal(rows[0].cadence, 'monthly');
     } finally {
       await http.close();
     }

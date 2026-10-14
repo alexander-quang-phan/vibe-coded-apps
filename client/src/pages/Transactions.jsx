@@ -264,7 +264,9 @@ function EditDialog({
                 <BadgeCheck className="h-4 w-4 text-primary" aria-hidden />
                 Subscription
               </p>
-              {tx.is_recurring ? (
+              {/* A Repeat-this row whose schedule was deleted has is_recurring but no
+                  recurrence_id: nothing manages it any more, so it can be marked. */}
+              {tx.is_recurring && tx.recurrence_id && !linkedSub?.tracking ? (
                 <p className="text-xs text-muted-foreground">
                   Logged automatically by a repeating schedule —{' '}
                   <Link to="/subscriptions" className="font-medium text-primary hover:underline">manage it on Subscriptions</Link>.
@@ -508,8 +510,15 @@ export default function Transactions() {
         if (subError.status === 409 && subError.body?.existing) {
           // The Subscription section re-asks the server and now shows the offer.
           toast('You already track this one', { description: 'Choose “Add to …” in the Subscription section.' });
+        } else if (subError.status === 409 && subError.body?.repeating) {
+          toast('Trim already logs this automatically', { description: 'Manage it on Subscriptions.' });
         } else {
-          toast.error("Saved — but couldn't mark it as a subscription. Try again.");
+          const what = subAction.type === 'attach'
+            ? `add it to ${subAction.label}`
+            : subAction.type === 'detach'
+              ? `remove it from ${subAction.label}`
+              : 'mark it as a subscription';
+          toast.error(`Saved — but couldn't ${what}. Try again.`);
         }
         return;
       }

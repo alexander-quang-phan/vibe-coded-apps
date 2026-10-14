@@ -13,6 +13,8 @@ import {
   suppressDetected,
   summarise,
   categoryShape,
+  repeatPrototypes,
+  repeatingFor,
 } from '../lib/subscriptionRows.js';
 import {
   prototypeOf,
@@ -177,7 +179,8 @@ async function loadState(uid) {
   }
   const cancelledDayOf = (ts) => dayInZone(zone, new Date(ts));
   const protos = trackedPrototypes(recurrenceRows, linkedById, cancelledDayOf);
-  return { txRows, recurrenceRows, linkedById, protos, zone };
+  const repeatProtos = repeatPrototypes(recurrenceRows, linkedById);
+  return { txRows, recurrenceRows, linkedById, protos, repeatProtos, zone };
 }
 
 async function loadCategories(uid) {
@@ -208,8 +211,10 @@ function subRef(proto, recurrenceRows, catsById) {
     amount: Number(proto.amount),
     cadence: proto.cadence,
     category: categoryShape(catsById.get(proto.category_id)),
+    cancelled: !proto.active,
   };
 }
+
 
 /** One expense of this user, decoded, or null. */
 async function loadExpense(uid, id) {
@@ -307,6 +312,8 @@ router.get('/track/preview', async (req, res, next) => {
     const existing = best
       ? { ...subRef(best.proto, state.recurrenceRows, catsById), kind: best.kind, strength: best.strength }
       : null;
+    const rep = repeatingFor(expense, state.repeatProtos);
+    const repeating = rep ? subRef(rep, state.recurrenceRows, catsById) : null;
 
     const autoInput = state.txRows.filter((t) => !t.recurrence_id);
     // The SAME suppression GET applies, so preview can never point Alex at a
@@ -350,6 +357,7 @@ router.get('/track/preview', async (req, res, next) => {
     res.json({
       needsCategory: !expense.category_id,
       existing,
+      repeating,
       detected,
       likely: likely.map(candidateShape),
       maybe: maybe.map(candidateShape),
@@ -419,6 +427,13 @@ router.post('/track', async (req, res, next) => {
     // Same note as a subscription already tracked (any amount, active or
     // cancelled) is the SAME subscription: offer it instead of making a second.
     const [state, catsById] = await Promise.all([loadState(uid), loadCategories(uid)]);
+    const rep = repeatingFor(tx, state.repeatProtos);
+    if (rep) {
+      return res.status(409).json({
+        error: 'Trim already logs this automatically — manage it on Subscriptions',
+        repeating: subRef(rep, state.recurrenceRows, catsById),
+      });
+    }
     const conflict = exactNoteConflict(tx, state.protos);
     if (conflict) {
       return res.status(409).json({
@@ -447,14 +462,16 @@ router.post('/track', async (req, res, next) => {
     /** Undo everything this request did: unlink first, then delete. Best effort. */
     const rollback = async (linkedIds) => {
       if (linkedIds.length) {
-        await supabase
+        const { error: unlinkErr } = await supabase
           .from('transactions')
           .update(encodeWrite('transactions', uid, { recurrence_id: null }))
           .in('id', linkedIds)
           .eq('user_id', uid)
           .eq('recurrence_id', rec.id);
+        if (unlinkErr) console.error('[subscriptions:track] rollback unlink failed', { userId: uid, recurrenceId: rec.id, message: unlinkErr.message });
       }
-      await supabase.from('recurrences').delete().eq('id', rec.id).eq('user_id', uid);
+      const { error: delErr } = await supabase.from('recurrences').delete().eq('id', rec.id).eq('user_id', uid);
+      if (delErr) console.error('[subscriptions:track] rollback delete failed', { userId: uid, recurrenceId: rec.id, message: delErr.message });
     };
 
     const ids = [...new Set([transactionId, ...includeTransactionIds])];
@@ -486,7 +503,11 @@ router.post('/track', async (req, res, next) => {
         .select(selectFor('recurrences', SUB_REC_COLUMNS))
         .eq('user_id', uid)
         .eq('auto_log', false);
-      if (othersErr) throw othersErr;
+      if (othersErr) {
+        // Never leave a possibly-duplicate subscription behind on an unverifiable check.
+        await rollback(linked.map((r) => r.id));
+        throw othersErr;
+      }
       const earlier = decodeRows('recurrences', uid, others ?? []).find((r) => r.id !== rec.id
         && normaliseMerchant(r.description) === key
         && ((r.created_at ?? '') < (rec.created_at ?? '') || ((r.created_at ?? '') === (rec.created_at ?? '') && r.id < rec.id)));

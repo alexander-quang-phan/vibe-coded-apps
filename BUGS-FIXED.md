@@ -7,6 +7,31 @@ After fixing any real bug, append one row: what it was, why it mattered, how it 
 
 ---
 
+## 2026-10-14 — Phase 17's final review: five defects caught before merge (+ one I introduced fixing them)
+
+**What they were.** (1) "It's a different subscription" was a sticky flag: after saying it about a weak
+match, typing the *exact* note still showed the "track" choices, and every Save hit the server's 409.
+(2) A ticked "Maybe" charge stayed in the request after it dropped off the list. (3) "Its own history"
+hid any same-note detected run that ended before the subscription started — months earlier, or on another
+cadence. (4) Marking an expense whose note matched an active Repeat-this schedule created a second
+subscription for the same service. (5) Save could apply the panel's answer for the values typed 300 ms
+earlier. **And my first fix for (1)** reset the flag in an effect keyed on the query's `existing` — but a
+refetch empties `data` while it loads, so merely choosing "Monthly" wiped the answer and bounced the panel
+back to "Add to Disney Plus". Caught in the click-through, not by a test (the client has none).
+
+**Why it mattered.** (1)/(4) put the same subscription on the page twice or made Save unusable; (2) linked
+a charge behind Alex's back; (3) silently hid a real subscription and shrank "Per month"; (5) applied a
+stale choice.
+
+**How it was fixed.** (1) The flag records *which* offer it was said about (key + strength) and is compared,
+not reset; never applies to an exact note. (2) `includeIds` = ticked ∩ currently shown. (3) Same cadence +
+the run ends within one cycle + tolerance of the first attached charge. (4) `repeatPrototypes` /
+`repeatingFor` (shared lib): preview says "Trim already logs this automatically", `/track` → 409. (5) The
+marker debounces a string and reports no action until settled. Server tests pin (3), (4) and the cancelled
+/ time-zone paths, each shown to fail with its fix removed. **Trap for client code:** never reset UI state
+in an effect keyed on query data — a refetch makes it `undefined` first. Compare against what the state
+was about instead.
+
 ## 2026-10-14 — Deleting a category silently deleted its subscriptions (found while building Phase 17)
 
 **What it was.** `recurrences.category_id` is `ON DELETE CASCADE`, and `DELETE /api/categories/:id`

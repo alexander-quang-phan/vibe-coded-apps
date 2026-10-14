@@ -1,17 +1,17 @@
-# Chat Handoff — updated 2026-10-14 (PHASE 17 SUBSCRIPTION MARKING BUILT on a branch — needs migration 017a + merge; trips designed, not built)
+# Chat Handoff — updated 2026-10-14 (PHASE 17 SUBSCRIPTION MARKING BUILT + REVIEWED on a branch — needs migration 017a + merge; trips designed, not built)
 
 ## DUAL-AGENT BATON  (both models: update this the MOMENT you finish work)
-- Current stage:  **Phase 17 BUILT and verified on branch `feature/subscription-marking`. NOT merged, NOT
-                  deployed.** The final independent branch review was (re)started 2026-10-14 — check its
-                  result before merging (if it never reported, re-run the `trim-phase17-branch-review`
-                  workflow).
+- Current stage:  **Phase 17 BUILT, independently reviewed, review findings FIXED and re-verified, on branch
+                  `feature/subscription-marking`. NOT merged, NOT deployed.** The final branch review
+                  confirmed 5 findings (0 refuted, 16 low); all 5 + 9 lows are fixed (BUGS-FIXED 2026-10-14
+                  "final review" row; spec "As built"). One known limit documented, not fixed.
 - Model A is:     Claude Code (design, build, verification). Single-model feature work per CLAUDE.md.
                   Phase 18 (trips) edits the unapplied Phase 9.5 migrations → needs an independent review
                   (code-reviewer + plan-verifier agents; Codex refuses security work).
 - Up next:        **Alex** — (1) run migration 017a in Supabase (steps below), (2) merge + deploy.
                   Then: Phase 18 trips in its own session.
-- Last actor did: Claude Code, 2026-10-14 — final spec validation, implementation plan, built Phase 17,
-                  668 server tests, clicked through the real UI against devMock, docs, ledger, specs.
+- Last actor did: Claude Code, 2026-10-14 — built Phase 17, ran the final branch review, fixed its findings,
+                  686 server tests, clicked through the fixes in the real UI against devMock, docs, ledger.
 
 ## Goal
 Alex (13 Oct): (1) trips with a set budget per category and per city, "so I can budget better while on
@@ -29,7 +29,10 @@ you think is ready. Validate one more time." → Phase 17 (subscriptions) was re
 - Client: Transactions → Edit "Subscription" section, `?month=…&edit=<id>` deep link, Subscription pill,
   "Add a subscription" dialog, Marked-by-you / Logs-itself tags, Remove, Quick Add "Is this your …
   subscription?" toast.
-- **Verified:** `npm test` 668/668 (real-PG tests ran); `client npm run build` passes; every flow clicked
+- **Review fixes (after the branch review):** a note Trim already logs with Repeat-this can't be marked
+  ("Trim already logs this automatically"); narrower "own history"; "It's a different subscription" no
+  longer sticks; only on-screen charges are linked; Save waits for the panel to catch up with typing.
+- **Verified:** `npm test` 686/686 (real-PG tests ran); `client npm run build` passes; every flow clicked
   through in the real pages against `npm run dev:mock` (throwaway harness, deleted). Phone screenshots in
   `docs/superpowers/screenshots/`.
 - **Not verified:** anything against the real database or with a real login.
@@ -61,13 +64,12 @@ binding "Corrections from the final validation" section. No code.
    2. Open `server/migrations/017a_subscription_tracking.sql` from the repo, copy all of it, paste, click
       **Run**. It is safe to run twice. Expect "Success. No rows returned".
    3. Tell Claude it's done; Claude runs a read-only check that `recurrences.auto_log` exists.
-2. Check the final branch review's result (see baton); fix anything confirmed.
-3. Merge `feature/subscription-marking` → `main` and **`/deploy` (API first, then client)** — the deploy
+2. Merge `feature/subscription-marking` → `main` and **`/deploy` (API first, then client)** — the deploy
    skill. Deploying the API before step 1 would 500 the Subscriptions page.
-4. Alex: try it — Transactions → Edit any expense → "This is a subscription"; Subscriptions → "Add a
+3. Alex: try it — Transactions → Edit any expense → "This is a subscription"; Subscriptions → "Add a
    subscription"; log a charge one cycle later in Quick Add and answer the toast.
-5. **Phase 18 trips**, own session: plan → re-check live DB (012/018/018a still unapplied) → build.
-6. Open from 13 Oct: OK to delete the unused `SUPABASE_JWT_SECRET` from `server/.env`? (A reader's grep
+4. **Phase 18 trips**, own session: plan → re-check live DB (012/018/018a still unapplied) → build.
+5. Open from 13 Oct: OK to delete the unused `SUPABASE_JWT_SECRET` from `server/.env`? (A reader's grep
    printed it into the session transcript; not published.) Five unrelated bugs are filed as side tasks.
 
 ## Open questions for Alex

@@ -72,8 +72,9 @@ function CandidateList({ title, rows, ticked, onToggle, currency }) {
  * are CURRENTLY typed (the Edit dialog passes them in `values`), then offers, in
  * order of precedence:
  *   1. "Add to Netflix?" — it looks like a subscription you already track;
- *   2. "Trim already spots this as Spotify" — it has the note of a detected one;
- *   3. Monthly / Weekly / Yearly plus "other charges that look like this one".
+ *   2. "Trim already logs this automatically" — a Repeat-this schedule has its note;
+ *   3. "Trim already spots this as Spotify" — it has the note of a detected one;
+ *   4. Monthly / Weekly / Yearly plus "other charges that look like this one".
  * An EXACT note match has no "it's a different subscription" escape: two
  * subscriptions with identical notes are treated as one, so the way out is to
  * change the note. A weaker resemblance always lets Alex say it's different.
@@ -92,11 +93,18 @@ export function SubscriptionMarker({
 }) {
   const api = useApi();
   const [cadence, setCadence] = useState(null);
-  const [different, setDifferent] = useState(false);
+  // Which offer Alex said "it's a different subscription" about (key + strength).
+  const [differentFrom, setDifferentFrom] = useState(null);
   const [existingChoice, setExistingChoice] = useState(null); // 'attach' | 'back' | 'final'
   const [ticked, setTicked] = useState(() => new Set());
 
-  const debounced = useDebounced(values ?? null);
+  // Debounce a STRING: the parent passes a fresh `values` object every render, which
+  // would restart the timer each time. `settled` is false while the panel is still
+  // showing the answer for older values — Save must not apply that stale action.
+  const valuesKey = values ? JSON.stringify(values) : null;
+  const debouncedKey = useDebounced(valuesKey);
+  const debounced = useMemo(() => (debouncedKey ? JSON.parse(debouncedKey) : null), [debouncedKey]);
+  const settled = valuesKey === debouncedKey;
 
   const url = useMemo(() => {
     const p = new URLSearchParams({ transactionId });
@@ -118,9 +126,18 @@ export function SubscriptionMarker({
   });
 
   const existing = data?.existing ?? null;
+  const repeating = data?.repeating ?? null;
   const detected = data?.detected ?? null;
   const exact = existing?.strength === 'exact';
-  const mode = existing && !different ? 'existing' : detected && !existing ? 'detected' : 'track';
+  // "It's a different subscription" only ever applies to a WEAK resemblance, and only
+  // to the offer it was said about — an exact note always offers the existing one.
+  // Compared, not reset by an effect: a refetch briefly empties `data`, and an effect
+  // would wipe the answer every time Alex picks a cadence.
+  const offerId = existing ? `${existing.merchantKey}|${existing.strength}` : null;
+  const different = !exact && offerId !== null && offerId === differentFrom;
+  const mode = existing && !different
+    ? 'existing'
+    : repeating ? 'repeating' : detected && !existing ? 'detected' : 'track';
 
   // Pre-tick the "likely" charges each time the list changes.
   const likelyKey = (data?.likely ?? []).map((c) => c.id).join(',');
@@ -137,7 +154,7 @@ export function SubscriptionMarker({
   const label = existing ? subscriptionLabel(existing, currency) : null;
 
   useEffect(() => {
-    if (!data) return onActionChange(null);
+    if (!data || !settled) return onActionChange(null);
     if (data.needsCategory) return onActionChange(NO_ACTION);
     if (mode === 'existing') {
       if (!existingChoice) return onActionChange(null);
@@ -148,11 +165,15 @@ export function SubscriptionMarker({
         label,
       });
     }
-    if (mode === 'detected') return onActionChange(NO_ACTION);
-    return onActionChange(cadence ? { type: 'track', interval: cadence, includeIds: [...ticked] } : null);
+    if (mode === 'detected' || mode === 'repeating') return onActionChange(NO_ACTION);
+    if (!cadence) return onActionChange(null);
+    // Only charges still on screen: a ticked one that dropped off the lists (the note
+    // or amount changed) must not be linked behind Alex's back.
+    const shown = new Set([...(data.likely ?? []), ...(data.maybe ?? [])].map((c) => c.id));
+    return onActionChange({ type: 'track', interval: cadence, includeIds: [...ticked].filter((id) => shown.has(id)) });
     // onActionChange is the parent's setState; stable enough for this effect.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [data, mode, existingChoice, cadence, ticked, label]);
+  }, [data, settled, mode, existingChoice, cadence, ticked, label]);
 
   if (isLoading) return <Skeleton className="h-16" />;
   if (isError) {
@@ -166,7 +187,16 @@ export function SubscriptionMarker({
     );
   }
   if (data?.needsCategory) {
-    return <p className="text-sm text-amber-600 dark:text-amber-400">Give it a category first — then it can be a subscription.</p>;
+    return (
+      <div className="space-y-1.5">
+        <p className="text-sm text-amber-600 dark:text-amber-400">Give it a category first — then it can be a subscription.</p>
+        {!noteEditable && onChangeNote ? (
+          <button type="button" onClick={onChangeNote} className="text-xs font-medium text-primary hover:underline">
+            Set its category in Transactions
+          </button>
+        ) : null}
+      </div>
+    );
   }
 
   const changeNoteHint = noteEditable ? (
@@ -183,6 +213,7 @@ export function SubscriptionMarker({
         {existing.kind === 'attach' ? (
           <Choice selected={existingChoice === 'attach'} onSelect={() => setExistingChoice('attach')}>
             Add to <span className="font-medium text-foreground">{label}</span>
+            {existing.cancelled ? <span className="text-muted-foreground"> (cancelled)</span> : null}
           </Choice>
         ) : (
           <>
@@ -200,12 +231,36 @@ export function SubscriptionMarker({
         {exact ? changeNoteHint : (
           <button
             type="button"
-            onClick={() => setDifferent(true)}
+            onClick={() => setDifferentFrom(offerId)}
             className="text-xs font-medium text-muted-foreground underline-offset-4 hover:text-foreground hover:underline"
           >
             It's a different subscription
           </button>
         )}
+      </div>
+    );
+  }
+
+  if (mode === 'repeating') {
+    const repLabel = subscriptionLabel(repeating, currency);
+    return (
+      <div className="space-y-1.5 text-sm">
+        <p>
+          <Repeat className="mr-1 inline h-3.5 w-3.5 text-primary" aria-hidden />
+          Trim already logs this automatically as <span className="font-medium">{repLabel}</span>.
+        </p>
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+          {onDetected ? (
+            <button type="button" onClick={() => onDetected(repeating)} className="text-xs font-medium text-primary hover:underline">
+              It's already on this page
+            </button>
+          ) : (
+            <Link to="/subscriptions" className="text-xs font-medium text-primary hover:underline">
+              Manage it on Subscriptions
+            </Link>
+          )}
+          {changeNoteHint}
+        </div>
       </div>
     );
   }
@@ -218,16 +273,18 @@ export function SubscriptionMarker({
           <Repeat className="mr-1 inline h-3.5 w-3.5 text-primary" aria-hidden />
           Trim already spots this as <span className="font-medium">{detLabel}</span>.
         </p>
-        {onDetected ? (
-          <button type="button" onClick={() => onDetected(detected)} className="text-xs font-medium text-primary hover:underline">
-            It's already on this page
-          </button>
-        ) : (
-          <Link to="/subscriptions" className="text-xs font-medium text-primary hover:underline">
-            See it on Subscriptions
-          </Link>
-        )}
-        {changeNoteHint}
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+          {onDetected ? (
+            <button type="button" onClick={() => onDetected(detected)} className="text-xs font-medium text-primary hover:underline">
+              It's already on this page
+            </button>
+          ) : (
+            <Link to="/subscriptions" className="text-xs font-medium text-primary hover:underline">
+              See it on Subscriptions
+            </Link>
+          )}
+          {changeNoteHint}
+        </div>
       </div>
     );
   }

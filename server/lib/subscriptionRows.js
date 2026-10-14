@@ -11,7 +11,10 @@
  * (BUGS-FIXED 2026-09-23 #5).
  */
 import { manualMerchantKey, isTracked, subscriptionCost, nextExpectedFrom, CADENCE_DAYS } from './recurrences.js';
-import { prototypeOf, isSameSubscription, isLaterCharge } from './subscriptionMatch.js';
+import {
+  prototypeOf, isSameSubscription, isLaterCharge, isExactNote, daysBetween, TOLERANCE_DAYS,
+} from './subscriptionMatch.js';
+import { normaliseMerchant } from './merchant.js';
 
 const round2 = (n) => Math.round(Number(n) * 100) / 100;
 
@@ -99,6 +102,23 @@ export function trackedPrototypes(recurrences, linkedById, cancelledDayOf) {
   }));
 }
 
+/**
+ * Active Repeat-this schedules as READ-ONLY prototypes. Nothing is ever attached to
+ * them by hand; they exist so marking an expense with the same note can be refused
+ * instead of creating a second subscription for a charge Trim already logs itself.
+ */
+export function repeatPrototypes(recurrences, linkedById) {
+  return recurrences
+    .filter((r) => r.auto_log === true && !r.cancelled_at)
+    .map((r) => prototypeOf(r, linkedById.get(r.id) ?? []));
+}
+
+/** The active Repeat-this schedule with exactly this expense's note, or null. */
+export function repeatingFor(expense, repeatProtos) {
+  const key = normaliseMerchant(expense.description);
+  return key ? repeatProtos.find((p) => isExactNote({ key }, p)) ?? null : null;
+}
+
 /** A detected row as a matcher item. A synthetic `auto:` key has no note. */
 function detectedItem(d) {
   return { key: d.merchantKey.startsWith('auto:') ? null : d.merchantKey, amount: d.lastAmount ?? d.amount };
@@ -115,12 +135,16 @@ export function suppressDetected(detected, protos) {
   return detected.filter((d) => !protos.some((p) => {
     const item = detectedItem(d);
     const strictlySame = isSameSubscription(item, p);
-    // Its own history: the exact marked note, and every detected charge is from
-    // BEFORE this subscription's first attached charge. That is the old price of the
-    // same service (Disney+ at £1.99 before it became £7.99) — whatever the amount —
-    // not a different one, so it must not come back as a second row.
-    const ownHistory = !!item.key && item.key === p.ownKey
-      && !!p.firstCharged && d.lastCharged <= p.firstCharged;
+    // Its own history: the exact marked note, the same cadence, and the detected
+    // run ends RIGHT WHERE the attached run begins (within one cycle + tolerance).
+    // That is the old price of the same service (Disney+ at £1.99 before it became
+    // £7.99) — whatever the amount. A same-note run that ended long before, or bills
+    // on a different cadence, is a different subscription and stays visible.
+    const ownHistory = !!item.key && item.key === p.ownKey && !!p.firstCharged
+      && d.cadence === p.cadence
+      && d.lastCharged <= p.firstCharged
+      && daysBetween(p.firstCharged, d.lastCharged)
+        <= (CADENCE_DAYS[p.cadence] ?? 30) + (TOLERANCE_DAYS[p.cadence] ?? 5);
     if (!strictlySame && !ownHistory) return false;
     return p.active || d.lastCharged <= p.cancelledDay;
   }));

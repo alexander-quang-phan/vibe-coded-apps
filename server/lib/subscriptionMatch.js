@@ -56,7 +56,7 @@ export function isLaterCharge(a, b) {
   return String(a.id ?? '') > String(b.id ?? '');
 }
 
-function daysBetween(laterISO, earlierISO) {
+export function daysBetween(laterISO, earlierISO) {
   return Math.round(
     (Date.parse(`${laterISO}T00:00:00Z`) - Date.parse(`${earlierISO}T00:00:00Z`)) / 86_400_000,
   );

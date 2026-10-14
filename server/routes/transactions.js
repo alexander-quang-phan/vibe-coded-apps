@@ -62,6 +62,7 @@ async function findSubscriptionMatch(userId, tx) {
     .from('transactions')
     .select(selectFor('transactions', 'id, amount, description, date, recurrence_id, created_at'))
     .eq('user_id', userId)
+    .eq('type', 'expense') // the same rows the Subscriptions page counts
     .in('recurrence_id', recs.map((r) => r.id));
   if (linkedErr) throw linkedErr;
   const linkedById = new Map();
@@ -427,7 +428,9 @@ router.post('/', async (req, res, next) => {
           date: txDate,
         });
       } catch (matchErr) {
-        console.error('[tx:create] subscription match failed', { userId: req.user.id, txId: tx.id });
+        console.error('[tx:create] subscription match failed', {
+          userId: req.user.id, txId: tx.id, code: matchErr?.code, message: matchErr?.message,
+        });
       }
     }
 

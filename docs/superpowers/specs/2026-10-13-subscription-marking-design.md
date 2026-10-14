@@ -32,6 +32,30 @@ The final validation pass and the click-through found these; each is implemented
   the charge can still be attached from the Edit dialog. Two concurrent subscriptions with the identical
   note are treated as one (give one a different note).
 
+Then a final independent branch review (5 confirmed findings, 16 low) — all five fixed and tested:
+
+- **A note Trim already logs with Repeat-this cannot be marked.** Preview returns `repeating` and the panel
+  says "Trim already logs this automatically as Council Tax"; `POST /track` answers 409 `{ repeating }`.
+  Active Repeat-this schedules are read-only prototypes (`repeatPrototypes` / `repeatingFor` in
+  `lib/subscriptionRows.js`); a cancelled one does not block. Nothing is ever attached to a Repeat-this row.
+- **"Its own history" is narrower:** same exact note **and the same cadence**, and the detected run must end
+  within one cycle + tolerance before the first attached charge. A same-note run that ended months earlier,
+  or bills on another cadence, stays visible.
+- **"It's a different subscription" applies only to the offer it was said about** (key + strength) and never
+  to an exact note — it used to stick, so typing the exact note afterwards still tried to create a second
+  subscription and every Save hit 409.
+- **Only charges still on screen are linked:** a ticked "Maybe" that drops off the lists is not sent.
+- **Save waits for the panel:** while the typed values are newer than the panel's answer, no action is
+  reported (Save is briefly disabled), so a stale action can never be applied.
+- Lows folded in: rollback and match failures are logged (ids + message only); the match's linked read is
+  expenses-only; a cancelled tracked offer is labelled "(cancelled)"; failure toasts name the action; a
+  Repeat-this row whose schedule was deleted can be marked; the Add dialog links to Transactions when a
+  category is missing; the "recent" test no longer depends on today's date.
+- **Known limit, documented (not fixed):** after a price rise of more than 30%, charges at the new price that
+  were never attached can form a second, detected row next to the marked one. Both rows are visible, and
+  the Edit dialog / Quick Add offer "Add to …" on the exact note at any amount; attaching them merges it.
+  Hiding the detected row silently would leave the marked row's amount stale — a worse, invisible error.
+
 ## Goal
 
 Alex knows when something is a subscription before Trim's detector does (the detector needs three
