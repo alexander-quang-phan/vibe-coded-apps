@@ -55,6 +55,7 @@ merging/deploying a daily-use app is his call).
 - `BUGS-FIXED.md` (2026-10-14 ×3 and 2026-10-16 rows; shapes #7 and #8), `BUILD_PLAN.md` 17.10b–d, 17.11
 
 ## Next steps (in order) — from the deploy-guard gate (GO)
+Printable version: `docs/2026-10-16-phase17-deploy-checklist.pdf`.
 1. **Alex — check first (read-only), Supabase → SQL Editor → New query:**
    `select conname, pg_get_constraintdef(oid) from pg_constraint where conrelid = 'public.recurrences'::regclass and contype = 'c';`
    It must list a constraint named exactly `recurrences_interval_check` (monthly, weekly). If the name
