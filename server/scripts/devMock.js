@@ -585,6 +585,7 @@ app.patch('/api/transactions/:id', (req, res) => {
       tx.fx_rate = foreign.fxRate;
     }
   }
+  if (type !== undefined && type !== tx.type) tx.recurrence_id = null; // as the real route (Phase 17)
   if (type !== undefined) tx.type = type;
   if (description !== undefined) tx.description = description || null;
   if (date !== undefined) tx.date = date;

@@ -564,6 +564,11 @@ router.patch('/:id', async (req, res, next) => {
     if (parsed.data.categoryId !== undefined) payload.category_id = parsed.data.categoryId;
     if (parsed.data.amount !== undefined) payload.amount = parsed.data.amount;
     if (parsed.data.type !== undefined) payload.type = parsed.data.type;
+    // Phase 17: a charge that changes between expense and income can no longer belong
+    // to the subscription or Repeat-this schedule it was linked to (those have the
+    // old type). Keeping the link left an income row with a "Subscription" pill that
+    // nothing could remove, feeding Quick Add's matcher.
+    if (parsed.data.type !== undefined && parsed.data.type !== existing.type) payload.recurrence_id = null;
     if (parsed.data.description !== undefined) payload.description = parsed.data.description || null;
     if (parsed.data.date !== undefined) payload.date = parsed.data.date;
     if (parsed.data.isSpecial !== undefined) payload.is_special = parsed.data.isSpecial;

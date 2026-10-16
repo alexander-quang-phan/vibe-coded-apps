@@ -509,7 +509,7 @@ export default function Transactions() {
       if (subError) {
         if (subError.status === 409 && subError.body?.existing) {
           // The Subscription section re-asks the server and now shows the offer.
-          toast('You already track this one', { description: 'Choose “Add to …” in the Subscription section.' });
+          toast('You already track this one', { description: 'Pick an option in the Subscription section.' });
         } else if (subError.status === 409 && subError.body?.repeating) {
           toast('Trim already logs this automatically', { description: 'Manage it on Subscriptions.' });
         } else {

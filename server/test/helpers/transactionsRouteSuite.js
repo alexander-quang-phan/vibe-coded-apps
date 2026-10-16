@@ -332,6 +332,31 @@ export function runTransactionsRouteSuite(phase) {
     }
   });
 
+  test(`${label} PATCH: changing expense↔income drops the subscription link; keeping the type keeps it`, async () => {
+    // Phase 17: an income row kept its recurrence_id, so it wore a "Subscription"
+    // pill nothing could remove and fed Quick Add's matcher.
+    const { encodeWrite } = await import('../../lib/encryptionCodec.js');
+    const INC = '44444444-4444-4444-8444-444444444444';
+    const REC = '55555555-5555-4555-8555-555555555555';
+    const t = await seed(phase);
+    t.transactions[0].recurrence_id = REC;
+    t.categories.push({
+      id: INC, user_id: U, icon: '💼', color: '#22c55e', type: 'income',
+      ...encodeWrite('categories', U, { name: 'Salary' }, phase),
+    });
+    const { db, http } = await boot(t);
+    try {
+      const same = await http.send('PATCH', `/${TX_ID}`, { type: 'expense', amount: 13 });
+      assert.equal(same.status, 200, JSON.stringify(same.body));
+      assert.equal(db.store.transactions[0].recurrence_id, REC, 'same type: link kept');
+      const flip = await http.send('PATCH', `/${TX_ID}`, { type: 'income', categoryId: INC });
+      assert.equal(flip.status, 200, JSON.stringify(flip.body));
+      assert.equal(db.store.transactions[0].recurrence_id, null, 'type changed: link dropped');
+    } finally {
+      await http.close();
+    }
+  });
+
   test(`${label} PATCH still accepts a change that keeps type and category agreeing`, async () => {
     // Positive control: the guard above must not block the legitimate edit.
     const { http } = await boot();
