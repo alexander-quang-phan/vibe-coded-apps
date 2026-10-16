@@ -265,8 +265,9 @@ function EditDialog({
                 Subscription
               </p>
               {/* A Repeat-this row whose schedule was deleted has is_recurring but no
-                  recurrence_id: nothing manages it any more, so it can be marked. */}
-              {tx.is_recurring && tx.recurrence_id && !linkedSub?.tracking ? (
+                  recurrence_id: nothing manages it any more, so it can be marked (and
+                  marking clears is_recurring, so a tracked charge never lands here). */}
+              {tx.is_recurring && tx.recurrence_id ? (
                 <p className="text-xs text-muted-foreground">
                   Logged automatically by a repeating schedule —{' '}
                   <Link to="/subscriptions" className="font-medium text-primary hover:underline">manage it on Subscriptions</Link>.

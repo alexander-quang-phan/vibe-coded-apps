@@ -7,6 +7,30 @@ After fixing any real bug, append one row: what it was, why it mattered, how it 
 
 ---
 
+## 2026-10-16 — The second review: duplicates from the other direction, and state wiped by every refetch
+
+**What it was.** (1) The first fix refused *marking* a note an active Repeat-this schedule logs — but the
+same duplicate could be made from the other side: ticking "Repeat this" in Quick Add on a note Alex
+already tracks, re-activating a cancelled Repeat-this beside an active tracked subscription (or the
+reverse, via "Mark active" or "It's back"). (2) A weak look-alike offer ("Add to Apple TV?") outranked an
+exact Repeat-this note ("Apple"), pre-selected, and `/attach` had no check. (3) A Repeat-this charge's
+*edited* note was treated as the schedule's own. (4) **The refetch trap bit twice more**: the pre-tick
+effect re-ticked a charge Alex had unticked on any field edit (and Save would link it), and the
+final/back answer was wiped the same way. (5) A tracked charge orphaned from a deleted schedule kept its
+"Recurring" pill. (6) No test pinned the race re-check's rollback.
+
+**Why it mattered.** (1)/(2) put one service on the page twice and counted it twice in "Per month", or
+attached Trim's own logged charge to a different subscription; (4) linked a charge Alex had explicitly
+unticked — the "nothing attaches silently" promise broken by a refetch.
+
+**How it was fixed.** One rule, one home — **one note, one kind** (`lib/subscriptionRows.js`:
+`repeatingFor` (schedule's OWN note only), `activeTrackedFor`, `repeatingBlocks`, `repeatingClash`),
+checked on every path: `/track`, `/attach`, preview, Quick Add's question, `POST /api/transactions`
+with `recurring`, and `PATCH` status → active for either kind; devMock mirrors all. Marking clears
+`is_recurring`. The marker now DERIVES ticks (server pre-ticks + Alex's overrides) and the final/back
+answer (remembered with the offer it answers) — no effect resets them. 21 new tests; 11 mutations each
+caught by exactly its test; re-verified in the running UI.
+
 ## 2026-10-14 — Phase 17's final review: five defects caught before merge (+ one I introduced fixing them)
 
 **What they were.** (1) "It's a different subscription" was a sticky flag: after saying it about a weak
@@ -239,7 +263,7 @@ treat the detail as a pointer to the docs rather than a first-hand account.
 
 ## The recurring shapes
 
-Three failure modes have now produced more than one bug each. Check for them by name:
+These failure modes have each produced more than one bug. Check for them by name:
 
 1. **One number, two definitions.** The same quantity computed in two places drifts. Give it one
    home (`overallBudget.js`, `runningAverage.js`, `special.js`, the server-side `deltaPct`).
@@ -261,6 +285,11 @@ Three failure modes have now produced more than one bug each. Check for them by 
    money total with no way back. A duplicate is visible and fixable; a hide is not. So anything that changes
    what the user sees without asking (hiding, refusing, merging) must rest on an exact, user-given
    identifier (the note a subscription was marked with), and everything fuzzier must be a question.
+8. **UI state reset by an effect keyed on query data.** (Phase 17, three times in two days.) A refetch
+   for a new query key makes `data` undefined first, so `useEffect(() => reset(), [data?.x])` fires twice
+   and wipes what Alex chose — "different subscription", unticked charges, the final/back answer. Never
+   reset user choices in an effect; DERIVE them (store the choice with the thing it answers, overlay
+   the user's overrides on the server's defaults).
 
 ## Traps that have not bitten yet (found by audit, 2026-09-22)
 

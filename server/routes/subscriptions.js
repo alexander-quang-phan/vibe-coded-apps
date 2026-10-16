@@ -15,6 +15,9 @@ import {
   categoryShape,
   repeatPrototypes,
   repeatingFor,
+  activeTrackedFor,
+  repeatingBlocks,
+  repeatingClash,
 } from '../lib/subscriptionRows.js';
 import {
   prototypeOf,
@@ -308,7 +311,10 @@ router.get('/track/preview', async (req, res, next) => {
       loadState(uid), loadCategories(uid), loadOverrides(uid),
     ]);
 
-    const best = bestPreviewMatch(expense, state.protos);
+    // A note Trim already logs with Repeat-this is offered only to a tracked
+    // subscription with exactly that note — never to a weak look-alike.
+    const found = bestPreviewMatch(expense, state.protos);
+    const best = found && !repeatingBlocks(expense, found.proto, state.repeatProtos) ? found : null;
     const existing = best
       ? { ...subRef(best.proto, state.recurrenceRows, catsById), kind: best.kind, strength: best.strength }
       : null;
@@ -477,9 +483,10 @@ router.post('/track', async (req, res, next) => {
     const ids = [...new Set([transactionId, ...includeTransactionIds])];
     // One conditional update. Ids that are not this user's, are income, or are
     // already linked are simply not matched — and the rows it DID link come back.
+    // is_recurring false: a tracked charge is never "logged by a schedule" (see attach).
     const { data: linked, error: linkErr } = await supabase
       .from('transactions')
-      .update(encodeWrite('transactions', uid, { recurrence_id: rec.id }))
+      .update(encodeWrite('transactions', uid, { recurrence_id: rec.id, is_recurring: false }))
       .in('id', ids)
       .eq('user_id', uid)
       .eq('type', 'expense')
@@ -561,9 +568,30 @@ router.post('/:merchantKey/attach', async (req, res, next) => {
     const rec = await trackedFromKey(req, res);
     if (!rec) return;
     const uid = req.user.id;
+    // One note, one kind — checked BEFORE anything is linked or re-activated.
+    const [state, catsById, expense] = await Promise.all([
+      loadState(uid), loadCategories(uid), loadExpense(uid, parsed.data.transactionId),
+    ]);
+    const proto = state.protos.find((p) => p.id === rec.id);
+    const blocker = expense && proto ? repeatingBlocks(expense, proto, state.repeatProtos) : null;
+    if (blocker) {
+      return res.status(409).json({
+        error: "Trim already logs this automatically, so it can't be added to another subscription",
+        repeating: subRef(blocker, state.recurrenceRows, catsById),
+      });
+    }
+    const clash = parsed.data.reactivate && rec.cancelled_at && proto ? repeatingClash(proto, state.repeatProtos) : null;
+    if (clash) {
+      return res.status(409).json({
+        error: 'Trim already logs this automatically with a Repeat-this schedule — cancel that first',
+        repeating: subRef(clash, state.recurrenceRows, catsById),
+      });
+    }
     const { data, error } = await supabase
       .from('transactions')
-      .update(encodeWrite('transactions', uid, { recurrence_id: rec.id }))
+      // is_recurring false: a tracked charge is never "logged by a schedule", even
+      // one orphaned from a deleted Repeat-this schedule (its pill would lie).
+      .update(encodeWrite('transactions', uid, { recurrence_id: rec.id, is_recurring: false }))
       .eq('id', parsed.data.transactionId)
       .eq('user_id', uid)
       .eq('type', 'expense')
@@ -660,6 +688,33 @@ async function patchManualRecurrence(req, res, merchantKey) {
     return res
       .status(400)
       .json({ error: "A subscription you marked follows your latest charge — its amount can't be edited." });
+  }
+
+  // One note, one kind: re-activating either kind must not land on an active one
+  // of the other kind with the same note.
+  if (parsed.data.status === 'active') {
+    const [state, catsById] = await Promise.all([loadState(req.user.id), loadCategories(req.user.id)]);
+    const rec = state.recurrenceRows.find((r) => r.id === recurrenceId);
+    if (rec?.cancelled_at) {
+      if (isTracked(rec)) {
+        const proto = state.protos.find((p) => p.id === rec.id);
+        const rep = proto ? repeatingClash(proto, state.repeatProtos) : null;
+        if (rep) {
+          return res.status(409).json({
+            error: 'Trim already logs this automatically with a Repeat-this schedule — cancel that first',
+            repeating: subRef(rep, state.recurrenceRows, catsById),
+          });
+        }
+      } else {
+        const tracked = activeTrackedFor(rec, state.protos);
+        if (tracked) {
+          return res.status(409).json({
+            error: 'You already track this as a subscription you marked — cancel or remove that one first',
+            existing: subRef(tracked, state.recurrenceRows, catsById),
+          });
+        }
+      }
+    }
   }
 
   const payload = {};

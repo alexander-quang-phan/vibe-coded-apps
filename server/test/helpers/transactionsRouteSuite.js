@@ -451,12 +451,61 @@ export function runTransactionsRouteSuite(phase) {
   });
 
   test(`${label} create: a Repeat-this opt-in is never asked about`, async () => {
-    const { http } = await boot(await withTracked());
+    // A CANCELLED tracked Netflix, so the opt-in is allowed (one note, one kind
+    // applies to active subscriptions) — and it is still never asked about.
+    const { http } = await boot(await withTracked({ cancelled_at: '2026-10-10T12:00:00Z' }));
     try {
-      const { body } = await logNetflix(http, '2026-11-02', { recurring: { interval: 'monthly' } });
+      const { status, body } = await logNetflix(http, '2026-11-02', { recurring: { interval: 'monthly' } });
+      assert.equal(status, 201, JSON.stringify(body));
       assert.equal(body.subscriptionMatch, null);
     } finally {
       await http.close();
+    }
+  });
+
+  test(`${label} create: "Repeat this" on a note Alex already tracks is refused — nothing is written`, async () => {
+    const { db, http } = await boot(await withTracked());
+    try {
+      const recs = db.store.recurrences.length;
+      const txs = db.store.transactions.length;
+      const { status, body } = await logNetflix(http, '2026-11-02', { recurring: { interval: 'monthly' } });
+      assert.equal(status, 409, JSON.stringify(body));
+      assert.equal(body.existing.merchantKey, `manual:${T_REC}`);
+      assert.equal(body.existing.name, 'Netflix');
+      assert.equal(db.store.recurrences.length, recs, 'no Repeat-this schedule');
+      assert.equal(db.store.transactions.length, txs, 'no transaction');
+      assert.ok(!JSON.stringify(body).includes('_enc'));
+    } finally {
+      await http.close();
+    }
+  });
+
+  test(`${label} create: a note a Repeat-this schedule owns is never offered to a weak look-alike`, async () => {
+    // Tracked "Netflix" (first word "netflix") + an active Repeat-this "Netflix Kids":
+    // a hand-logged "Netflix Kids" would be a first-word ask — but that note is the
+    // schedule's own, so Quick Add must not ask to add it to "Netflix".
+    const { encodeWrite } = await import('../../lib/encryptionCodec.js');
+    const t = await withTracked();
+    t.recurrences.push({
+      id: '66666666-6666-4666-8666-666666666666', user_id: U, category_id: CAT, type: 'expense',
+      interval: 'monthly', auto_log: true, next_run_at: '2026-12-01', last_run_at: null, cancelled_at: null,
+      created_at: '2026-09-01T00:00:00Z',
+      ...encodeWrite('recurrences', U, { amount: 10.99, description: 'Netflix Kids' }, phase),
+    });
+    const { http } = await boot(t);
+    try {
+      const { body } = await logNetflix(http, '2026-11-02', { description: 'Netflix Kids' });
+      assert.equal(body.subscriptionMatch, null);
+      // Control: the same look-alike WITHOUT the schedule does ask.
+    } finally {
+      await http.close();
+    }
+    const { http: http2 } = await boot(await withTracked());
+    try {
+      const { body } = await logNetflix(http2, '2026-11-02', { description: 'Netflix Kids' });
+      assert.equal(body.subscriptionMatch?.merchantKey, `manual:${T_REC}`, 'control: a weak look-alike is asked about');
+    } finally {
+      await http2.close();
     }
   });
 }

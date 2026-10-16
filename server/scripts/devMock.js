@@ -24,7 +24,7 @@ import { nextRunDate, dueRecurrences, manualMerchantKey, isTracked } from '../li
 // rather than re-implemented, so the mock page cannot drift from the real one.
 import {
   buildDetectedRow, buildManualRow, trackedPrototypes, suppressDetected, summarise, categoryShape,
-  repeatPrototypes, repeatingFor,
+  repeatPrototypes, repeatingFor, activeTrackedFor, repeatingBlocks, repeatingClash,
 } from '../lib/subscriptionRows.js';
 import {
   prototypeOf, bestPreviewMatch, bestTrackedMatch, exactNoteConflict, sameAsDetected,
@@ -450,6 +450,14 @@ app.post('/api/transactions', (req, res) => {
   const txDate = date || todayUTC();
   let recurrence = null;
   if (recurring) {
+    // Phase 17 — one note, one kind, exactly as routes/transactions.js.
+    const clashP = description ? activeTrackedFor({ description }, mockState().protos) : null;
+    if (clashP) {
+      return res.status(409).json({
+        error: 'You already track this as a subscription you marked — untick “Repeat this” and Trim will offer to add the charge to it',
+        existing: { merchantKey: manualMerchantKey(clashP.id), name: recurrences.find((x) => x.id === clashP.id)?.description || null },
+      });
+    }
     const anchorDay = Number(txDate.slice(8, 10));
     const id = randomUUID();
     recurrence = {
@@ -492,8 +500,11 @@ app.post('/api/transactions', (req, res) => {
   // Phase 17 — mirrors routes/transactions.js findSubscriptionMatch.
   let subscriptionMatch = null;
   if (type === 'expense' && !recurrence) {
-    const best = bestTrackedMatch({ ...tx, recurrence_id: null }, mockState().protos);
-    if (best) subscriptionMatch = { ...mockSubRef(best.proto), kind: best.kind };
+    const st = mockState();
+    const best = bestTrackedMatch({ ...tx, recurrence_id: null }, st.protos);
+    if (best && !repeatingBlocks(tx, best.proto, st.repeatProtos)) {
+      subscriptionMatch = { ...mockSubRef(best.proto), kind: best.kind };
+    }
   }
   res.status(201).json({
     transaction: tx,
@@ -1108,7 +1119,8 @@ app.get('/api/subscriptions/track/preview', (req, res) => {
     amount: q.amount !== undefined ? Number(q.amount) : Number(tx.amount),
   };
   const { expenses, protos, repeatProtos } = mockState();
-  const best = bestPreviewMatch(expense, protos);
+  const found = bestPreviewMatch(expense, protos);
+  const best = found && !repeatingBlocks(expense, found.proto, repeatProtos) ? found : null;
   const existing = best ? { ...mockSubRef(best.proto), kind: best.kind, strength: best.strength } : null;
   const rep = repeatingFor(expense, repeatProtos);
   const repeating = rep ? mockSubRef(rep) : null;
@@ -1208,6 +1220,7 @@ app.post('/api/subscriptions/track', (req, res) => {
     const t = transactions.find((x) => x.id === tid);
     if (t && t.type === 'expense' && !t.recurrence_id) {
       t.recurrence_id = id;
+      t.is_recurring = false; // as the real route: a tracked charge is never "logged by a schedule"
       linkedCount += 1;
     }
   }
@@ -1239,10 +1252,27 @@ app.post('/api/subscriptions/:merchantKey/attach', (req, res) => {
   const r = mockTrackedFromKey(req, res);
   if (!r) return;
   const t = transactions.find((x) => x.id === transactionId);
+  const st = mockState();
+  const proto = st.protos.find((p) => p.id === r.id);
+  const blocker = t && proto ? repeatingBlocks(t, proto, st.repeatProtos) : null;
+  if (blocker) {
+    return res.status(409).json({
+      error: "Trim already logs this automatically, so it can't be added to another subscription",
+      repeating: mockSubRef(blocker),
+    });
+  }
+  const clash = reactivate && r.cancelled_at && proto ? repeatingClash(proto, st.repeatProtos) : null;
+  if (clash) {
+    return res.status(409).json({
+      error: 'Trim already logs this automatically with a Repeat-this schedule — cancel that first',
+      repeating: mockSubRef(clash),
+    });
+  }
   if (!t || t.type !== 'expense' || t.recurrence_id) {
     return res.status(409).json({ error: "That expense can't be added — it may already be part of a subscription" });
   }
   t.recurrence_id = r.id;
+  t.is_recurring = false;
   if (reactivate && r.cancelled_at) r.cancelled_at = null; // only AFTER the link succeeded
   res.json({ ok: true });
 });
@@ -1289,6 +1319,28 @@ app.patch('/api/subscriptions/:merchantKey', (req, res) => {
     if (!r) return res.status(404).json({ error: 'Recurrence not found' });
     if (amount !== undefined && isTracked(r)) {
       return res.status(400).json({ error: "A subscription you marked follows your latest charge — its amount can't be edited." });
+    }
+    // One note, one kind — as patchManualRecurrence.
+    if (status === 'active' && r.cancelled_at) {
+      const st = mockState();
+      if (isTracked(r)) {
+        const proto = st.protos.find((p) => p.id === r.id);
+        const rep = proto ? repeatingClash(proto, st.repeatProtos) : null;
+        if (rep) {
+          return res.status(409).json({
+            error: 'Trim already logs this automatically with a Repeat-this schedule — cancel that first',
+            repeating: mockSubRef(rep),
+          });
+        }
+      } else {
+        const tracked = activeTrackedFor(r, st.protos);
+        if (tracked) {
+          return res.status(409).json({
+            error: 'You already track this as a subscription you marked — cancel or remove that one first',
+            existing: mockSubRef(tracked),
+          });
+        }
+      }
     }
     if (status === 'cancelled') r.cancelled_at = new Date().toISOString();
     else if (status === 'active') r.cancelled_at = null;

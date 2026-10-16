@@ -8,7 +8,9 @@ import { convertToBase } from '../lib/fx.js';
 import { selectFor, decodeRow, decodeRows, encodeWrite, presentRow, presentRows } from '../lib/encryptionCodec.js';
 import { userTimeZone } from '../lib/userZone.js';
 import { dayInZone } from '../lib/month.js';
-import { trackedPrototypes, categoryShape } from '../lib/subscriptionRows.js';
+import {
+  trackedPrototypes, categoryShape, repeatPrototypes, repeatingBlocks, activeTrackedFor,
+} from '../lib/subscriptionRows.js';
 import { bestTrackedMatch } from '../lib/subscriptionMatch.js';
 
 const router = Router();
@@ -30,13 +32,12 @@ const TX_WRITE_COLUMNS =
 const REC_COLUMNS = 'id, category_id, type, amount, description, interval, next_run_at';
 
 /**
- * Phase 17 — should Quick Add ask "Is this your Netflix subscription?"
- *
- * Answers with the ONE tracked subscription to ask about, or null. Never writes:
- * Alex decides. One cheap existence read first, so a user with no tracked
- * subscriptions pays a single indexed query and nothing more.
+ * Phase 17 — the subscriptions Alex marked (as matcher prototypes) and the notes
+ * his Repeat-this schedules own, or null when he has marked none. Feeds Quick Add's
+ * question and the one-note-one-kind check. One cheap existence read first, so a
+ * user with no tracked subscriptions pays a single indexed query and nothing more.
  */
-async function findSubscriptionMatch(userId, tx) {
+async function loadTracked(userId) {
   const { data: any, error: anyErr } = await supabase
     .from('recurrences')
     .select('id')
@@ -46,16 +47,17 @@ async function findSubscriptionMatch(userId, tx) {
   if (anyErr) throw anyErr;
   if (!any?.length) return null;
 
+  // Every recurrence: the tracked ones are matched, the Repeat-this ones own their notes.
   const [recRes, zone] = await Promise.all([
     supabase
       .from('recurrences')
       .select(selectFor('recurrences', 'id, category_id, amount, description, interval, cancelled_at, auto_log'))
-      .eq('user_id', userId)
-      .eq('auto_log', false),
+      .eq('user_id', userId),
     userTimeZone(userId),
   ]);
   if (recRes.error) throw recRes.error;
-  const recs = decodeRows('recurrences', userId, recRes.data);
+  const allRecs = decodeRows('recurrences', userId, recRes.data);
+  const recs = allRecs.filter((r) => r.auto_log === false);
   if (!recs.length) return null;
 
   const { data: linkedRaw, error: linkedErr } = await supabase
@@ -71,10 +73,34 @@ async function findSubscriptionMatch(userId, tx) {
     arr.push(t);
     linkedById.set(t.recurrence_id, arr);
   }
+  return {
+    recs,
+    protos: trackedPrototypes(recs, linkedById, (ts) => dayInZone(zone, new Date(ts))),
+    // Only each schedule's own note matters (repeatingFor), so no linked charges needed.
+    repeatProtos: repeatPrototypes(allRecs, new Map()),
+  };
+}
 
-  const protos = trackedPrototypes(recs, linkedById, (ts) => dayInZone(zone, new Date(ts)));
+/** Phase 17's one-note-one-kind rule for a NEW Repeat-this schedule: the active tracked subscription it would duplicate. */
+async function trackedClash(userId, description) {
+  if (!description) return null;
+  const t = await loadTracked(userId);
+  const p = t ? activeTrackedFor({ description }, t.protos) : null;
+  if (!p) return null;
+  return { merchantKey: manualMerchantKey(p.id), name: t.recs.find((r) => r.id === p.id)?.description || null };
+}
+
+/**
+ * Should Quick Add ask "Is this your Netflix subscription?" Answers with the ONE
+ * tracked subscription to ask about, or null. Never writes: Alex decides.
+ */
+async function findSubscriptionMatch(userId, tx) {
+  const t = await loadTracked(userId);
+  if (!t) return null;
+  const { recs, protos, repeatProtos } = t;
   const best = bestTrackedMatch(tx, protos);
-  if (!best) return null;
+  // A note Trim already logs with Repeat-this is never offered to a weak look-alike.
+  if (!best || repeatingBlocks(tx, best.proto, repeatProtos)) return null;
 
   const rec = recs.find((r) => r.id === best.proto.id);
   const { data: cat } = await supabase
@@ -329,6 +355,15 @@ router.post('/', async (req, res, next) => {
     // follow the row's creation day, not the custom txDate.
     let recurrence = null;
     if (parsed.data.recurring) {
+      // Phase 17 — one note, one kind: a Repeat-this schedule must not duplicate a
+      // subscription Alex already marked. Refused before anything is written.
+      const clash = await trackedClash(req.user.id, description);
+      if (clash) {
+        return res.status(409).json({
+          error: 'You already track this as a subscription you marked — untick “Repeat this” and Trim will offer to add the charge to it',
+          existing: clash,
+        });
+      }
       const anchorDay = Number(txDate.slice(8, 10));
       const initialNextRunAt = nextRunDate(txDate, parsed.data.recurring.interval, anchorDay);
       const { data: rec, error: recErr } = await supabase

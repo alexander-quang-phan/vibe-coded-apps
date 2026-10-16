@@ -32,15 +32,17 @@ The final validation pass and the click-through found these; each is implemented
   the charge can still be attached from the Edit dialog. Two concurrent subscriptions with the identical
   note are treated as one (give one a different note).
 
-Then a final independent branch review (5 confirmed findings, 16 low) — all five fixed and tested:
+Then a final independent branch review (5 confirmed findings, 16 low) — all five fixed; the server ones (Repeat-this refusal, narrower own history) are pinned by tests, the three client ones were verified by clicking through against devMock (the client has no test runner):
 
 - **A note Trim already logs with Repeat-this cannot be marked.** Preview returns `repeating` and the panel
   says "Trim already logs this automatically as Council Tax"; `POST /track` answers 409 `{ repeating }`.
   Active Repeat-this schedules are read-only prototypes (`repeatPrototypes` / `repeatingFor` in
   `lib/subscriptionRows.js`); a cancelled one does not block. Nothing is ever attached to a Repeat-this row.
 - **"Its own history" is narrower:** same exact note **and the same cadence**, and the detected run must end
-  within one cycle + tolerance before the first attached charge. A same-note run that ended months earlier,
-  or bills on another cadence, stays visible.
+  within one cycle + tolerance before the first attached charge. A same-note run at a price **more than 30%
+  different** that ended months earlier, or bills on another cadence, stays visible. At a similar price the
+  strict rule (exact note, within ±30%) still treats it as the same subscription — two concurrent
+  subscriptions with one note are one (see the known limit above).
 - **"It's a different subscription" applies only to the offer it was said about** (key + strength) and never
   to an exact note — it used to stick, so typing the exact note afterwards still tried to create a second
   subscription and every Save hit 409.
@@ -51,6 +53,13 @@ Then a final independent branch review (5 confirmed findings, 16 low) — all fi
   expenses-only; a cancelled tracked offer is labelled "(cancelled)"; failure toasts name the action; a
   Repeat-this row whose schedule was deleted can be marked; the Add dialog links to Transactions when a
   category is missing; the "recent" test no longer depends on today's date.
+- **Second independent review (2026-10-16; 9 confirmed, all fixed)** — the rule is now **one note, one kind**,
+  enforced in both directions: Quick Add's "Repeat this" on a tracked note → 409 (nothing written);
+  re-activating either kind beside an active one of the other kind → 409; `/attach` refuses a note an
+  active Repeat-this schedule owns unless the target is an exact-note match; preview and Quick Add never
+  offer such a note to a weak look-alike. A schedule owns only its OWN note (not an edited note on one of its
+  charges). Marking clears `is_recurring`. The marker derives ticks and the final/back answer instead of
+  resetting them in effects (BUGS-FIXED shape #8). A test now pins the race re-check rollback.
 - **Known limit, documented (not fixed):** after a price rise of more than 30%, charges at the new price that
   were never attached can form a second, detected row next to the marked one. Both rows are visible, and
   the Edit dialog / Quick Add offer "Add to …" on the exact note at any amount; attaching them merges it.

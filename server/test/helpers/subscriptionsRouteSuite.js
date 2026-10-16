@@ -684,6 +684,120 @@ export function runSubscriptionsRouteSuite(phase) {
     }
   });
 
+  test(`${label} one note, one kind: a weak look-alike is never offered a note Repeat-this owns, and attach refuses it`, async () => {
+    const { encodeWrite } = await import('../../lib/encryptionCodec.js');
+    const APPLE = id(901);
+    const t = await tables({
+      recurrences: [await trackedRec({ description: 'Apple TV', amount: 8.99 })],
+      transactions: [
+        await txRow({ n: 1, date: '2026-09-05', amount: 8.99, description: 'Apple TV', rec: T_REC }),
+        await txRow({ n: 2, date: '2026-10-05', amount: 8.99, description: 'Apple' }),
+      ],
+    });
+    t.recurrences.push({
+      id: APPLE, user_id: U, category_id: CAT, type: 'expense', interval: 'monthly', auto_log: true,
+      next_run_at: '2026-11-05', last_run_at: null, cancelled_at: null, created_at: '2026-08-05T00:00:00Z',
+      ...encodeWrite('recurrences', U, { amount: 8.99, description: 'Apple' }, phase),
+    });
+    const { db, http } = await boot(t);
+    try {
+      const pv = (await http.get(`/track/preview?transactionId=${id(2)}`)).body;
+      assert.equal(pv.existing, null, 'the weak "Apple TV" offer is withheld');
+      assert.equal(pv.repeating?.merchantKey, `manual:${APPLE}`);
+      const att = await http.send('POST', `/manual:${T_REC}/attach`, { transactionId: id(2) });
+      assert.equal(att.status, 409, JSON.stringify(att.body));
+      assert.equal(att.body.repeating.merchantKey, `manual:${APPLE}`);
+      assert.equal(db.store.transactions.find((r) => r.id === id(2)).recurrence_id, null, 'nothing linked');
+    } finally {
+      await http.close();
+    }
+  });
+
+  test(`${label} one note, one kind: an EDITED note on a Repeat-this charge does not own that note`, async () => {
+    const t = await tables({
+      transactions: [
+        await txRow({ n: 1, date: '2026-09-01', amount: 9.99, description: 'Netflix and Spotify', rec: REC }),
+        await txRow({ n: 2, date: '2026-10-03', amount: 9.99, description: 'Netflix and Spotify' }),
+      ],
+    });
+    const { http } = await boot(t);
+    try {
+      assert.equal((await http.get(`/track/preview?transactionId=${id(2)}`)).body.repeating, null);
+      const res = await http.send('POST', '/track', { transactionId: id(2), interval: 'monthly' });
+      assert.equal(res.status, 201, JSON.stringify(res.body));
+    } finally {
+      await http.close();
+    }
+  });
+
+  test(`${label} one note, one kind: re-activating either kind beside an active one of the other is refused`, async () => {
+    // Seed: ACTIVE Repeat-this "Netflix" (REC). A cancelled tracked "Netflix" may not come back.
+    const t = await tables({
+      recurrences: [
+        await trackedRec({ cancelled_at: '2026-10-10T12:00:00Z' }),
+        await trackedRec({ rid: id(902), description: 'Disney Plus', cancelled_at: '2026-10-10T12:00:00Z' }),
+      ],
+      transactions: [
+        await txRow({ n: 1, date: '2026-10-03', amount: 10.99, description: 'Netflix', rec: T_REC }),
+        await txRow({ n: 2, date: '2026-11-03', amount: 10.99, description: 'Netflix' }),
+      ],
+    });
+    const { db, http } = await boot(t);
+    try {
+      const back = await http.send('PATCH', `/manual:${T_REC}`, { status: 'active' });
+      assert.equal(back.status, 409, JSON.stringify(back.body));
+      assert.equal(back.body.repeating.merchantKey, `manual:${REC}`);
+      const viaAttach = await http.send('POST', `/manual:${T_REC}/attach`, { transactionId: id(2), reactivate: true });
+      assert.equal(viaAttach.status, 409, JSON.stringify(viaAttach.body));
+      assert.equal(db.store.transactions.find((r) => r.id === id(2)).recurrence_id, null, 'refused BEFORE linking');
+      assert.ok(db.store.recurrences.find((r) => r.id === T_REC).cancelled_at, 'still cancelled');
+      // Control: a tracked subscription with no clash comes back fine.
+      assert.equal((await http.send('PATCH', `/manual:${id(902)}`, { status: 'active' })).status, 200);
+      // The other direction: cancel the Repeat-this, reactivate the tracked one, then the Repeat-this can't return.
+      assert.equal((await http.send('PATCH', `/manual:${REC}`, { status: 'cancelled' })).status, 200);
+      assert.equal((await http.send('PATCH', `/manual:${T_REC}`, { status: 'active' })).status, 200);
+      const rep = await http.send('PATCH', `/manual:${REC}`, { status: 'active' });
+      assert.equal(rep.status, 409, JSON.stringify(rep.body));
+      assert.equal(rep.body.existing.merchantKey, `manual:${T_REC}`);
+      assert.ok(db.store.recurrences.find((r) => r.id === REC).cancelled_at, 'Repeat-this still cancelled');
+    } finally {
+      await http.close();
+    }
+  });
+
+  test(`${label} track: a failed race re-check rolls everything back (500, no subscription, nothing linked)`, async () => {
+    const t = await tables({
+      transactions: [await txRow({ n: 1, date: '2026-10-03', amount: 11.99, description: 'Spotify' })],
+    });
+    let selects = 0;
+    // 1st recurrences select = loadState, 2nd = the race re-check after the insert.
+    const { db, http } = await boot(t, { failOn: (table, op) => table === 'recurrences' && op === 'select' && ++selects === 2 });
+    try {
+      const res = await http.send('POST', '/track', { transactionId: id(1), interval: 'monthly' });
+      assert.equal(res.status, 500);
+      assert.equal(db.store.recurrences.filter((r) => r.auto_log === false).length, 0, 'no tracked subscription left');
+      assert.equal(db.store.transactions.find((r) => r.id === id(1)).recurrence_id, null, 'nothing left linked');
+    } finally {
+      await http.close();
+    }
+  });
+
+  test(`${label} track/attach: a charge orphaned from a deleted Repeat-this schedule loses its Recurring flag when tracked`, async () => {
+    const orphan = { ...(await txRow({ n: 1, date: '2026-10-03', amount: 11.99, description: 'Spotify' })), is_recurring: true };
+    const orphan2 = { ...(await txRow({ n: 2, date: '2026-11-03', amount: 11.99, description: 'Spotify' })), is_recurring: true };
+    const { db, http } = await boot(await tables({ transactions: [orphan, orphan2] }));
+    try {
+      const res = await http.send('POST', '/track', { transactionId: id(1), interval: 'monthly' });
+      assert.equal(res.status, 201, JSON.stringify(res.body));
+      assert.equal(db.store.transactions.find((r) => r.id === id(1)).is_recurring, false);
+      const key = res.body.subscription.merchantKey;
+      assert.equal((await http.send('POST', `/${key}/attach`, { transactionId: id(2) })).status, 200);
+      assert.equal(db.store.transactions.find((r) => r.id === id(2)).is_recurring, false);
+    } finally {
+      await http.close();
+    }
+  });
+
   test(`${label} track: a weak resemblance never blocks — two different services are both trackable`, async () => {
     const t = await tables({
       recurrences: [await trackedRec({ description: 'Apple Music', amount: 10.99 })],
@@ -769,12 +883,14 @@ export function runSubscriptionsRouteSuite(phase) {
 
   test(`${label} attach/detach: ownership, Repeat-this refused, conditional link, reactivate`, async () => {
     const t = await tables({
+      // "Disney Plus", not "Netflix": the seed has an ACTIVE Repeat-this "Netflix",
+      // and re-activating a tracked "Netflix" beside it is refused (one note, one kind).
       recurrences: [
-        await trackedRec({ cancelled_at: '2026-10-10T00:00:00Z' }),
+        await trackedRec({ description: 'Disney Plus', cancelled_at: '2026-10-10T00:00:00Z' }),
         await trackedRec({ rid: id(900), user: U2 }),
       ],
       transactions: [
-        await txRow({ n: 1, date: '2026-11-03', amount: 10.99, description: 'Netflix' }),
+        await txRow({ n: 1, date: '2026-11-03', amount: 10.99, description: 'Disney Plus' }),
         await txRow({ n: 2, date: '2026-11-04', amount: 10.99, description: 'Netflix', rec: REC }),
       ],
     });

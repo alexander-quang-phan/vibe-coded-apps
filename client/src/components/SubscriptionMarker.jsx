@@ -43,7 +43,7 @@ function Choice({ selected, onSelect, children }) {
   );
 }
 
-function CandidateList({ title, rows, ticked, onToggle, currency }) {
+function CandidateList({ title, rows, isTicked, onToggle, currency }) {
   if (!rows.length) return null;
   return (
     <div className="space-y-1.5">
@@ -53,7 +53,7 @@ function CandidateList({ title, rows, ticked, onToggle, currency }) {
           <input
             type="checkbox"
             className="h-4 w-4 accent-primary"
-            checked={ticked.has(c.id)}
+            checked={isTicked(c.id)}
             onChange={() => onToggle(c.id)}
           />
           <span className="min-w-0 flex-1 truncate">{c.description || 'No note'}</span>
@@ -95,8 +95,11 @@ export function SubscriptionMarker({
   const [cadence, setCadence] = useState(null);
   // Which offer Alex said "it's a different subscription" about (key + strength).
   const [differentFrom, setDifferentFrom] = useState(null);
-  const [existingChoice, setExistingChoice] = useState(null); // 'attach' | 'back' | 'final'
-  const [ticked, setTicked] = useState(() => new Set());
+  // Alex's answer to an offer, remembered WITH the offer it answers (key|kind):
+  // 'attach' | 'back' | 'final'. Derived below, never reset by an effect.
+  const [choice, setChoice] = useState({ offer: null, value: null });
+  // Alex's own ticks and unticks (id -> boolean), laid over the server's pre-ticks.
+  const [tickOverrides, setTickOverrides] = useState(() => new Map());
 
   // Debounce a STRING: the parent passes a fresh `values` object every render, which
   // would restart the timer each time. `settled` is false while the panel is still
@@ -135,21 +138,25 @@ export function SubscriptionMarker({
   // would wipe the answer every time Alex picks a cadence.
   const offerId = existing ? `${existing.merchantKey}|${existing.strength}` : null;
   const different = !exact && offerId !== null && offerId === differentFrom;
-  const mode = existing && !different
+  // An exact tracked note wins; then a note Trim already logs (Repeat-this) beats a
+  // weak look-alike (the server withholds that offer too — this is belt and braces).
+  const mode = existing && exact
     ? 'existing'
-    : repeating ? 'repeating' : detected && !existing ? 'detected' : 'track';
+    : repeating ? 'repeating' : existing && !different ? 'existing' : detected && !existing ? 'detected' : 'track';
 
-  // Pre-tick the "likely" charges each time the list changes.
-  const likelyKey = (data?.likely ?? []).map((c) => c.id).join(',');
-  useEffect(() => {
-    setTicked(new Set(likelyKey ? likelyKey.split(',') : []));
-  }, [likelyKey]);
+  // "Likely" charges start ticked; Alex's own ticks/unticks win, and survive refetches
+  // (a refetch empties `data` first — an effect keyed on it would wipe them).
+  const likelyIds = useMemo(() => new Set((data?.likely ?? []).map((c) => c.id)), [data]);
+  const isTicked = (id) => (tickOverrides.has(id) ? tickOverrides.get(id) : likelyIds.has(id));
+  const toggleTick = (id) => setTickOverrides((prev) => new Map(prev).set(id, !isTicked(id)));
 
   // A plain "Add to …" is the one obvious choice, so it starts selected; a charge
   // after a cancellation must be answered (final charge, or is it back?).
-  useEffect(() => {
-    setExistingChoice(existing?.kind === 'attach' ? 'attach' : null);
-  }, [existing?.merchantKey, existing?.kind]);
+  const choiceOffer = existing ? `${existing.merchantKey}|${existing.kind}` : null;
+  const existingChoice = choiceOffer && choice.offer === choiceOffer
+    ? choice.value
+    : existing?.kind === 'attach' ? 'attach' : null;
+  const setExistingChoice = (value) => setChoice({ offer: choiceOffer, value });
 
   const label = existing ? subscriptionLabel(existing, currency) : null;
 
@@ -169,11 +176,11 @@ export function SubscriptionMarker({
     if (!cadence) return onActionChange(null);
     // Only charges still on screen: a ticked one that dropped off the lists (the note
     // or amount changed) must not be linked behind Alex's back.
-    const shown = new Set([...(data.likely ?? []), ...(data.maybe ?? [])].map((c) => c.id));
-    return onActionChange({ type: 'track', interval: cadence, includeIds: [...ticked].filter((id) => shown.has(id)) });
+    const shown = [...(data.likely ?? []), ...(data.maybe ?? [])].map((c) => c.id);
+    return onActionChange({ type: 'track', interval: cadence, includeIds: shown.filter(isTicked) });
     // onActionChange is the parent's setState; stable enough for this effect.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [data, settled, mode, existingChoice, cadence, ticked, label]);
+  }, [data, settled, mode, existingChoice, cadence, tickOverrides, label]);
 
   if (isLoading) return <Skeleton className="h-16" />;
   if (isError) {
@@ -315,25 +322,15 @@ export function SubscriptionMarker({
           <CandidateList
             title="Other charges that look like this one"
             rows={data?.likely ?? []}
-            ticked={ticked}
-            onToggle={(id) => setTicked((prev) => {
-              const next = new Set(prev);
-              if (next.has(id)) next.delete(id);
-              else next.add(id);
-              return next;
-            })}
+            isTicked={isTicked}
+            onToggle={toggleTick}
             currency={currency}
           />
           <CandidateList
             title="Maybe these too?"
             rows={data?.maybe ?? []}
-            ticked={ticked}
-            onToggle={(id) => setTicked((prev) => {
-              const next = new Set(prev);
-              if (next.has(id)) next.delete(id);
-              else next.add(id);
-              return next;
-            })}
+            isTicked={isTicked}
+            onToggle={toggleTick}
             currency={currency}
           />
         </>

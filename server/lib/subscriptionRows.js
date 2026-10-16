@@ -113,10 +113,44 @@ export function repeatPrototypes(recurrences, linkedById) {
     .map((r) => prototypeOf(r, linkedById.get(r.id) ?? []));
 }
 
-/** The active Repeat-this schedule with exactly this expense's note, or null. */
+/*
+ * ONE NOTE, ONE KIND. A note is either logged by a Repeat-this schedule or tracked
+ * by a subscription Alex marked — never both at once, or the page lists the service
+ * twice and "Per month" counts it twice. Every path that could make both active
+ * checks these: marking (/track), attaching, re-activating either kind, and
+ * creating a Repeat-this schedule in Quick Add.
+ */
+
+/**
+ * The active Repeat-this schedule whose OWN note is exactly this expense's note, or
+ * null. Only the schedule's own note counts: an edited note on one of its logged
+ * charges is not something Alex gave the schedule (BUGS-FIXED shape #7).
+ */
 export function repeatingFor(expense, repeatProtos) {
   const key = normaliseMerchant(expense.description);
-  return key ? repeatProtos.find((p) => isExactNote({ key }, p)) ?? null : null;
+  return key ? repeatProtos.find((p) => p.ownKey === key) ?? null : null;
+}
+
+/** An ACTIVE tracked subscription with exactly this note (its own or an attached charge's), or null. */
+export function activeTrackedFor(expense, protos) {
+  const key = normaliseMerchant(expense.description);
+  return key ? protos.find((p) => p.active && isExactNote({ key }, p)) ?? null : null;
+}
+
+/**
+ * A note Trim already logs belongs to that schedule: it may join only a tracked
+ * subscription with exactly the same note. Returns the schedule that stops `proto`
+ * taking this expense, or null.
+ */
+export function repeatingBlocks(expense, proto, repeatProtos) {
+  const rep = repeatingFor(expense, repeatProtos);
+  if (!rep) return null;
+  return isExactNote({ key: rep.ownKey }, proto) ? null : rep;
+}
+
+/** For a tracked subscription becoming active: the active Repeat-this schedule with one of its notes, or null. */
+export function repeatingClash(proto, repeatProtos) {
+  return repeatProtos.find((r) => r.ownKey && isExactNote({ key: r.ownKey }, proto)) ?? null;
 }
 
 /** A detected row as a matcher item. A synthetic `auto:` key has no note. */
