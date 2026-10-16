@@ -9,7 +9,7 @@ import { selectFor, decodeRow, decodeRows, encodeWrite, presentRow, presentRows 
 import { userTimeZone } from '../lib/userZone.js';
 import { dayInZone } from '../lib/month.js';
 import {
-  trackedPrototypes, categoryShape, repeatPrototypes, repeatingBlocks, activeTrackedFor,
+  trackedPrototypes, categoryShape, repeatPrototypes, repeatingBlocks, activeTrackedFor, repeatingClash,
 } from '../lib/subscriptionRows.js';
 import { bestTrackedMatch } from '../lib/subscriptionMatch.js';
 
@@ -116,6 +116,9 @@ async function findSubscriptionMatch(userId, tx) {
     cadence: best.proto.cadence,
     category: categoryShape(cat ? decodeRow('categories', userId, cat) : null),
     kind: best.kind,
+    cancelled: !best.proto.active,
+    // "It's back" would be refused while a Repeat-this schedule logs its note.
+    canReactivate: !repeatingClash(best.proto, repeatProtos),
   };
 }
 
@@ -360,7 +363,7 @@ router.post('/', async (req, res, next) => {
       const clash = await trackedClash(req.user.id, description);
       if (clash) {
         return res.status(409).json({
-          error: 'You already track this as a subscription you marked — untick “Repeat this” and Trim will offer to add the charge to it',
+          error: `You already track ${clash.name ? `“${clash.name}”` : 'this'} as a subscription — untick “Repeat this”, then add the charge to it from its Edit dialog`,
           existing: clash,
         });
       }

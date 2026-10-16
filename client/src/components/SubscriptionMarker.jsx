@@ -230,9 +230,17 @@ export function SubscriptionMarker({
             <Choice selected={existingChoice === 'final'} onSelect={() => setExistingChoice('final')}>
               It's the final charge for <span className="font-medium text-foreground">{label}</span>
             </Choice>
-            <Choice selected={existingChoice === 'back'} onSelect={() => setExistingChoice('back')}>
-              <span className="font-medium text-foreground">{label}</span> is back — mark it active
-            </Choice>
+            {existing.canReactivate === false ? (
+              // The server would refuse "is back": a Repeat-this schedule logs this note now.
+              <p className="text-xs text-muted-foreground">
+                Trim already logs {repeating ? subscriptionLabel(repeating, currency) : 'this'} automatically, so {label} can't
+                come back while that schedule is active.
+              </p>
+            ) : (
+              <Choice selected={existingChoice === 'back'} onSelect={() => setExistingChoice('back')}>
+                <span className="font-medium text-foreground">{label}</span> is back — mark it active
+              </Choice>
+            )}
           </>
         )}
         {exact ? changeNoteHint : (

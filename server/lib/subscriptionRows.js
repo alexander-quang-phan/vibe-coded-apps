@@ -139,13 +139,14 @@ export function activeTrackedFor(expense, protos) {
 
 /**
  * A note Trim already logs belongs to that schedule: it may join only a tracked
- * subscription with exactly the same note. Returns the schedule that stops `proto`
- * taking this expense, or null.
+ * subscription whose OWN note is that same note (a pair left from before this rule).
+ * Never one that merely absorbed it — an attached charge's edited note must not
+ * open the door. Returns the schedule that stops `proto` taking this expense, or null.
  */
 export function repeatingBlocks(expense, proto, repeatProtos) {
   const rep = repeatingFor(expense, repeatProtos);
   if (!rep) return null;
-  return isExactNote({ key: rep.ownKey }, proto) ? null : rep;
+  return rep.ownKey === proto.ownKey ? null : rep;
 }
 
 /** For a tracked subscription becoming active: the active Repeat-this schedule with one of its notes, or null. */

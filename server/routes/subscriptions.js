@@ -316,7 +316,13 @@ router.get('/track/preview', async (req, res, next) => {
     const found = bestPreviewMatch(expense, state.protos);
     const best = found && !repeatingBlocks(expense, found.proto, state.repeatProtos) ? found : null;
     const existing = best
-      ? { ...subRef(best.proto, state.recurrenceRows, catsById), kind: best.kind, strength: best.strength }
+      ? {
+        ...subRef(best.proto, state.recurrenceRows, catsById),
+        kind: best.kind,
+        strength: best.strength,
+        // "… is back" would be refused while a Repeat-this schedule logs its note.
+        canReactivate: !repeatingClash(best.proto, state.repeatProtos),
+      }
       : null;
     const rep = repeatingFor(expense, state.repeatProtos);
     const repeating = rep ? subRef(rep, state.recurrenceRows, catsById) : null;
@@ -344,8 +350,10 @@ router.get('/track/preview', async (req, res, next) => {
         { id: null, description: expense.description, category_id: expense.category_id, amount: expense.amount, interval: q.interval },
         [{ date: expense.date, amount: expense.amount, description: expense.description }],
       );
+      // A charge whose note a Repeat-this schedule owns is never offered: linking it
+      // would put that note inside a tracked subscription (one note, one kind).
       const others = autoInput
-        .filter((t) => t.id !== expense.id && looksLikeSameCharge(t, self))
+        .filter((t) => t.id !== expense.id && looksLikeSameCharge(t, self) && !repeatingFor(t, state.repeatProtos))
         .sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0));
       for (const t of others) {
         // Pre-ticked only when it is clearly the same thing: same note, a similar
@@ -438,6 +446,18 @@ router.post('/track', async (req, res, next) => {
       return res.status(409).json({
         error: 'Trim already logs this automatically — manage it on Subscriptions',
         repeating: subRef(rep, state.recurrenceRows, catsById),
+      });
+    }
+    // The extra charges obey the same rule as the main one — checked before
+    // anything is written. (Preview never offers them; this is the guard.)
+    const includeOwned = includeTransactionIds
+      .map((tid) => state.txRows.find((t) => t.id === tid))
+      .map((t) => (t && !t.recurrence_id ? repeatingFor(t, state.repeatProtos) : null))
+      .find(Boolean);
+    if (includeOwned) {
+      return res.status(409).json({
+        error: 'One of the other charges is one Trim already logs automatically — leave it out',
+        repeating: subRef(includeOwned, state.recurrenceRows, catsById),
       });
     }
     const conflict = exactNoteConflict(tx, state.protos);

@@ -1,79 +1,85 @@
-# Chat Handoff — updated 2026-10-14 (PHASE 17 SUBSCRIPTION MARKING BUILT + REVIEWED on a branch — needs migration 017a + merge; trips designed, not built)
+# Chat Handoff — updated 2026-10-16 (PHASE 17 BUILT + 3 REVIEW ROUNDS + deploy-guard GO, on a branch — needs migration 017a, merge, deploy; trips designed, not built)
 
 ## DUAL-AGENT BATON  (both models: update this the MOMENT you finish work)
-- Current stage:  **Phase 17 BUILT, independently reviewed, review findings FIXED and re-verified, on branch
-                  `feature/subscription-marking`. NOT merged, NOT deployed.** The final branch review
-                  confirmed 5 findings (0 refuted, 16 low); all 5 + 9 lows are fixed (BUGS-FIXED 2026-10-14
-                  "final review" row; spec "As built"). One known limit documented, not fixed.
-- Model A is:     Claude Code (design, build, verification). Single-model feature work per CLAUDE.md.
-                  Phase 18 (trips) edits the unapplied Phase 9.5 migrations → needs an independent review
-                  (code-reviewer + plan-verifier agents; Codex refuses security work).
-- Up next:        **Alex** — (1) run migration 017a in Supabase (steps below), (2) merge + deploy.
+- Current stage:  **Phase 17 BUILT on `feature/subscription-marking`, through three independent review
+                  rounds (all confirmed findings fixed) and the `deploy-guard` gate: GO, provided migration
+                  017a is applied BEFORE the API deploys. NOT merged, NOT deployed.**
+- Model A is:     Claude Code (design, build, verification). Single-model feature work per CLAUDE.md; the
+                  independent checking was done by review workflows (separate agents, each finding
+                  reproduced + challenged). Round 3's fixes were proved against the reviewers' own repro
+                  scripts + mutations, not by a 4th review round (validator-loop cap of 3).
+- Up next:        **Alex** — the deploy steps below (017a → merge → API → client → try it → check the cron).
                   Then: Phase 18 trips in its own session.
-- Last actor did: Claude Code, 2026-10-14 — built Phase 17, ran the final branch review, fixed its findings,
-                  686 server tests, clicked through the fixes in the real UI against devMock, docs, ledger.
+- Last actor did: Claude Code, 2026-10-16 — rounds 2 and 3 of review + fixes ("one note, one kind"),
+                  722 server tests, UI re-verified against devMock, docs/ledger/spec/PDF, this handoff.
 
 ## Goal
-Alex (13 Oct): (1) trips with a set budget per category and per city, "so I can budget better while on
-holiday"; (2) "I don't see a way to mark a transaction as a subscription myself." On 14 Oct: "Build out what
-you think is ready. Validate one more time." → Phase 17 (subscriptions) was ready and is built; Phase 18
-(trips) is fully specced and waits for its own session.
+Alex (13 Oct): (1) trips with a set budget per category and per city; (2) "I don't see a way to mark a
+transaction as a subscription myself." 14 Oct: "Build out what you think is ready. Validate one more time."
+16 Oct: "Do what you think needs to be done still" → independent review of the fixes, fix everything
+confirmed, pre-deploy gate. Production steps are Alex's (the database read was blocked for Claude, and
+merging/deploying a daily-use app is his call).
 
 ## Current state
-**Phase 17 — built, tested, verified, committed** on `feature/subscription-marking`:
-- Migration `server/migrations/017a_subscription_tracking.sql` (auto_log, nullable next_run_at + check,
-  `annual`). Real-PostgreSQL test proves it; **not yet applied to the live database**.
-- Server: `lib/subscriptionMatch.js`, `lib/subscriptionRows.js`, guarded nightly job, six new
-  `/api/subscriptions` endpoints, `subscriptionMatch` on transaction create, category delete keeps
-  subscriptions. devMock mirrored through the same libs (and its `?month=` bug fixed).
-- Client: Transactions → Edit "Subscription" section, `?month=…&edit=<id>` deep link, Subscription pill,
-  "Add a subscription" dialog, Marked-by-you / Logs-itself tags, Remove, Quick Add "Is this your …
-  subscription?" toast.
-- **Review fixes (after the branch review):** a note Trim already logs with Repeat-this can't be marked
-  ("Trim already logs this automatically"); narrower "own history"; "It's a different subscription" no
-  longer sticks; only on-screen charges are linked; Save waits for the panel to catch up with typing.
-- **Verified:** `npm test` 686/686 (real-PG tests ran); `client npm run build` passes; every flow clicked
-  through in the real pages against `npm run dev:mock` (throwaway harness, deleted). Phone screenshots in
-  `docs/superpowers/screenshots/`.
+**Phase 17 — built, reviewed three times, committed** on `feature/subscription-marking`:
+- Migration `server/migrations/017a_subscription_tracking.sql` — **not yet applied to the live database**.
+- Mark a subscription yourself: Transactions → Edit → "This is a subscription"; Subscriptions → "Add a
+  subscription"; Quick Add asks "Is this your … subscription?". Track-only (never auto-logs).
+- **One note, one kind** (rounds 2–3): a note is either logged by Repeat-this or tracked by a marked
+  subscription, never both active — enforced on marking, extra charges, attach, preview, Quick Add's
+  question, Quick Add "Repeat this" (409), and re-activating either kind. Helpers in `lib/subscriptionRows.js`.
+- The marking panel derives its ticks and answers (no effect resets) — BUGS-FIXED shape #8.
+- **Verified:** `npm test` **722/722** (real-PG tests ran); client build passes; every new guard
+  mutation-checked; all flows clicked through in the real pages against `npm run dev:mock` (throwaway
+  harness, deleted each time).
 - **Not verified:** anything against the real database or with a real login.
+- Known limit (documented, not fixed): after a >30% price rise, unattached new-price charges can form a
+  second detected row until attached.
 
-**Phase 18 — trips:** spec `docs/superpowers/specs/2026-10-13-trips-design.md` (+ PDF), including a
-binding "Corrections from the final validation" section. No code.
+**Phase 18 — trips:** spec `docs/superpowers/specs/2026-10-13-trips-design.md` (+ PDF). No code.
 
 ## Key decisions (and why)
-- **Track only** — marking never auto-logs (no duplicates; bank-import safe). "Repeat this" stays for auto-logging.
-- **Ask before attaching** — Quick Add toast; never silent.
-- **Trim acts silently only on the exact note a subscription was marked with**; anything weaker only asks.
-  Four review rounds showed fuzzier silent matching hides *different* subscriptions (BUGS-FIXED shape #7).
-- **Derived, never stored:** a tracked subscription's amount / last / next come from its attached charges.
-- **Migration named 017a** because 019 must sort last (encryption scope test); 012/018/018a/019 verified
-  unapplied live on 2026-10-13.
-- **Trips:** separate trips with a per-trip keep-out switch; city derived from date; encrypted; own nav tab.
-- **Verification stopped per the validator-loop rule** (subscriptions 5 rounds, trips 3, plus one final pass).
+- **Track only** — marking never auto-logs. "Repeat this" stays for auto-logging.
+- **Ask before attaching**; Trim acts silently only on the exact marked note (BUGS-FIXED shape #7).
+- **One note, one kind** — otherwise the page lists a service twice and "Per month" double counts.
+  A Repeat-this schedule owns only its OWN note (not edited notes on its charges).
+- **Derived, never stored:** tracked amount / last / next come from attached charges.
+- **Migration 017a** sorts before 019 (encryption scope test). 012/018/018a/019 must stay unapplied.
+- **Review rounds capped at 3** (validator-loop). Rounds found 5 → 9 → 5 confirmed; round 3's fixes proved
+  by the reviewers' own repro scripts.
 
 ## Files that matter
-- `docs/superpowers/specs/2026-10-13-subscription-marking-design.md` (read "As built" first) + PDF
-- `docs/superpowers/plans/2026-10-14-subscription-marking.md`
-- `docs/superpowers/specs/2026-10-13-trips-design.md` + PDF (Phase 18)
-- `server/lib/subscriptionMatch.js`, `server/lib/subscriptionRows.js`, `server/routes/subscriptions.js`
-- `BUGS-FIXED.md` (two new rows + shape #7), `BUILD_PLAN.md` (Phase 17 / 18)
+- `docs/superpowers/specs/2026-10-13-subscription-marking-design.md` ("As built" first) + PDF
+- `server/lib/subscriptionMatch.js`, `server/lib/subscriptionRows.js`, `server/routes/subscriptions.js`,
+  `server/routes/transactions.js`, `client/src/components/SubscriptionMarker.jsx`
+- `BUGS-FIXED.md` (2026-10-14 ×3 and 2026-10-16 rows; shapes #7 and #8), `BUILD_PLAN.md` 17.10b–d, 17.11
 
-## Next steps (in order)
-1. **Alex — apply migration 017a (5 minutes, before any deploy):**
-   1. Open supabase.com → your Trim project → **SQL Editor** → **New query**.
-   2. Open `server/migrations/017a_subscription_tracking.sql` from the repo, copy all of it, paste, click
-      **Run**. It is safe to run twice. Expect "Success. No rows returned".
-   3. Tell Claude it's done; Claude runs a read-only check that `recurrences.auto_log` exists.
-2. Merge `feature/subscription-marking` → `main` and **`/deploy` (API first, then client)** — the deploy
-   skill. Deploying the API before step 1 would 500 the Subscriptions page.
-3. Alex: try it — Transactions → Edit any expense → "This is a subscription"; Subscriptions → "Add a
-   subscription"; log a charge one cycle later in Quick Add and answer the toast.
-4. **Phase 18 trips**, own session: plan → re-check live DB (012/018/018a still unapplied) → build.
-5. Open from 13 Oct: OK to delete the unused `SUPABASE_JWT_SECRET` from `server/.env`? (A reader's grep
-   printed it into the session transcript; not published.) Five unrelated bugs are filed as side tasks.
+## Next steps (in order) — from the deploy-guard gate (GO)
+1. **Alex — check first (read-only), Supabase → SQL Editor → New query:**
+   `select conname, pg_get_constraintdef(oid) from pg_constraint where conrelid = 'public.recurrences'::regclass and contype = 'c';`
+   It must list a constraint named exactly `recurrences_interval_check` (monthly, weekly). If the name
+   differs, STOP and tell Claude. Also note the totals from:
+   `select count(*) as total, count(*) filter (where cancelled_at is null) as active from public.recurrences;`
+2. **Apply 017a:** paste all of `server/migrations/017a_subscription_tracking.sql`, click **Run**, expect
+   "Success. No rows returned" (safe to run twice). Do NOT run 012, 018, 018a or 019.
+3. **Check after:** re-run the constraint query — expect `recurrences_amount_check`,
+   `recurrences_interval_check` (now with 'annual') and `recurrences_next_run_required`. Then
+   `select count(*) as total, count(*) filter (where auto_log) as auto_log_true, count(*) filter (where next_run_at is null) as null_next from public.recurrences;`
+   → total unchanged, auto_log_true = total, null_next = 0.
+4. **Merge** `feature/subscription-marking` → `main` (fast-forward) and **`/deploy` — API first, then client.**
+   After the API: `/api/health` 200, `/api/subscriptions` without login 401.
+5. **Try it logged in:** Subscriptions loads, Repeat-this items show "Logs itself"; Edit an expense → the
+   Subscription section appears; Quick Add with "Repeat this" still saves.
+6. **Next morning:** Vercel trim-api logs → the 03:00 UTC `[cron:recurrences]` line shows errors 0.
+   **If anything goes wrong:** promote the previous client and API deployments in Vercel and LEAVE 017a in
+   place — the old API works with it (checked by reading main's code).
+7. **Phase 18 trips**, own session: plan → re-check live DB → build (needs independent review: it edits the
+   unapplied 9.5 migrations).
 
 ## Open questions for Alex
-- Delete the unused `SUPABASE_JWT_SECRET` line from `server/.env`?
+- Delete the unused `SUPABASE_JWT_SECRET` line from `server/.env`? (still pending since 13 Oct)
+- Allow Claude read-only SQL on the live DB (a permission rule for the Supabase `execute_sql` tool)? It was
+  blocked on 16 Oct, so steps 1 and 3 above are yours to run.
 - (Carried from 23 Sep) repo public? account-deletion path? rotate service-role key? `RECOVERY.md`?
 
 ## How to resume

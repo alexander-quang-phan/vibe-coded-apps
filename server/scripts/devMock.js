@@ -453,9 +453,10 @@ app.post('/api/transactions', (req, res) => {
     // Phase 17 — one note, one kind, exactly as routes/transactions.js.
     const clashP = description ? activeTrackedFor({ description }, mockState().protos) : null;
     if (clashP) {
+      const clashName = recurrences.find((x) => x.id === clashP.id)?.description || null;
       return res.status(409).json({
-        error: 'You already track this as a subscription you marked — untick “Repeat this” and Trim will offer to add the charge to it',
-        existing: { merchantKey: manualMerchantKey(clashP.id), name: recurrences.find((x) => x.id === clashP.id)?.description || null },
+        error: `You already track ${clashName ? `“${clashName}”` : 'this'} as a subscription — untick “Repeat this”, then add the charge to it from its Edit dialog`,
+        existing: { merchantKey: manualMerchantKey(clashP.id), name: clashName },
       });
     }
     const anchorDay = Number(txDate.slice(8, 10));
@@ -503,7 +504,10 @@ app.post('/api/transactions', (req, res) => {
     const st = mockState();
     const best = bestTrackedMatch({ ...tx, recurrence_id: null }, st.protos);
     if (best && !repeatingBlocks(tx, best.proto, st.repeatProtos)) {
-      subscriptionMatch = { ...mockSubRef(best.proto), kind: best.kind };
+      subscriptionMatch = {
+        ...mockSubRef(best.proto), kind: best.kind,
+        canReactivate: !repeatingClash(best.proto, st.repeatProtos),
+      };
     }
   }
   res.status(201).json({
@@ -1121,7 +1125,12 @@ app.get('/api/subscriptions/track/preview', (req, res) => {
   const { expenses, protos, repeatProtos } = mockState();
   const found = bestPreviewMatch(expense, protos);
   const best = found && !repeatingBlocks(expense, found.proto, repeatProtos) ? found : null;
-  const existing = best ? { ...mockSubRef(best.proto), kind: best.kind, strength: best.strength } : null;
+  const existing = best
+    ? {
+      ...mockSubRef(best.proto), kind: best.kind, strength: best.strength,
+      canReactivate: !repeatingClash(best.proto, repeatProtos),
+    }
+    : null;
   const rep = repeatingFor(expense, repeatProtos);
   const repeating = rep ? mockSubRef(rep) : null;
 
@@ -1146,7 +1155,7 @@ app.get('/api/subscriptions/track/preview', (req, res) => {
       [{ date: expense.date, amount: expense.amount, description: expense.description }],
     );
     const others = autoInput
-      .filter((t) => t.id !== expense.id && looksLikeSameCharge(t, self))
+      .filter((t) => t.id !== expense.id && looksLikeSameCharge(t, self) && !repeatingFor(t, repeatProtos))
       .sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0));
     for (const t of others) {
       const exact = nameStrength(normaliseMerchant(t.description), self) === 'exact';
@@ -1200,6 +1209,16 @@ app.post('/api/subscriptions/track', (req, res) => {
     return res.status(409).json({
       error: 'Trim already logs this automatically — manage it on Subscriptions',
       repeating: mockSubRef(rep),
+    });
+  }
+  const includeOwned = includeTransactionIds
+    .map((tid) => transactions.find((t) => t.id === tid && t.type === 'expense'))
+    .map((t) => (t && !t.recurrence_id ? repeatingFor(t, state.repeatProtos) : null))
+    .find(Boolean);
+  if (includeOwned) {
+    return res.status(409).json({
+      error: 'One of the other charges is one Trim already logs automatically — leave it out',
+      repeating: mockSubRef(includeOwned),
     });
   }
   const conflict = exactNoteConflict(tx, state.protos);

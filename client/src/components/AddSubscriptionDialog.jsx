@@ -79,7 +79,7 @@ export function AddSubscriptionDialog({ open, onOpenChange, currency, onDetected
       if (err?.status === 409 && err?.body?.existing) {
         toast('You already track this one', { description: 'Pick one of the options above.' });
       } else if (err?.status === 409 && err?.body?.repeating) {
-        toast('Trim already logs this automatically', { description: 'It is already on this page.' });
+        toast(err.message || 'Trim already logs this automatically');
       } else {
         toast.error(err?.message || "Couldn't save the subscription");
       }

@@ -512,7 +512,8 @@ export default function Transactions() {
           // The Subscription section re-asks the server and now shows the offer.
           toast('You already track this one', { description: 'Pick an option in the Subscription section.' });
         } else if (subError.status === 409 && subError.body?.repeating) {
-          toast('Trim already logs this automatically', { description: 'Manage it on Subscriptions.' });
+          // The server's message carries the specific reason (and what to do).
+          toast(subError.message || 'Trim already logs this automatically');
         } else {
           const what = subAction.type === 'attach'
             ? `add it to ${subAction.label}`

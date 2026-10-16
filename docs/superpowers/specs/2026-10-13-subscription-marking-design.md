@@ -60,6 +60,10 @@ Then a final independent branch review (5 confirmed findings, 16 low) — all fi
   offer such a note to a weak look-alike. A schedule owns only its OWN note (not an edited note on one of its
   charges). Marking clears `is_recurring`. The marker derives ticks and the final/back answer instead of
   resetting them in effects (BUGS-FIXED shape #8). A test now pins the race re-check rollback.
+- **Round 3 (final)** — `/track`'s extra charges obey the rule too (never offered as candidates; 409 if sent);
+  the exact-note exemption counts only a subscription's OWN note, not one absorbed through an edited charge;
+  preview and Quick Add send `canReactivate` so a doomed "… is back" is never offered; the Quick Add 409 copy
+  points at the Edit dialog instead of promising a toast.
 - **Known limit, documented (not fixed):** after a price rise of more than 30%, charges at the new price that
   were never attached can form a second, detected row next to the marked one. Both rows are visible, and
   the Edit dialog / Quick Add offer "Add to …" on the exact note at any amount; attaching them merges it.

@@ -472,11 +472,38 @@ export function runTransactionsRouteSuite(phase) {
       assert.equal(status, 409, JSON.stringify(body));
       assert.equal(body.existing.merchantKey, `manual:${T_REC}`);
       assert.equal(body.existing.name, 'Netflix');
+      assert.match(body.error, /Edit dialog/, 'points at the path that always works, not a toast that may not come');
       assert.equal(db.store.recurrences.length, recs, 'no Repeat-this schedule');
       assert.equal(db.store.transactions.length, txs, 'no transaction');
       assert.ok(!JSON.stringify(body).includes('_enc'));
     } finally {
       await http.close();
+    }
+  });
+
+  test(`${label} create: after a cancellation, "It's back" is not offered while a Repeat-this schedule logs the note`, async () => {
+    const { encodeWrite } = await import('../../lib/encryptionCodec.js');
+    const t = await withTracked({ cancelled_at: '2026-10-10T12:00:00Z' });
+    t.recurrences.push({
+      id: '66666666-6666-4666-8666-666666666666', user_id: U, category_id: CAT, type: 'expense',
+      interval: 'monthly', auto_log: true, next_run_at: '2026-12-01', last_run_at: null, cancelled_at: null,
+      created_at: '2026-10-12T00:00:00Z',
+      ...encodeWrite('recurrences', U, { amount: 10.99, description: 'Netflix' }, phase),
+    });
+    const { http } = await boot(t);
+    try {
+      const { body } = await logNetflix(http, '2026-12-20');
+      assert.equal(body.subscriptionMatch?.kind, 'finalOrBack');
+      assert.equal(body.subscriptionMatch.canReactivate, false);
+    } finally {
+      await http.close();
+    }
+    const { http: http2 } = await boot(await withTracked({ cancelled_at: '2026-10-10T12:00:00Z' }));
+    try {
+      const { body } = await logNetflix(http2, '2026-12-20');
+      assert.equal(body.subscriptionMatch?.canReactivate, true, 'control: nothing logs it');
+    } finally {
+      await http2.close();
     }
   });
 

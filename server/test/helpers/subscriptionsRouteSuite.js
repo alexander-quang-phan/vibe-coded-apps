@@ -481,11 +481,13 @@ export function runSubscriptionsRouteSuite(phase) {
   test(`${label} preview: likely = same note a cycle apart; maybe = other look-alikes; needsCategory reported`, async () => {
     const t = await tables({
       transactions: [
-        await txRow({ n: 1, date: '2026-10-03', amount: 10.99, description: 'Netflix' }),
-        await txRow({ n: 2, date: '2026-09-03', amount: 10.99, description: 'Netflix' }),
-        await txRow({ n: 3, date: '2026-09-20', amount: 10.99, description: 'Netflix' }), // mid-cycle
+        // "Crunchyroll", not "Netflix": the seed's ACTIVE Repeat-this owns "Netflix",
+        // and charges it owns are never offered as candidates.
+        await txRow({ n: 1, date: '2026-10-03', amount: 10.99, description: 'Crunchyroll' }),
+        await txRow({ n: 2, date: '2026-09-03', amount: 10.99, description: 'Crunchyroll' }),
+        await txRow({ n: 3, date: '2026-09-20', amount: 10.99, description: 'Crunchyroll' }), // mid-cycle
         await txRow({ n: 4, date: '2026-08-15', amount: 10.5 }), // no note, same category
-        // Its own note, so it only exercises needsCategory (an exact "Netflix" note
+        // Its own note, so it only exercises needsCategory (an exact "Crunchyroll" note
         // would rightly appear under maybe — names match regardless of category).
         await txRow({ n: 5, date: '2026-10-05', amount: 30, description: 'Gym', cat: null }),
       ],
@@ -793,6 +795,79 @@ export function runSubscriptionsRouteSuite(phase) {
       const key = res.body.subscription.merchantKey;
       assert.equal((await http.send('POST', `/${key}/attach`, { transactionId: id(2) })).status, 200);
       assert.equal(db.store.transactions.find((r) => r.id === id(2)).is_recurring, false);
+    } finally {
+      await http.close();
+    }
+  });
+
+  test(`${label} one note, one kind: a charge Repeat-this owns is never offered as a candidate, and /track refuses it as an extra`, async () => {
+    // Seed: ACTIVE Repeat-this "Netflix" (REC).
+    const t = await tables({
+      transactions: [
+        await txRow({ n: 1, date: '2026-10-03', amount: 9.99, description: 'Netflix Premium' }),
+        await txRow({ n: 2, date: '2026-09-03', amount: 9.99, description: 'Netflix' }),
+      ],
+    });
+    const { db, http } = await boot(t);
+    try {
+      const pv = (await http.get(`/track/preview?transactionId=${id(1)}&interval=monthly`)).body;
+      const offered = [...pv.likely, ...pv.maybe].map((c) => c.id);
+      assert.ok(!offered.includes(id(2)), 'the Repeat-this-owned "Netflix" charge is not offered');
+      const before = db.store.recurrences.length;
+      const res = await http.send('POST', '/track', { transactionId: id(1), interval: 'monthly', includeTransactionIds: [id(2)] });
+      assert.equal(res.status, 409, JSON.stringify(res.body));
+      assert.equal(res.body.repeating.merchantKey, `manual:${REC}`);
+      assert.equal(db.store.recurrences.length, before, 'nothing created');
+      assert.equal(db.store.transactions.find((r) => r.id === id(2)).recurrence_id, null);
+    } finally {
+      await http.close();
+    }
+  });
+
+  test(`${label} one note, one kind: a subscription that merely ABSORBED a Repeat-this note (an edited charge) is not offered it`, async () => {
+    // Tracked "Disney Plus" with one attached charge whose note Alex edited to "Netflix";
+    // the seed's ACTIVE Repeat-this "Netflix" owns that note.
+    const t = await tables({
+      recurrences: [await trackedRec({ description: 'Disney Plus', amount: 9.99 })],
+      transactions: [
+        await txRow({ n: 1, date: '2026-09-03', amount: 9.99, description: 'Netflix', rec: T_REC }),
+        await txRow({ n: 2, date: '2026-10-03', amount: 9.99, description: 'Netflix' }),
+      ],
+    });
+    const { db, http } = await boot(t);
+    try {
+      const pv = (await http.get(`/track/preview?transactionId=${id(2)}`)).body;
+      assert.equal(pv.existing, null, '"Add to Disney Plus" is withheld');
+      assert.equal(pv.repeating?.merchantKey, `manual:${REC}`);
+      const att = await http.send('POST', `/manual:${T_REC}/attach`, { transactionId: id(2) });
+      assert.equal(att.status, 409, JSON.stringify(att.body));
+      assert.equal(db.store.transactions.find((r) => r.id === id(2)).recurrence_id, null);
+    } finally {
+      await http.close();
+    }
+  });
+
+  test(`${label} preview: "is back" is not offered (canReactivate false) while a Repeat-this schedule logs the note`, async () => {
+    const t = await tables({
+      recurrences: [
+        await trackedRec({ cancelled_at: '2026-09-05T12:00:00Z' }), // "Netflix" — the seed's Repeat-this "Netflix" is active
+        await trackedRec({ rid: id(903), description: 'Disney Plus', cancelled_at: '2026-09-05T12:00:00Z' }),
+      ],
+      transactions: [
+        await txRow({ n: 1, date: '2026-09-01', amount: 10.99, description: 'Netflix', rec: T_REC }),
+        await txRow({ n: 2, date: '2026-09-30', amount: 10.99, description: 'Netflix' }),
+        await txRow({ n: 3, date: '2026-09-01', amount: 7.99, description: 'Disney Plus', rec: id(903) }),
+        await txRow({ n: 4, date: '2026-09-30', amount: 7.99, description: 'Disney Plus' }),
+      ],
+    });
+    const { http } = await boot(t);
+    try {
+      const nf = (await http.get(`/track/preview?transactionId=${id(2)}`)).body.existing;
+      assert.equal(nf.kind, 'finalOrBack');
+      assert.equal(nf.canReactivate, false);
+      const dp = (await http.get(`/track/preview?transactionId=${id(4)}`)).body.existing;
+      assert.equal(dp.kind, 'finalOrBack');
+      assert.equal(dp.canReactivate, true, 'control: no schedule logs "Disney Plus"');
     } finally {
       await http.close();
     }

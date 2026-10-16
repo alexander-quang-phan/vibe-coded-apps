@@ -31,6 +31,16 @@ with `recurring`, and `PATCH` status → active for either kind; devMock mirrors
 answer (remembered with the offer it answers) — no effect resets them. 21 new tests; 11 mutations each
 caught by exactly its test; re-verified in the running UI.
 
+**Round 3 (same day) found the rule still had gaps, all fixed:** `/track`'s *extra* charges skipped it
+(preview even offered Repeat-this-owned charges to tick) — now never offered, and refused with 409; the
+exact-note exemption accepted a subscription that had merely *absorbed* the note through an edited
+charge — now only its OWN note counts; "… is back" was offered when the server would always refuse it —
+preview and Quick Add now send `canReactivate` and the client offers only "final charge"; the Quick Add
+409 promised a toast that often never comes — the copy now points at the Edit dialog. Each fix was proved
+by re-running the reviewers' own reproduction scripts and by a mutation that its test catches. **Lesson:**
+a rule enforced path-by-path keeps leaking at the next path (rounds 1–3 each found one) — list EVERY
+writer of the state the rule protects before calling it done.
+
 ## 2026-10-14 — Phase 17's final review: five defects caught before merge (+ one I introduced fixing them)
 
 **What they were.** (1) "It's a different subscription" was a sticky flag: after saying it about a weak

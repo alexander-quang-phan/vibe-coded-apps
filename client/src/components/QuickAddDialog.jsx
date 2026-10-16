@@ -206,7 +206,15 @@ export function QuickAddDialog({
         })
         .catch((err) => toast.error(err?.message || "Couldn't add it to the subscription"));
     };
-    if (match.kind === 'finalOrBack') {
+    if (match.kind === 'finalOrBack' && match.canReactivate === false) {
+      // "It's back" would be refused: a Repeat-this schedule logs this note now.
+      toast(`A ${label} charge after you cancelled it`, {
+        description: 'Trim logs it automatically now. Add it as the final charge?',
+        duration: 12000,
+        action: { label: 'Final charge', onClick: () => attach(false) },
+        cancel: { label: 'No', onClick: () => {} },
+      });
+    } else if (match.kind === 'finalOrBack') {
       toast(`A ${label} charge after you cancelled it`, {
         description: 'Is it back, or was this the final charge?',
         duration: 12000,
