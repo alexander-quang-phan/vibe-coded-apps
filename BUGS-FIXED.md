@@ -7,6 +7,48 @@ After fixing any real bug, append one row: what it was, why it mattered, how it 
 
 ---
 
+## 2026-11-01 — Two encryption defects that would have blocked the switch-on (fixed before `dual`)
+
+Both found by a 2026-10-13 code read, filed as cards that expired unstarted, and still in the code on
+2026-11-01. Both inert at `ENCRYPTION_PHASE=off` (production today).
+
+**1. "Already encrypted" was decided by ONE column, so half-encrypted rows were skipped forever.**
+At `dual` the codec encrypts only the columns a write touches (`encodeWrite`: "a partial update stays
+partial"). So a transaction created at `off` and re-priced at `dual` gets `amount_enc` and nothing
+else, and **every goal created at `dual`** gets `name_enc` and `target_amount_enc` but no
+`current_amount_enc` — the insert omits `current_amount`, and the database default fills the plaintext
+with 0. The backfill chose rows with `.is(<first _enc column>, null)` (the composite-key path skipped on
+the same column), so both kinds were invisible to it. The gate would fail on them, and its own remedy —
+re-run the backfill — could never repair them, leaving migration 019 blocked with no way forward but
+hand-editing around the gate. *Fixed:* no "already done" filter; each row's own columns decide, by the
+gate's own per-row checks (`columnState`). A column that is **missing** (plaintext, no ciphertext),
+**stale** (ciphertext decrypts to something else — what an edit leaves after the runbook's Step 3 undo
+back to `off`) or **orphaned** (ciphertext beside a cleared plaintext) is rewritten from the plaintext;
+a blind index is rewritten when it does not recompute. Columns already right are left alone, only what
+was written is verified against the database, and a failed verify rolls back only that. Ciphertext the
+key **cannot decrypt** is never overwritten — the likeliest cause is a different key in `server/.env`
+than in production, and re-encrypting under it would make the gate pass on values the live app cannot
+read — so a read-only key check runs over every table first, and if any existing value will not
+decrypt the run writes NOTHING and exits non-zero (also in --dry-run). Found by the second review. Tests are driven by the registry (every
+column of every table, both scan paths), and the test fake now returns only the selected columns, as
+PostgREST does, so a scan that forgets to SELECT an `_enc` column cannot pass.
+*Caught in review:* the first version wrote only MISSING columns, which quietly dropped the stale-
+ciphertext repair the old code did by accident (it rewrote every column of a row whose first `_enc` was
+NULL). The independent review reproduced it; the per-column states above restore it on purpose.
+
+**2. The AI parse route read `categories.name` raw.** `POST /api/transactions/parse` was the one
+category read the Part A sweep missed: `.select('id, name, type')`, no `selectFor`, no decode. Fine
+while the plaintext exists; after 019 PostgREST rejects the query and every Quick Add parse fails. The
+sweep's completeness audit checked each FILE against the registry, and `transactions.js` was swept —
+so one raw query inside a swept file was invisible to it. *Fixed:* `selectFor` + `presentRows`, so the
+parser gets exactly `id, name, type`, decoded, and no ciphertext or `user_id` can reach the prompt.
+Tested at all three phases; it failed at `enc` before the fix.
+
+**The shape:** at `dual`, "is this row done?" has no row-level answer — only per-column ones. Anything
+that judges a multi-column row by one column (a filter, a skip, a `first` anything) is this bug.
+
+---
+
 ## 2026-10-16 — The second review: duplicates from the other direction, and state wiped by every refetch
 
 **What it was.** (1) The first fix refused *marking* a note an active Repeat-this schedule logs — but the
@@ -314,6 +356,11 @@ Recorded so they are not rediscovered the hard way. Most of the original list be
   column may not exist, so a check against `row.name` compares against `undefined` and fails open.
 - **Return `presentRow`/`presentRows`, never a raw decoded row** — the codec adds `*_enc` and
   `user_id` for its own use, and returning the row wholesale ships them to the browser.
+- **(2026-11-01, open) `POST /api/goals` will fail on every new goal after migration 019.** The insert
+  omits `current_amount` and relies on the plaintext column's default of 0; 019 drops that column and
+  makes `current_amount_enc` NOT NULL with no default, so at `enc` nothing writes it. The route tests
+  cannot see it — the fake database enforces no NOT NULL. Fix before Part B: send `current_amount: 0`
+  explicitly, so `encodeWrite` encrypts it at every phase.
 
 - **Migrations must replay cleanly from scratch.** A statement naming an object no migration
   creates aborts the whole batch in the Supabase SQL editor, silently skipping the statements

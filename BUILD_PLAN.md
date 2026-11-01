@@ -887,6 +887,34 @@ older than the 200-row window load. Verify by tapping into an old month in the r
 >   up `DATA_ENCRYPTION_KEY`; migrations 012/018/018a are applied; `ENCRYPTION_PHASE=dual` and a
 >   redeploy; the backfill runs. Then **Part B** — the gate, the barrier and migration 019 — which
 >   must not proceed until the parked cutover machinery has an independent review (see CHAT_HANDOFF).
+>
+> - **2026-11-01 — two fixes that must be DEPLOYED before the runbook's Step 3 (`dual`).** Both from a
+>   2026-10-13 code read; details in `BUGS-FIXED.md`. Inert at `off`, so deploying them is low-risk.
+>   **Ordering (Alex, 2026-11-01: "Trips first"):** the runbook's Steps 1–4 wait until Phase 18 trips is
+>   merged, because trips edits the unapplied 018/018a/019 and `lib/encryptedFields.js` in place. The
+>   backfill and its new tests derive from that registry, so trips' encrypted columns are covered
+>   without touching them.
+>     1. **`scripts/encrypt-backfill.mjs` skipped half-encrypted rows.** It judged "already done" by each
+>        table's FIRST `_enc` column, but at `dual` a route encrypts only the columns it writes — a
+>        re-priced transaction gets `amount_enc` only, and every new goal lacks `current_amount_enc`.
+>        Those rows were skipped forever, so the gate could never pass. Now each column is judged by
+>        the gate's own checks: missing, stale (left by an edit after going back to `off`) and orphaned
+>        ciphertext is rewritten from the plaintext; correct ciphertext is left alone; ciphertext the
+>        key cannot decrypt is reported, never overwritten (it most likely means the wrong key). So
+>        the runbook's Step 3 undo is now genuinely undoable: back at `dual`, re-running Step 4
+>        repairs whatever was edited at `off`. The Step 4 summary also prints "N already encrypted"
+>        for every table, and "NO ROWS AT ALL" now means the table is genuinely empty.
+>     2. **`POST /api/transactions/parse` read `categories.name` raw** — the one query the sweep missed
+>        (the audit checked files, not queries). Now `selectFor` + `presentRows`; it would have failed
+>        on every parse after 019.
+>   Suite 722 -> 739. Independently reviewed twice (two P2s found and fixed: see BUGS-FIXED); the second
+>   added a read-only key check that refuses to write anything if existing ciphertext will not decrypt.
+>   `docs/PHASE-9.5-PART-A-RUNBOOK.md` gained two notes (re-run Step 4 after any time back at `off`;
+>   STOP on "this key cannot decrypt"). **Its PDF was NOT regenerated** — do that after trips merges,
+>   before Alex follows the runbook.
+> - **Still open, found the same day (not fixed):** `POST /api/goals` will fail on every new goal
+>   after 019 (it relies on the plaintext `current_amount` default, which 019 drops while making
+>   `current_amount_enc` NOT NULL) — fix before Part B. Recorded in `BUGS-FIXED.md`.
 
 > **Codex stage-4 VERIFY: FAIL (2026-08-18).** Eleven findings, including two reproduced false
 > PASSes in the gate itself (a 501-row composite-PK scan that verified 500; a value-only edit after
