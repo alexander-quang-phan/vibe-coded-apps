@@ -7,6 +7,32 @@ After fixing any real bug, append one row: what it was, why it mattered, how it 
 
 ---
 
+## 2026-11-01 — Simple mode showed Special / "Repeat this" on a pre-dated add, then threw the choice away
+
+**What it was.** `QuickAddDialog` hid its details panel in simple mode only when `initialDate ===
+todayISO()`. A pre-dated add (Analytics' empty-month prompt) therefore showed the WHOLE panel —
+Special expense, the special-group picker and "Repeat this" — not just the date it meant to reveal.
+They could be ticked, but `handleSimpleLog()` never sends `isSpecial`, `specialGroupId` or
+`recurring`, so the server saved a plain expense — while the success toast, which reads local state,
+said "Logged as special ⭐". Filed 2026-10-13 as a task card that expired unstarted; still in the code
+on 2026-11-01. Reproduced under `dev:mock`: both ticked → payload had neither, response
+`is_special: false`, `recurrence: null`, toast "Logged as special ⭐".
+
+**Why it mattered.** A choice the user made was discarded without a word, and the toast confirmed
+the opposite of what was stored — the expense counted against the monthly budget it was meant to be
+kept out of, and the "repeat" never repeated.
+
+**How it was fixed.** Option (b), matching FEATURES.md ("simple mode hides every advanced field";
+the empty-month prompt reveals "the date field"): simple mode now renders the date field ALONE on a
+pre-dated add, and nothing on a today add; the details toggle, Special and "Repeat this" never render
+in simple mode. Option (a) — sending the flags from `handleSimpleLog` — was rejected: simple mode
+sends no note, so "Repeat this" would create a no-note schedule in "Other" and pull simple mode into
+Phase 17's one-note-one-kind 409s. Verified in the running dialog: simple pre-dated shows Amount /
+Log / Date only and saves dated 2026-09-01 with "Logged +10 XP"; simple today shows no date; normal
+mode pre-dated still shows Date / Special / Repeat and still sends `isSpecial: true`. **Lesson:** a
+control is a promise that the value will be sent — if a code path can't send it, that path must not
+render it. Hiding by a different condition from the one the submit path uses lets the two drift.
+
 ## 2026-10-16 — The second review: duplicates from the other direction, and state wiped by every refetch
 
 **What it was.** (1) The first fix refused *marking* a note an active Repeat-this schedule logs — but the
