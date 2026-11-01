@@ -64,6 +64,24 @@ check everything for me?" → "Yes, do it all" — so Claude ran the database st
 3. Unmerged branches `claude/affectionate-shirley-83720f`, `claude/phase-10-batch-a`,
    `docs/task-6.12-spec-unbuilt` are kept on purpose (their features shipped other ways; see older notes).
 
+## Open bugs — filed 13 Oct as task cards, which EXPIRED unstarted; re-checked 1 Nov, all still in the code
+Task cards expire after 7 days, so this list is the durable record. Re-filed as cards on 1 Nov.
+1. **Weekly budget card shows wrong left/over** — `client/src/pages/Budgets.jsx` ~207 uses the raw
+   weekly `budget.limit` against a month of spend; the bar uses the server's scaled `effectiveLimit`.
+   User-visible. (Read in code, not reproduced.)
+2. **Simple-mode Quick Add drops Special / Repeat on pre-dated adds** — `QuickAddDialog.jsx` ~652 shows
+   the controls; `handleSimpleLog()` never sends them, and the toast still says "Logged as special".
+3. **Backfill may skip half-encrypted rows** — `server/scripts/encrypt-backfill.mjs` ~283
+   `.is(firstEnc, null)`. Unverified; must be settled BEFORE encryption runbook Steps 3–4.
+4. **AI parse route reads categories raw** — `server/routes/transactions.js` ~506; harmless until 019,
+   must be ported to the codec before Part B.
+5. **Stale docs** — FEATURES.md still says "The category tap auto-submits" (it's two taps) and "No FX"
+   (Phase 12 added foreign-currency entry); more items in the 13 Oct brief. Docs-only.
+
+**Ordering decision for Alex: trips or encryption first?** The trips spec edits the UNAPPLIED
+018/018a/019 in place. Encryption Part A applies 012/018/018a — doing it first means re-planning the trips
+migrations as new files.
+
 ## Open questions for Alex
 - Delete the unused `SUPABASE_JWT_SECRET` line from `server/.env`? (pending since 13 Oct)
 - (Carried from 23 Sep) repo public? account-deletion path? rotate service-role key? `RECOVERY.md`?
