@@ -1,92 +1,85 @@
-# Chat Handoff — updated 2026-10-16 (PHASE 17 BUILT + 3 REVIEW ROUNDS + deploy-guard GO, on a branch — needs migration 017a, merge, deploy; trips designed, not built)
+# Chat Handoff — updated 2026-11-01 (PHASE 17 SHIPPED AND LIVE; trips designed, not built)
 
 ## DUAL-AGENT BATON  (both models: update this the MOMENT you finish work)
-- Current stage:  **Phase 17 BUILT on `feature/subscription-marking`, through three independent review
-                  rounds (all confirmed findings fixed) and the `deploy-guard` gate: GO, provided migration
-                  017a is applied BEFORE the API deploys. NOT merged, NOT deployed.**
-- Model A is:     Claude Code (design, build, verification). Single-model feature work per CLAUDE.md; the
-                  independent checking was done by review workflows (separate agents, each finding
-                  reproduced + challenged). Round 3's fixes were proved against the reviewers' own repro
-                  scripts + mutations, not by a 4th review round (validator-loop cap of 3).
-- Up next:        **Alex** — the deploy steps below (017a → merge → API → client → try it → check the cron).
-                  Then: Phase 18 trips in its own session.
-- Last actor did: Claude Code, 2026-10-16 — rounds 2 and 3 of review + fixes ("one note, one kind"),
-                  722 server tests, UI re-verified against devMock, docs/ledger/spec/PDF, this handoff.
+- Current stage:  **Phase 17 shipped to production on 2026-11-01**, in the gated order (017a → main →
+                  trim-api → client), each step verified. Nothing is in flight.
+- Model A is:     Claude Code. Single-model feature work per CLAUDE.md.
+- Up next:        **Alex** — the 2-minute logged-in check (next step 1). Then Phase 18 trips in its own
+                  session (plan first; it needs the full independent-review loop because it edits the
+                  unapplied 9.5 migrations).
+- Last actor did: Claude Code, 2026-11-01 — re-ran 722/722 + client build, applied 017a with Alex's
+                  approval, fast-forwarded main, deployed both projects, verified live, this handoff.
 
 ## Goal
 Alex (13 Oct): (1) trips with a set budget per category and per city; (2) "I don't see a way to mark a
-transaction as a subscription myself." 14 Oct: "Build out what you think is ready. Validate one more time."
-16 Oct: "Do what you think needs to be done still" → independent review of the fixes, fix everything
-confirmed, pre-deploy gate. Production steps are Alex's (the database read was blocked for Claude, and
-merging/deploying a daily-use app is his call).
+transaction as a subscription myself." 1 Nov: asked for the steps to move forward, then "You can't do and
+check everything for me?" → "Yes, do it all" — so Claude ran the database steps and the deploy itself.
 
 ## Current state
-**Phase 17 — built, reviewed three times, committed** on `feature/subscription-marking`:
-- Migration `server/migrations/017a_subscription_tracking.sql` — **not yet applied to the live database**.
-- Mark a subscription yourself: Transactions → Edit → "This is a subscription"; Subscriptions → "Add a
-  subscription"; Quick Add asks "Is this your … subscription?". Track-only (never auto-logs).
-- **One note, one kind** (rounds 2–3): a note is either logged by Repeat-this or tracked by a marked
-  subscription, never both active — enforced on marking, extra charges, attach, preview, Quick Add's
-  question, Quick Add "Repeat this" (409), and re-activating either kind. Helpers in `lib/subscriptionRows.js`.
-- The marking panel derives its ticks and answers (no effect resets) — BUGS-FIXED shape #8.
-- **Verified:** `npm test` **722/722** (real-PG tests ran); client build passes; every new guard
-  mutation-checked; all flows clicked through in the real pages against `npm run dev:mock` (throwaway
-  harness, deleted each time).
-- **Not verified:** anything against the real database or with a real login.
+**Phase 17 — LIVE** at https://trim-budget.vercel.app.
+- **Database:** 017a applied as Supabase migration `subscription_tracking`. Before: two CHECKs (amount;
+  interval monthly/weekly), `recurrences` had **0 rows**. After: `recurrences_amount_check`,
+  `recurrences_interval_check` (now with `annual`), `recurrences_next_run_required`; `auto_log` boolean
+  NOT NULL default true; `next_run_at` nullable; still 0 rows, so no existing data changed.
+- **Nightly job:** its own select (`cancelled_at is null and auto_log = true and next_run_at <= …`, with the
+  full column list) ran clean against the live schema, so the 03:00 UTC cron cannot fail on the new column.
+  The "check the logs next morning" step from the 16 Oct checklist is no longer needed.
+- **Code:** `main` = `origin/main` = `827fe62` plus the docs commit for this session.
+- **API:** trim-api deployment `trim-375ms327g…` — `/api/health` 200 (fresh uptime), `/api/subscriptions`
+  401 without login. Encryption env vars still absent (re-checked before deploying).
+- **Client:** `trim-budget-ezswqul8x…` aliased to trim-budget.vercel.app; bundle `index-DTIgFDHz.js`
+  contains "This is a subscription" ×2, "Add a subscription" ×3, "Logs itself" ×1, and still points at
+  trim-api-jade. Login page loads with no console errors.
+- **Rollback, if ever needed:** in Vercel promote trim-api `trim-8bxbhdwgr…` and client
+  `trim-budget-566fimvrc…`, and LEAVE 017a in place (the old API works with it).
+- **Not verified:** a logged-in click-through with real data (Claude can't sign in).
+- Alex has **no Repeat-this items** in the live DB, so "Logs itself" tags won't show until he makes one.
 - Known limit (documented, not fixed): after a >30% price rise, unattached new-price charges can form a
   second detected row until attached.
 
 **Phase 18 — trips:** spec `docs/superpowers/specs/2026-10-13-trips-design.md` (+ PDF). No code.
 
 ## Key decisions (and why)
-- **Track only** — marking never auto-logs. "Repeat this" stays for auto-logging.
-- **Ask before attaching**; Trim acts silently only on the exact marked note (BUGS-FIXED shape #7).
-- **One note, one kind** — otherwise the page lists a service twice and "Per month" double counts.
-  A Repeat-this schedule owns only its OWN note (not edited notes on its charges).
-- **Derived, never stored:** tracked amount / last / next come from attached charges.
-- **Migration 017a** sorts before 019 (encryption scope test). 012/018/018a/019 must stay unapplied.
-- **Review rounds capped at 3** (validator-loop). Rounds found 5 → 9 → 5 confirmed; round 3's fixes proved
-  by the reviewers' own repro scripts.
+- **Claude ran the production SQL this time**, because Alex said "Yes, do it all" in chat; with that
+  approval the auto-mode guard allowed the reads and the migration (it had blocked a read on 16 Oct).
+  **No blanket "always allow execute_sql" rule was added** — it can't tell a count from a delete.
+- **`apply_migration`, not raw SQL**, because every earlier migration (monthly_limit … user_timezone) is
+  recorded in Supabase's migration list that way.
+- Phase 17 design decisions stand: track only (never auto-logs); ask before attaching; one note, one kind;
+  tracked amount/last/next derived, never stored; 017a sorts before 019; 012/018/018a/019 stay unapplied.
 
 ## Files that matter
 - `docs/superpowers/specs/2026-10-13-subscription-marking-design.md` ("As built" first) + PDF
+- `docs/superpowers/specs/2026-10-13-trips-design.md` + PDF — the next feature
 - `server/lib/subscriptionMatch.js`, `server/lib/subscriptionRows.js`, `server/routes/subscriptions.js`,
   `server/routes/transactions.js`, `client/src/components/SubscriptionMarker.jsx`
-- `BUGS-FIXED.md` (2026-10-14 ×3 and 2026-10-16 rows; shapes #7 and #8), `BUILD_PLAN.md` 17.10b–d, 17.11
+- `BUGS-FIXED.md` (read before coding), `BUILD_PLAN.md` 17.11 (shipped) and Phase 18
 
-## Next steps (in order) — from the deploy-guard gate (GO)
-Printable version: `docs/2026-10-16-phase17-deploy-checklist.pdf`.
-1. **Alex — check first (read-only), Supabase → SQL Editor → New query:**
-   `select conname, pg_get_constraintdef(oid) from pg_constraint where conrelid = 'public.recurrences'::regclass and contype = 'c';`
-   It must list a constraint named exactly `recurrences_interval_check` (monthly, weekly). If the name
-   differs, STOP and tell Claude. Also note the totals from:
-   `select count(*) as total, count(*) filter (where cancelled_at is null) as active from public.recurrences;`
-2. **Apply 017a:** paste all of `server/migrations/017a_subscription_tracking.sql`, click **Run**, expect
-   "Success. No rows returned" (safe to run twice). Do NOT run 012, 018, 018a or 019.
-3. **Check after:** re-run the constraint query — expect `recurrences_amount_check`,
-   `recurrences_interval_check` (now with 'annual') and `recurrences_next_run_required`. Then
-   `select count(*) as total, count(*) filter (where auto_log) as auto_log_true, count(*) filter (where next_run_at is null) as null_next from public.recurrences;`
-   → total unchanged, auto_log_true = total, null_next = 0.
-4. **Merge** `feature/subscription-marking` → `main` (fast-forward) and **`/deploy` — API first, then client.**
-   After the API: `/api/health` 200, `/api/subscriptions` without login 401.
-5. **Try it logged in:** Subscriptions loads, Repeat-this items show "Logs itself"; Edit an expense → the
-   Subscription section appears; Quick Add with "Repeat this" still saves.
-6. **Next morning:** Vercel trim-api logs → the 03:00 UTC `[cron:recurrences]` line shows errors 0.
-   **If anything goes wrong:** promote the previous client and API deployments in Vercel and LEAVE 017a in
-   place — the old API works with it (checked by reading main's code).
-7. **Phase 18 trips**, own session: plan → re-check live DB → build (needs independent review: it edits the
-   unapplied 9.5 migrations).
+## Next steps (in order)
+1. **Alex — 2-minute check, logged in at https://trim-budget.vercel.app:**
+   Transactions → pencil on any expense → **Subscription** section → "This is a subscription";
+   Subscriptions → **Add a subscription**; Quick Add with "Repeat this" ticked still saves.
+   Report anything odd (a screenshot is ideal).
+2. **Phase 18 trips**, its own session: plan → re-check the live DB → build → independent review.
+3. Unmerged branches `claude/affectionate-shirley-83720f`, `claude/phase-10-batch-a`,
+   `docs/task-6.12-spec-unbuilt` are kept on purpose (their features shipped other ways; see older notes).
 
 ## Open questions for Alex
-- Delete the unused `SUPABASE_JWT_SECRET` line from `server/.env`? (still pending since 13 Oct)
-- Allow Claude read-only SQL on the live DB (a permission rule for the Supabase `execute_sql` tool)? It was
-  blocked on 16 Oct, so steps 1 and 3 above are yours to run.
+- Delete the unused `SUPABASE_JWT_SECRET` line from `server/.env`? (pending since 13 Oct)
 - (Carried from 23 Sep) repo public? account-deletion path? rotate service-role key? `RECOVERY.md`?
 
 ## How to resume
-Start a new session in this folder and say: "Read @CHAT_HANDOFF.md and continue with next step 1."
+Start a new session in this folder and say: "Read @CHAT_HANDOFF.md and continue with next step 2."
 
 ## Previous sessions
+
+### 2026-10-14 → 16 — Built Phase 17 on a branch, three review rounds, deploy-guard GO
+- Built subscription marking (Transactions edit → "This is a subscription"; Subscriptions → "Add a
+  subscription"; Quick Add asks). Track only. Review rounds found 5 → 9 → 5 confirmed issues, all fixed
+  ("one note, one kind" enforced on every path; marker state derived — BUGS-FIXED shapes #7, #8).
+- 722 server tests; every flow clicked through against `npm run dev:mock`. deploy-guard: GO provided 017a
+  goes in before the API. Live-DB read was blocked for Claude that day, so the steps were left to Alex
+  (`docs/2026-10-16-phase17-deploy-checklist.pdf`) — Claude did them on 1 Nov instead.
 
 ### 2026-10-13 — Designed subscription marking and trips
 - Explored the code with 4 readers; designed both features with Alex section by section; wrote both

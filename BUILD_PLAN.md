@@ -1251,7 +1251,7 @@ mint.
 
 ---
 
-## Phase 17 — mark a subscription yourself (2026-10-13 → 2026-10-14) — BUILT, on `feature/subscription-marking`, NOT merged
+## Phase 17 — mark a subscription yourself (2026-10-13 → 2026-11-01) — SHIPPED AND LIVE 2026-11-01
 
 Alex: "I don't see a way to mark a transaction as a subscription myself." Spec:
 `docs/superpowers/specs/2026-10-13-subscription-marking-design.md` (red-teamed, 5 verification rounds + a
@@ -1270,9 +1270,9 @@ final validation pass). Plan: `docs/superpowers/plans/2026-10-14-subscription-ma
 - [x] **17.10b** Final independent branch review: 5 confirmed findings fixed (Repeat-this duplicate refused; narrower own-history; "different subscription" no longer sticks; only on-screen charges linked; Save waits for the panel) plus all remaining lows (incl. changing a charge's type now drops its subscription link; neutral 409 copy); one known limit documented (spec "As built"). Re-verified in the running UI against the mock. Server suite **689 passing**. 
 - [x] **17.10c** Second independent review of the fix commits (`trim-phase17-fix-review`: 4 lenses, each finding reproduced + refuted independently): 9 confirmed (2 medium), all fixed — **one note, one kind** enforced in both directions (Quick Add "Repeat this", re-activation, attach, preview, Quick Add question); ticks and final/back answers derived, not reset on refetch; marking clears `is_recurring`; race-rollback test. Server suite **710 passing**; 11 mutations each caught; re-verified in the running UI.
 - [x] **17.10d** Round 3 (final, per the validator-loop cap): 5 confirmed (2 medium), all fixed — `/track` extra charges and preview candidates obey one-note-one-kind; exemption only on a subscription's OWN note; `canReactivate` hides a doomed "is back"; honest Quick Add 409 copy. Each fix proved against the reviewers' own repro scripts + a caught mutation. **Server suite 722 passing.** `deploy-guard`: **GO**, provided 017a is applied before the API deploys (ordered steps in CHAT_HANDOFF.md).
-- [ ] **17.11 — Alex:** run `server/migrations/017a_subscription_tracking.sql` in the Supabase SQL editor **before** the API deploys (the API selects `auto_log`; deploying first 500s /subscriptions). Then merge to `main` and `/deploy` (API first).
+- [x] **17.11** Shipped 2026-11-01, in the gated order. 017a applied to the live database first (Supabase migration `subscription_tracking`, with Alex's approval in chat), checked before/after: `recurrences` had 0 rows, so no data changed; three CHECKs present, `interval` allows `annual`, `auto_log` boolean default true, `next_run_at` nullable. The nightly job's own select ran clean against the live schema. Then `main` fast-forwarded to `827fe62`, pushed, `trim-api` deployed (health 200, `/api/subscriptions` 401), then the client (live bundle `index-DTIgFDHz.js` contains "This is a subscription", "Add a subscription", "Logs itself"; login page loads with no console errors). Re-run that day: server suite **722/722**, client build passes.
 
-Still unverified without a real login: the flows against the real database (only the mock and the fake were exercised).
+Still unverified: a logged-in click-through on the live site (Claude can't sign in). Alex's 2-minute check: Transactions → pencil on an expense → Subscription section; Subscriptions → Add a subscription.
 
 ## Phase 18 — trips (designed 2026-10-13, NOT built)
 
