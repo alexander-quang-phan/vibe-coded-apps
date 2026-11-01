@@ -69,8 +69,9 @@ Task cards expire after 7 days, so this list is the durable record. Re-filed as 
 1. **Weekly budget card shows wrong left/over** — `client/src/pages/Budgets.jsx` ~207 uses the raw
    weekly `budget.limit` against a month of spend; the bar uses the server's scaled `effectiveLimit`.
    User-visible. (Read in code, not reproduced.)
-2. **Simple-mode Quick Add drops Special / Repeat on pre-dated adds** — `QuickAddDialog.jsx` ~652 shows
-   the controls; `handleSimpleLog()` never sends them, and the toast still says "Logged as special".
+2. ✅ **FIXED AND LIVE 1 Nov** — Simple-mode Quick Add dropped Special / Repeat on pre-dated adds. Fix
+   `8c6139c` (simple mode now shows only the date on a pre-dated add), merged as `92f120f`, client deployed;
+   the old `simpleMode && initialDate === todayISO() ? "hidden"` wrapper is gone from the live bundle.
 3. **Backfill may skip half-encrypted rows** — `server/scripts/encrypt-backfill.mjs` ~283
    `.is(firstEnc, null)`. Unverified; must be settled BEFORE encryption runbook Steps 3–4.
 4. **AI parse route reads categories raw** — `server/routes/transactions.js` ~506; harmless until 019,
