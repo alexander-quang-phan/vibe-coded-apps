@@ -78,9 +78,11 @@ Task cards expire after 7 days, so this list is the durable record. Re-filed as 
 5. **Stale docs** — FEATURES.md still says "The category tap auto-submits" (it's two taps) and "No FX"
    (Phase 12 added foreign-currency entry); more items in the 13 Oct brief. Docs-only.
 
-**Ordering decision for Alex: trips or encryption first?** The trips spec edits the UNAPPLIED
-018/018a/019 in place. Encryption Part A applies 012/018/018a — doing it first means re-planning the trips
-migrations as new files.
+**DECIDED 1 Nov — trips first** (Alex: "Trips first"). The trips spec edits the UNAPPLIED 018/018a/019
+in place, so encryption runbook Steps 1–4 (which apply 012/018/018a) wait until trips is merged and
+deployed. The encryption-blocker fixes (bugs 3 and 4) can merge any time — inert while
+`ENCRYPTION_PHASE` is unset. Started 1 Nov as four sessions, each on its own worktree branch: trips,
+weekly-budget fix, simple-mode fix, encryption blockers. Each needs merging to `main` and deploying.
 
 ## Open questions for Alex
 - Delete the unused `SUPABASE_JWT_SECRET` line from `server/.env`? (pending since 13 Oct)
