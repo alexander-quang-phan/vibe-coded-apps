@@ -7,6 +7,30 @@ After fixing any real bug, append one row: what it was, why it mattered, how it 
 
 ---
 
+## 2026-11-01 — A weekly budget's card said "over" next to a green bar
+
+**What it was.** `BudgetCard` in `client/src/pages/Budgets.jsx` worked out "of £X", "£X left" and "£X
+over" from the raw `budget.limit`, but the bar uses the server's `percent`, which is measured against
+`effectiveLimit` — the weekly limit scaled to the month (`server/lib/budgetPeriod.js`). `spent` is a whole
+month, so a £50/week Food budget with £150 spent showed "£150.00 of £50.00", a green 70% bar, "You have
+room to breathe." and "£100.00 over" in rose, all on one card. Reproduced under `npm run dev:mock` before
+fixing. The 2026-08-11 fix that added `effectiveLimit` corrected the bar and Ask Trim but never changed the
+card's figures, and nobody noticed for almost three months. A code read found it on 2026-10-13, and the
+task card for it expired unstarted.
+
+**Why it mattered.** The card contradicted itself, so neither number could be trusted. That is recurring
+shape #1, one number with two definitions: the bar used the scaled limit and the figures used the raw one.
+
+**How it was fixed.** The card now reads `budget.effectiveLimit` for "of", "left" and "over", so all three
+match the bar ("£150.00 of £214.29 this month · £64.29 left"). The raw amount is still shown under the
+category name ("£50.00 a week"), and the Edit dialog still edits it. The route and `devMock.js` already
+returned `effectiveLimit` the same way, so the server was unchanged. FEATURES.md's progress-colour line was
+also wrong (it said amber-300/amber-400, and the code uses amber-200→400 and amber-300→500 gradients, with
+exactly 100% counting as over) and was corrected. Checked in the running UI with the real page under a
+throwaway preview harness: under budget, over budget, phone width, and that monthly cards are unchanged.
+**Lesson:** when a fix adds a corrected field beside an old one, search for every reader of the old field.
+A fix that only reaches some of them leaves the screen disagreeing with itself.
+
 ## 2026-10-16 — The second review: duplicates from the other direction, and state wiped by every refetch
 
 **What it was.** (1) The first fix refused *marking* a note an active Repeat-this schedule logs — but the
