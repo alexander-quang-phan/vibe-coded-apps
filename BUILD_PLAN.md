@@ -1083,7 +1083,9 @@ No migration, no new Supabase query — every figure is derived from transaction
 - [x] **11.2** `/api/analytics` returns `average` with the 3 / 6 / 12 windows precomputed.
       Mirrored into `scripts/devMock.js`.
 - [x] **11.3** `QuickAddDialog` gains an `initialDate` prop and reveals the date field when
-      pre-dated, including in simple mode.
+      pre-dated, including in simple mode. *(Fixed 2026-11-01: in simple mode it revealed the
+      whole details panel, so Special / "Repeat this" could be ticked and were silently dropped.
+      Simple mode now reveals the date field alone — see BUGS-FIXED.md.)*
 - [x] **11.4** `AverageMonthCard` — figure, window switch, special toggle, empty-month prompt.
 - [x] **11.5** Mounted at the top of Analytics; the prompt opens Quick Add pre-dated.
 - [x] **11.6** Docs.

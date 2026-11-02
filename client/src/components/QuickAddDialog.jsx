@@ -396,6 +396,18 @@ export function QuickAddDialog({
     setParseError(null);
   }
 
+  const dateField = (
+    <div className="space-y-1.5">
+      <Label htmlFor="qa-date">Date</Label>
+      <Input
+        id="qa-date"
+        type="date"
+        value={date}
+        onChange={(e) => setDate(e.target.value)}
+      />
+    </div>
+  );
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       {/* Height cap + inner scrolling now live in DialogContent itself, so every
@@ -647,106 +659,105 @@ export function QuickAddDialog({
             </div>
 
             {/* Advanced: date + description (hidden by default to keep 3-tap promise) */}
-            {/* Simple mode hides this for ordinary adds, but must never hide a
-                date the user is being asked to confirm on a pre-dated add. */}
-            <div className={simpleMode && initialDate === todayISO() ? 'hidden' : undefined}>
-              <button
-                type="button"
-                onClick={() => setShowMore((v) => !v)}
-                className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
-              >
-                <ChevronDown className={cn('h-3.5 w-3.5 transition-transform', showMore && 'rotate-180')} />
-                {showMore
-                  ? 'Hide details'
-                  : type !== 'expense'
-                    ? 'Change the date'
-                    : specialEnabled
-                      ? 'Change the date, repeat it, or mark it special'
-                      : 'Change the date or repeat it'}
-              </button>
+            {/* Simple mode hides every advanced field, but must never hide a date
+                the user is being asked to confirm on a pre-dated add — so that
+                date shows, ALONE. Special and "Repeat this" stay hidden even then:
+                handleSimpleLog never sends them, so showing them let a choice be
+                ticked and silently thrown away (BUGS-FIXED.md, 2026-11-01). */}
+            {simpleMode ? (
+              initialDate !== todayISO() ? dateField : null
+            ) : (
+              <div>
+                <button
+                  type="button"
+                  onClick={() => setShowMore((v) => !v)}
+                  className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
+                >
+                  <ChevronDown className={cn('h-3.5 w-3.5 transition-transform', showMore && 'rotate-180')} />
+                  {showMore
+                    ? 'Hide details'
+                    : type !== 'expense'
+                      ? 'Change the date'
+                      : specialEnabled
+                        ? 'Change the date, repeat it, or mark it special'
+                        : 'Change the date or repeat it'}
+                </button>
 
-              {showMore ? (
-                <div className="mt-3 space-y-3">
-                  <div className="space-y-1.5">
-                    <Label htmlFor="qa-date">Date</Label>
-                    <Input
-                      id="qa-date"
-                      type="date"
-                      value={date}
-                      onChange={(e) => setDate(e.target.value)}
-                    />
-                  </div>
-                  {specialEnabled && type === 'expense' ? (
-                    <label className="flex items-center justify-between rounded-lg border border-border/60 bg-secondary/30 px-3 py-2">
-                      <span className="flex items-center gap-2 text-sm">
-                        <Star className="h-4 w-4 text-amber-600 dark:text-amber-400" aria-hidden />
-                        Special expense
-                        <span className="text-xs text-muted-foreground">kept out of your monthly budget</span>
-                      </span>
-                      <input
-                        type="checkbox"
-                        className="h-4 w-4 accent-primary"
-                        checked={isSpecial}
-                        onChange={(e) => {
-                          setIsSpecial(e.target.checked);
-                          if (!e.target.checked) setSpecialGroupId(null);
-                        }}
-                      />
-                    </label>
-                  ) : null}
-
-                  {/* Phase 10 B1 — only meaningful once it IS special. */}
-                  {specialEnabled && type === 'expense' && isSpecial ? (
-                    <SpecialGroupPicker
-                      value={specialGroupId}
-                      onChange={setSpecialGroupId}
-                      className="rounded-lg border border-border/60 bg-secondary/30 px-3 py-2"
-                    />
-                  ) : null}
-
-                  {/* Task 6.12b — recurring opt-in, expense-only. */}
-                  {type === 'expense' ? (
-                    <div className="rounded-lg border border-border/60 bg-secondary/30 px-3 py-2">
-                      <label className="flex items-center justify-between">
+                {showMore ? (
+                  <div className="mt-3 space-y-3">
+                    {dateField}
+                    {specialEnabled && type === 'expense' ? (
+                      <label className="flex items-center justify-between rounded-lg border border-border/60 bg-secondary/30 px-3 py-2">
                         <span className="flex items-center gap-2 text-sm">
-                          <Repeat className="h-4 w-4 text-primary" aria-hidden />
-                          Repeat this
-                          <span className="text-xs text-muted-foreground">
-                            logs itself from now on
-                          </span>
+                          <Star className="h-4 w-4 text-amber-600 dark:text-amber-400" aria-hidden />
+                          Special expense
+                          <span className="text-xs text-muted-foreground">kept out of your monthly budget</span>
                         </span>
                         <input
                           type="checkbox"
                           className="h-4 w-4 accent-primary"
-                          checked={recurringInterval !== null}
-                          onChange={(e) => setRecurringInterval(e.target.checked ? 'monthly' : null)}
+                          checked={isSpecial}
+                          onChange={(e) => {
+                            setIsSpecial(e.target.checked);
+                            if (!e.target.checked) setSpecialGroupId(null);
+                          }}
                         />
                       </label>
-                      {recurringInterval !== null ? (
-                        <div className="mt-2 flex gap-1.5">
-                          {['monthly', 'weekly'].map((iv) => (
-                            <button
-                              key={iv}
-                              type="button"
-                              onClick={() => setRecurringInterval(iv)}
-                              aria-pressed={recurringInterval === iv}
-                              className={cn(
-                                'rounded-full border px-3 py-1 text-xs font-medium capitalize transition-colors',
-                                recurringInterval === iv
-                                  ? 'border-primary bg-primary/15 text-primary'
-                                  : 'border-border/70 bg-secondary/40 text-muted-foreground hover:text-foreground',
-                              )}
-                            >
-                              {iv}
-                            </button>
-                          ))}
-                        </div>
-                      ) : null}
-                    </div>
-                  ) : null}
-                </div>
-              ) : null}
-            </div>
+                    ) : null}
+
+                    {/* Phase 10 B1 — only meaningful once it IS special. */}
+                    {specialEnabled && type === 'expense' && isSpecial ? (
+                      <SpecialGroupPicker
+                        value={specialGroupId}
+                        onChange={setSpecialGroupId}
+                        className="rounded-lg border border-border/60 bg-secondary/30 px-3 py-2"
+                      />
+                    ) : null}
+
+                    {/* Task 6.12b — recurring opt-in, expense-only. */}
+                    {type === 'expense' ? (
+                      <div className="rounded-lg border border-border/60 bg-secondary/30 px-3 py-2">
+                        <label className="flex items-center justify-between">
+                          <span className="flex items-center gap-2 text-sm">
+                            <Repeat className="h-4 w-4 text-primary" aria-hidden />
+                            Repeat this
+                            <span className="text-xs text-muted-foreground">
+                              logs itself from now on
+                            </span>
+                          </span>
+                          <input
+                            type="checkbox"
+                            className="h-4 w-4 accent-primary"
+                            checked={recurringInterval !== null}
+                            onChange={(e) => setRecurringInterval(e.target.checked ? 'monthly' : null)}
+                          />
+                        </label>
+                        {recurringInterval !== null ? (
+                          <div className="mt-2 flex gap-1.5">
+                            {['monthly', 'weekly'].map((iv) => (
+                              <button
+                                key={iv}
+                                type="button"
+                                onClick={() => setRecurringInterval(iv)}
+                                aria-pressed={recurringInterval === iv}
+                                className={cn(
+                                  'rounded-full border px-3 py-1 text-xs font-medium capitalize transition-colors',
+                                  recurringInterval === iv
+                                    ? 'border-primary bg-primary/15 text-primary'
+                                    : 'border-border/70 bg-secondary/40 text-muted-foreground hover:text-foreground',
+                                )}
+                              >
+                                {iv}
+                              </button>
+                            ))}
+                          </div>
+                        ) : null}
+                      </div>
+                    ) : null}
+                  </div>
+                ) : null}
+              </div>
+            )}
 
             <div className="pt-1">
               <Button

@@ -69,8 +69,9 @@ Task cards expire after 7 days, so this list is the durable record. Re-filed as 
 1. **Weekly budget card shows wrong left/over** — `client/src/pages/Budgets.jsx` ~207 uses the raw
    weekly `budget.limit` against a month of spend; the bar uses the server's scaled `effectiveLimit`.
    User-visible. (Read in code, not reproduced.)
-2. **Simple-mode Quick Add drops Special / Repeat on pre-dated adds** — `QuickAddDialog.jsx` ~652 shows
-   the controls; `handleSimpleLog()` never sends them, and the toast still says "Logged as special".
+2. ✅ **FIXED AND LIVE 1 Nov** — Simple-mode Quick Add dropped Special / Repeat on pre-dated adds. Fix
+   `8c6139c` (simple mode now shows only the date on a pre-dated add), merged as `92f120f`, client deployed;
+   the old `simpleMode && initialDate === todayISO() ? "hidden"` wrapper is gone from the live bundle.
 3. **Backfill may skip half-encrypted rows** — `server/scripts/encrypt-backfill.mjs` ~283
    `.is(firstEnc, null)`. Unverified; must be settled BEFORE encryption runbook Steps 3–4.
 4. **AI parse route reads categories raw** — `server/routes/transactions.js` ~506; harmless until 019,
@@ -78,9 +79,11 @@ Task cards expire after 7 days, so this list is the durable record. Re-filed as 
 5. **Stale docs** — FEATURES.md still says "The category tap auto-submits" (it's two taps) and "No FX"
    (Phase 12 added foreign-currency entry); more items in the 13 Oct brief. Docs-only.
 
-**Ordering decision for Alex: trips or encryption first?** The trips spec edits the UNAPPLIED
-018/018a/019 in place. Encryption Part A applies 012/018/018a — doing it first means re-planning the trips
-migrations as new files.
+**DECIDED 1 Nov — trips first** (Alex: "Trips first"). The trips spec edits the UNAPPLIED 018/018a/019
+in place, so encryption runbook Steps 1–4 (which apply 012/018/018a) wait until trips is merged and
+deployed. The encryption-blocker fixes (bugs 3 and 4) can merge any time — inert while
+`ENCRYPTION_PHASE` is unset. Started 1 Nov as four sessions, each on its own worktree branch: trips,
+weekly-budget fix, simple-mode fix, encryption blockers. Each needs merging to `main` and deploying.
 
 ## Open questions for Alex
 - Delete the unused `SUPABASE_JWT_SECRET` line from `server/.env`? (pending since 13 Oct)
