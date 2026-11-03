@@ -4,7 +4,10 @@ import assert from 'node:assert/strict';
 // The backfill imports crypto.js, which needs a key. Set one BEFORE importing.
 process.env.DATA_ENCRYPTION_KEY ||= Buffer.alloc(32, 7).toString('base64');
 
-const { runBackfill, parseArgs, JOBS, PAGE_SIZE, blindValueFor } = await import('../scripts/encrypt-backfill.mjs');
+const { runBackfill: runBackfillStrict, parseArgs, JOBS, PAGE_SIZE, blindValueFor } = await import('../scripts/encrypt-backfill.mjs');
+// Most fixtures below start with nothing encrypted, which a real run refuses
+// because there is nothing to test the key against. The refusal has its own tests.
+const runBackfill = (opts) => runBackfillStrict({ requireKeyEvidence: false, ...opts });
 const { decryptField, encryptField } = await import('../lib/crypto.js');
 const { fieldKey } = await import('../lib/encryptedFields.js');
 
@@ -657,32 +660,124 @@ test('one damaged ciphertext stops even a dry run, naming it by primary key only
   assert.equal(fake.writes.length, 0);
 });
 
-test('a value that turns unreadable after the key check is still never overwritten', async () => {
-  // The key check runs first, so this takes damage landing mid-run. The write pass
-  // must not be what hides it: left in place, the gate fails on it.
+/** Run `fn` with a different key in place, as if server/.env held the wrong one. */
+async function underWrongKey(fn) {
+  const productionKey = process.env.DATA_ENCRYPTION_KEY;
+  process.env.DATA_ENCRYPTION_KEY = Buffer.alloc(32, 9).toString('base64');
+  try {
+    return await fn();
+  } finally {
+    process.env.DATA_ENCRYPTION_KEY = productionKey;
+  }
+}
+
+test('a value that turns unreadable after the key check stops the run, unwritten', async () => {
+  // Under a wrong key, a production row landing after the check is the strongest
+  // signal there is. Going on would overwrite that row's blind index.
   const job = JOBS.find((j) => j.table === 'transactions');
   const row = fullyEncryptedRow(job);
   const foreign = encryptField('transactions.description', 'u2', row.description);
   const fake = makeFake({ transactions: [row] });
-  await runBackfill({
-    supabase: fake,
-    jobs: [job],
-    log: (m) => { if (/^Key check/.test(m)) row.description_enc = foreign; },
-  });
+  await assert.rejects(
+    () => runBackfill({
+      supabase: fake,
+      jobs: [job],
+      log: (m) => {
+        if (/^Key check/.test(m)) {
+          row.description_enc = foreign;
+          row.merchant_prefix_hmacs = null; // would otherwise be rewritten
+        }
+      },
+    }),
+    /will not decrypt/,
+  );
   assert.equal(row.description_enc, foreign);
   assert.equal(fake.writes.length, 0);
 });
 
-test('with no existing ciphertext to test the key against, the run says so', async () => {
-  // Nothing to decrypt means nothing proves this is production's key. Not an
-  // error (a first run may genuinely have nothing yet), but not silent either.
-  const lines = [];
-  await runBackfill({
-    supabase: makeFake({ transactions: [{ id: 'a', user_id: 'u1', amount: 5, amount_enc: null }] }),
-    jobs: JOB,
-    log: (m) => lines.push(m),
+test('with nothing encrypted to test the key against, a real run refuses and writes nothing', async () => {
+  // Otherwise running Step 4 before Step 3 under the wrong key encrypts everything
+  // with it, and the next run "proves" that key by decrypting its own values.
+  const tables = { transactions: [{ id: 'a', user_id: 'u1', amount: 5, amount_enc: null }] };
+  const fake = makeFake(tables);
+  await assert.rejects(
+    () => runBackfillStrict({ supabase: fake, jobs: JOB, log: silent }),
+    /REFUSING TO START — nothing is encrypted yet/,
+  );
+  assert.equal(fake.writes.length, 0);
+  assert.equal(tables.transactions[0].amount_enc, null);
+});
+
+test('one value that decrypts is enough for a real run to go ahead', async () => {
+  const job = JOBS.find((j) => j.table === 'transactions');
+  const gappy = { ...fullyEncryptedRow(job), id: 'r2', description_enc: null };
+  const tables = { transactions: [fullyEncryptedRow(job), gappy] };
+  const totals = await runBackfillStrict({ supabase: makeFake(tables), jobs: [job], log: silent });
+  assert.equal(totals.encrypted, 1);
+  assert.equal(decryptField('transactions.description', 'u1', gappy.description_enc), gappy.description);
+});
+
+test('the wrong key is caught even when the only ciphertext is in the LAST table', async () => {
+  const tx = JOBS.find((j) => j.table === 'transactions');
+  const cats = JOBS.find((j) => j.table === 'categories');
+  const untouched = { id: 'a', user_id: 'u1', amount: 5, amount_enc: null, original_amount: null, original_amount_enc: null, description: null, description_enc: null, merchant_prefix_hmacs: null };
+  const fake = makeFake({ transactions: [untouched], categories: [fullyEncryptedRow(cats)] });
+  await underWrongKey(() => assert.rejects(
+    () => runBackfillStrict({ supabase: fake, jobs: [tx, cats], log: silent }),
+    /REFUSING TO START — 1 encrypted value/,
+  ));
+  assert.equal(fake.writes.length, 0);
+});
+
+test('ciphertext beside a cleared plaintext counts as evidence against the wrong key', async () => {
+  const job = JOBS.find((j) => j.table === 'transactions');
+  const row = { ...fullyEncryptedRow(job), amount_enc: null, description_enc: null, merchant_prefix_hmacs: null, original_amount: null };
+  const fake = makeFake({ transactions: [row] });
+  await underWrongKey(() => assert.rejects(
+    () => runBackfillStrict({ supabase: fake, jobs: [job], log: silent }),
+    /REFUSING TO START — 1 encrypted value/,
+  ));
+  assert.equal(fake.writes.length, 0);
+});
+
+test('an unset or malformed key reports itself, not "will not decrypt"', async () => {
+  // The runbook's rollback card tells Alex to look for these exact words.
+  const job = JOBS.find((j) => j.table === 'transactions');
+  const fake = makeFake({ transactions: [fullyEncryptedRow(job)] });
+  const productionKey = process.env.DATA_ENCRYPTION_KEY;
+  try {
+    delete process.env.DATA_ENCRYPTION_KEY;
+    await assert.rejects(() => runBackfill({ supabase: fake, jobs: [job], log: silent }), /DATA_ENCRYPTION_KEY is not set/);
+    process.env.DATA_ENCRYPTION_KEY = 'not valid base64!';
+    await assert.rejects(() => runBackfill({ supabase: fake, jobs: [job], log: silent }), /canonical base64/);
+  } finally {
+    process.env.DATA_ENCRYPTION_KEY = productionKey;
+  }
+  assert.equal(fake.writes.length, 0);
+});
+
+test('the refusal lists at most 20 rows and hides a merchant_key primary key', async () => {
+  // subscription_overrides' primary key IS user data: a merchant name, or a key
+  // embedding an amount bucket. This message may get pasted into a chat.
+  const job = JOBS.find((j) => j.table === 'subscription_overrides');
+  const rows = Array.from({ length: 25 }, (_, i) => {
+    const row = fullyEncryptedRow(job);
+    row.merchant_key = `dr jane ${String(i).padStart(2, '0')}`;
+    row.merchant_key_enc = encryptField('subscription_overrides.merchant_key', 'u1', row.merchant_key);
+    row.display_name_enc = encryptField('subscription_overrides.display_name', 'u2', row.display_name); // damaged
+    return row;
   });
-  assert.match(lines.join('\n'), /key could not be checked/);
+  const fake = makeFake({ subscription_overrides: rows });
+  await assert.rejects(
+    () => runBackfill({ supabase: fake, jobs: [job], dryRun: true, log: silent }),
+    (e) => {
+      assert.ok(!e.message.includes('dr jane'), 'the merchant must not be printed');
+      assert.match(e.message, /user_id=u1 merchant_key=sha256:[0-9a-f]{12} display_name_enc/);
+      assert.equal(e.message.split('\n').filter((l) => l.includes('display_name_enc')).length, 20);
+      assert.match(e.message, /and 5 more/);
+      return true;
+    },
+  );
 });
 
 test('a blind index that does not land correctly is caught and rolled back', async () => {

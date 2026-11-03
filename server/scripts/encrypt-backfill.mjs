@@ -20,13 +20,14 @@
  * - Repairs, per COLUMN, what the gate would reject. At phase `dual` a route
  *   encrypts only what its write touches, so rows edited mid-rollout are partly
  *   encrypted; keying on one column skipped them forever. And an edit made after
- *   going back to `off` leaves stale ciphertext. Missing, stale and orphaned
- *   columns are rewritten from the plaintext; columns already right are left
- *   alone (see columnState / processRow). [2026-11-01]
+ *   going back to `off` leaves stale ciphertext. Missing and stale columns are
+ *   rewritten from the plaintext; columns already right are left alone (see
+ *   columnState / processRow). [2026-11-01]
  *
  * - Refuses to write under the wrong key. A read-only pass over every table runs
- *   first, dry run included; if any existing ciphertext will not decrypt, nothing
- *   is written and the run exits non-zero (see preflightKey). [2026-11-01]
+ *   first, dry run included. If any existing ciphertext will not decrypt, or there
+ *   is none to test the key against, nothing is written and the run exits non-zero
+ *   (see preflightKey). [2026-11-01]
  *
  * - Verified against the DATABASE, not against memory. Comparing
  *   `decryptField(encryptField(x))` to `x` only re-proves the unit tests; it
@@ -60,6 +61,7 @@ import 'dotenv/config';
 import { pathToFileURL } from 'node:url';
 import { encryptField, decryptField, decryptRegistered } from '../lib/crypto.js';
 import { fieldsByTable, fieldKey } from '../lib/encryptedFields.js';
+import { pkLabel } from '../lib/rowLabel.js';
 // Moved to lib/blindIndex.js so the ROUTE codec can use them without importing
 // from a maintenance script — and so the migration-019 gate stops importing them
 // from the script it audits. Re-exported here because both the gate and this
@@ -100,8 +102,6 @@ export const JOBS = fieldsByTable();
 
 const uniq = (xs) => xs.filter((v, i, a) => a.indexOf(v) === i);
 const pkOf = (job) => job.pk ?? ['id'];
-/** Safe to log: primary key values only, never user data. */
-const pkLabel = (job, row) => pkOf(job).map((k) => `${k}=${row[k]}`).join(' ');
 const isBlank = (v) => v === null || v === undefined;
 
 /**
@@ -110,14 +110,14 @@ const isBlank = (v) => v === null || v === undefined;
  *
  *   'ok'          ciphertext matches the plaintext, or both are NULL
  *   'missing'     plaintext present, no ciphertext
- *   'stale'       ciphertext decrypts, but not to the plaintext beside it
- *   'orphaned'    ciphertext present, plaintext NULL
+ *   'stale'       ciphertext decrypts, but not to the plaintext beside it, which
+ *                 may be NULL
  *   'unreadable'  ciphertext this key cannot decrypt
  *
- * The first three wrongs are repaired from the plaintext, which is the value the
- * user sees at `dual`. 'stale' and 'orphaned' are what an edit leaves behind
- * after the runbook's Step 3 undo (back to `off`, where only plaintext is
- * written). 'unreadable' is NOT repaired — see preflightKey.
+ * 'missing' and 'stale' are repaired from the plaintext, which is the value the
+ * user sees at `dual`. 'stale' is what an edit leaves behind after the runbook's
+ * Step 3 undo (back to `off`, where only plaintext is written). 'unreadable' is
+ * NOT repaired — see preflightKey.
  *
  * Compares RAW text: routing an amount through decryptAmount would turn a stored
  * "12.50" into 12.5 and mismatch every two-decimal amount.
@@ -125,7 +125,6 @@ const isBlank = (v) => v === null || v === undefined;
 function columnState(job, f, row) {
   const plain = isBlank(row[f.column]) ? null : String(row[f.column]);
   if (isBlank(row[f.enc])) return plain === null ? 'ok' : 'missing';
-  if (plain === null) return 'orphaned';
   try {
     return decryptField(fieldKey(job.table, f.column), row.user_id, row[f.enc]) === plain ? 'ok' : 'stale';
   } catch {
@@ -148,11 +147,20 @@ function columnState(job, f, row) {
  */
 async function processRow(supabase, job, row, { dryRun }) {
   const pk = pkOf(job);
+  const states = job.fields.map((f) => [f, columnState(job, f, row)]);
+  // preflightKey refused to start if any existed, so this one landed mid-run. Under
+  // a wrong key that is the strongest signal there is: stop before touching the row.
+  const unreadable = states.find(([, s]) => s === 'unreadable');
+  if (unreadable) {
+    throw new Error(
+      `REFUSING TO CONTINUE — ${job.table} ${pkLabel(job, row)} ${unreadable[0].enc} will not decrypt with this key, ` +
+        `and it appeared after the key check passed. Check DATA_ENCRYPTION_KEY before re-running.`,
+    );
+  }
   // A NULL plaintext beside a NULL `_enc` is 'ok' (original_amount on every
   // home-currency transaction) — treating it as missing would rewrite that row
-  // on every run. 'unreadable' is deliberately not here: preflightKey refused to
-  // start if any existed, and one that appears mid-run is left for the gate.
-  const rewrite = job.fields.filter((f) => ['missing', 'stale', 'orphaned'].includes(columnState(job, f, row)));
+  // on every run.
+  const rewrite = states.filter(([, s]) => s === 'missing' || s === 'stale').map(([f]) => f);
   // A blind index needs writing when it does not recompute from the plaintext
   // beside it — the gate's own test, so anything it would reject, this repairs.
   const staleBlind = (job.blind ?? []).filter(
@@ -170,7 +178,7 @@ async function processRow(supabase, job, row, { dryRun }) {
   const patch = {};
   for (const f of rewrite) {
     patch[f.enc] = isBlank(row[f.column])
-      ? null // 'orphaned': the plaintext was cleared, so is its ciphertext
+      ? null // the plaintext was cleared, so is its ciphertext
       : encryptField(fieldKey(job.table, f.column), row.user_id, String(row[f.column]));
   }
   // An index rides in the same statement as its ciphertext, so a row is never
@@ -413,16 +421,26 @@ async function offsetScan(supabase, job, onRow) {
  * under the same wrong key would agree with it. So: nothing is written, in any
  * table, until every existing value decrypts. Runs in --dry-run too, which is
  * where the runbook has Alex look first.
+ *
+ * And nothing is written until at least one value HAS decrypted: with nothing to
+ * test against, a wrong key would encrypt everything, and the next run would
+ * "prove" that key by decrypting its own work. Following the runbook always leaves
+ * something to test, because Step 3 adds a row through the live app. Only the test
+ * file turns this off, since most of its fixtures start with nothing encrypted.
  */
-async function preflightKey(supabase, jobs, log) {
+async function preflightKey(supabase, jobs, { log, requireKeyEvidence }) {
+  // An unset or malformed key must report itself in its own words, which the
+  // runbook's rollback card tells Alex to look for, not as "will not decrypt".
+  if (jobs.length) encryptField(fieldKey(jobs[0].table, jobs[0].fields[0].column), 'key-probe', '0');
+
   let readable = 0;
   const unreadable = [];
   for (const job of jobs) {
     const onRow = async (row) => {
       for (const f of job.fields) {
-        const state = columnState(job, f, row);
-        if (state === 'unreadable') unreadable.push(`${job.table} ${pkLabel(job, row)} ${f.enc}`);
-        else if (!isBlank(row[f.enc]) && state !== 'orphaned') readable += 1;
+        if (isBlank(row[f.enc])) continue;
+        if (columnState(job, f, row) === 'unreadable') unreadable.push(`${job.table} ${pkLabel(job, row)} ${f.enc}`);
+        else readable += 1;
       }
     };
     if (pkOf(job).length === 1) await keysetScan(supabase, job, onRow);
@@ -434,18 +452,22 @@ async function preflightKey(supabase, jobs, log) {
     throw new Error(
       `REFUSING TO START — ${unreadable.length} encrypted value(s) will not decrypt with this key ` +
         `(${readable} other(s) did). Nothing was written.\n${shown}${more}\n` +
-        '  If NONE decrypt: DATA_ENCRYPTION_KEY in server/.env is not the key production uses. Compare\n' +
-        '  server/.env, Vercel and your offline backup — all three must be identical.\n' +
-        '  If only a few fail: those values are damaged. Once you are sure the key matches the backup\n' +
-        '  and Vercel, set the listed columns back to NULL and re-run.',
+        '  Check the key first, however many failed: DATA_ENCRYPTION_KEY in server/.env, in Vercel and in\n' +
+        '  your offline backup must be identical. Only when you are sure of that are these values damaged:\n' +
+        '  then set the listed columns back to NULL and re-run.',
     );
   }
-  log(
-    readable
-      ? `Key check: ${readable} existing encrypted value(s) decrypt with this key.\n`
-      : 'Key check: no existing encrypted values, so the key could not be checked against production.\n' +
-          "  Confirm the gate's key fingerprint matches before trusting any PASS.\n",
-  );
+  if (readable) {
+    log(`Key check: ${readable} existing encrypted value(s) decrypt with this key.\n`);
+  } else if (requireKeyEvidence) {
+    throw new Error(
+      'REFUSING TO START — nothing is encrypted yet, so there is nothing to test this key against. ' +
+        'Nothing was written.\n' +
+        '  Do Step 3 of the runbook first: with ENCRYPTION_PHASE=dual deployed, add a transaction in the\n' +
+        '  live app, then re-run. If Step 3 is already done, check SUPABASE_URL in server/.env: this may\n' +
+        '  be the wrong database.',
+    );
+  }
 }
 
 async function runJob(supabase, job, { dryRun, log }) {
@@ -478,9 +500,11 @@ async function runJob(supabase, job, { dryRun, log }) {
   return counts;
 }
 
-export async function runBackfill({ supabase, jobs = JOBS, dryRun = false, log = console.log } = {}) {
+export async function runBackfill({
+  supabase, jobs = JOBS, dryRun = false, log = console.log, requireKeyEvidence = true,
+} = {}) {
   if (dryRun) log('DRY RUN — encrypting and verifying in memory, writing nothing.\n');
-  await preflightKey(supabase, jobs, log);
+  await preflightKey(supabase, jobs, { log, requireKeyEvidence });
   const totals = { encrypted: 0, nothingToEncrypt: 0, alreadyEncrypted: 0, scanned: 0 };
   for (const job of jobs) {
     const counts = await runJob(supabase, job, { dryRun, log });

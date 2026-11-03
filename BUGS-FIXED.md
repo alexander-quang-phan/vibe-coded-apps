@@ -29,7 +29,8 @@ was written is verified against the database, and a failed verify rolls back onl
 key **cannot decrypt** is never overwritten — the likeliest cause is a different key in `server/.env`
 than in production, and re-encrypting under it would make the gate pass on values the live app cannot
 read — so a read-only key check runs over every table first, and if any existing value will not
-decrypt the run writes NOTHING and exits non-zero (also in --dry-run). Tests are driven by the registry
+decrypt, or nothing is encrypted to test against, the run writes NOTHING and exits non-zero (also in
+--dry-run). Tests are driven by the registry
 (every column of every table, both scan paths), and the test fake now returns only the selected columns,
 as PostgREST does, so a scan that forgets to SELECT an `_enc` column cannot pass.
 *Caught in review:* the first version wrote only MISSING columns, which quietly dropped the stale-
@@ -43,6 +44,15 @@ sweep's completeness audit checked each FILE against the registry, and `transact
 so one raw query inside a swept file was invisible to it. *Fixed:* `selectFor` + `presentRows`, so the
 parser gets exactly `id, name, type`, decoded, and no ciphertext or `user_id` can reach the prompt.
 Tested at all three phases; it failed at `enc` before the fix.
+
+**3. A `--sample` gate run hid the failures it found.** Step 4 of the runbook says to read that run for
+failures, but they printed only on a complete run, so a stale value showed `[ok]` lines and INCOMPLETE:
+a false "Step 4 verified". *Fixed:* a sampled run now lists them. It still can never authorise 019.
+
+**4. Failure messages printed user data as a "primary key".** `subscription_overrides.merchant_key` is
+a merchant name or an amount bucket, for any user, and the backfill, the gate and the runbook all
+promised never to log user data. *Fixed:* `lib/rowLabel.js` prints a primary-key column that is itself
+encrypted as a short hash, with the SQL to find the row in its header.
 
 **The shape:** at `dual`, "is this row done?" has no row-level answer — only per-column ones. Anything
 that judges a multi-column row by one column (a filter, a skip, a `first` anything) is this bug.

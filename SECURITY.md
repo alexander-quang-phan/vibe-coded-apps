@@ -300,7 +300,9 @@ Each step is reversible until the last. Nothing may be skipped.
    order is safe — as 013 it sorted before 018 and would have dropped the
    plaintext before its replacement columns existed.
 4. Set `ENCRYPTION_PHASE=dual`. Every write now writes both columns.
-5. `node scripts/encrypt-backfill.mjs --dry-run`, then for real.
+5. `node scripts/encrypt-backfill.mjs --dry-run`, then for real. It refuses to write
+   anything unless the key decrypts every existing value, and at least one exists to
+   test against — which is why a row added through the live app at step 4 must come first.
 6. Disable the 03:00 recurrences cron, then **engage the write barrier**:
    `update public.encryption_cutover set engaged = true, engaged_at = now();`
    **Wait for that statement to RETURN.** It blocks until every transaction that
