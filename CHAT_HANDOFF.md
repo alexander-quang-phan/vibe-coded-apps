@@ -1,14 +1,16 @@
-# Chat Handoff — updated 2026-11-01 (PHASE 17 SHIPPED AND LIVE; trips designed, not built)
+# Chat Handoff — updated 2026-11-03 (PHASE 17 LIVE; Phase 18 trips being built on a branch)
 
 ## DUAL-AGENT BATON  (both models: update this the MOMENT you finish work)
-- Current stage:  **Phase 17 shipped to production on 2026-11-01**, in the gated order (017a → main →
-                  trim-api → client), each step verified. Nothing is in flight.
-- Model A is:     Claude Code. Single-model feature work per CLAUDE.md.
-- Up next:        **Alex** — the 2-minute logged-in check (next step 1). Then Phase 18 trips in its own
-                  session (plan first; it needs the full independent-review loop because it edits the
-                  unapplied 9.5 migrations).
-- Last actor did: Claude Code, 2026-11-01 — re-ran 722/722 + client build, applied 017a with Alex's
-                  approval, fast-forwarded main, deployed both projects, verified live, this handoff.
+- Current stage:  **Phase 18 trips, BUILD in progress** on branch `claude/confident-northcutt-6cd9f9`
+                  (not merged, nothing deployed). Plan: `docs/superpowers/plans/2026-11-01-trips.md` + PDF,
+                  revision 1 (plan-verifier round 1: 0 P0, 7 P1, all closed in the plan). Plan steps 1-4 done.
+- Model A is:     Claude Code. Independent review by code-reviewer + a fresh red-team pass (Codex is
+                  unavailable for security work).
+- Up next:        **Alex** — answer Q3, Q4, Q5 in the plan and give a yes for the read-only live-DB check
+                  (step 0). Claude must not write 017b (step 5) without that check or Alex declining it.
+- Last actor did: Claude Code, 2026-11-03 — pure logic in `server/lib/trips.js` + `client/src/lib/trips.js`,
+                  parity tests, server `QUOTABLE_CURRENCIES` (commit `fed0e8a`). `npm test` 787/787, 0 skipped.
+                  No route, migration or UI yet, so nothing is reachable in the app.
 
 ## Goal
 Alex (13 Oct): (1) trips with a set budget per category and per city; (2) "I don't see a way to mark a
