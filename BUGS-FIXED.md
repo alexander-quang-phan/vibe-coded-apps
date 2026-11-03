@@ -41,8 +41,8 @@ over" from the raw `budget.limit`, but the bar uses the server's `percent`, whic
 month, so a £50/week Food budget with £150 spent showed "£150.00 of £50.00", a green 70% bar, "You have
 room to breathe." and "£100.00 over" in rose, all on one card. Reproduced under `npm run dev:mock` before
 fixing. The 2026-08-11 fix that added `effectiveLimit` corrected the bar and Ask Trim but never changed the
-card's figures, and nobody noticed for almost three months. A code read found it on 2026-10-13, and the
-task card for it expired unstarted.
+card's figures, so the mismatch stayed in the code for almost three months. A code read found it on
+2026-10-13, and the task card for it expired unstarted.
 
 **Why it mattered.** The card contradicted itself, so neither number could be trusted. That is recurring
 shape #1, one number with two definitions: the bar used the scaled limit and the figures used the raw one.
