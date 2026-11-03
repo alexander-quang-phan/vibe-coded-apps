@@ -28,6 +28,15 @@ const SYMBOLS = {
   JPY: '¥',
 };
 
+// The currencies /api/fx can price, for checking a trip stop's currency. Mirrors
+// QUOTABLE_CURRENCIES in client/src/lib/fx.js; test/fx.test.js fails if they differ.
+export const QUOTABLE_CURRENCIES = [
+  'AUD', 'BGN', 'BRL', 'CAD', 'CHF', 'CNY', 'CZK', 'DKK', 'EUR', 'GBP',
+  'HKD', 'HUF', 'IDR', 'ILS', 'INR', 'ISK', 'JPY', 'KRW', 'MXN', 'MYR',
+  'NOK', 'NZD', 'PHP', 'PLN', 'RON', 'SEK', 'SGD', 'THB', 'TRY', 'USD',
+  'ZAR',
+];
+
 /** Minor-unit count for a currency. Unknown codes get the common case. */
 export function decimalsFor(currency) {
   return ZERO_DECIMAL.has(currency) ? 0 : 2;
