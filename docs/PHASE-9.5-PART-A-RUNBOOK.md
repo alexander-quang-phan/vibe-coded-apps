@@ -271,7 +271,8 @@ order by created_at desc limit 3;
 
 The newest row must have **all three true**. That is dual-write working: readable value
 saved, encrypted value saved alongside. Older rows will still show `has_ciphertext = false`
-— Step 4 fixes those. Delete your test transaction in the app afterwards if you like.
+— Step 4 fixes those. **Keep your test transaction until Step 4 is done:** the backfill uses
+it to prove your laptop's key is the one production uses. Delete it afterwards if you like.
 
 ### UNDO — Step 3
 
@@ -315,10 +316,18 @@ The script does something worth knowing about: for every row it encrypts, it wri
 compares that to the original. If anything doesn't match it stops immediately. It never logs
 amounts or descriptions, only row IDs.
 
-**If it prints "this key cannot decrypt" or a WARNING about values it could not decrypt:
-stop.** It almost certainly means the `DATA_ENCRYPTION_KEY` in `server/.env` is not exactly
-the one in Vercel. Don't try to fix it by hand. Compare the two against your backup, then ask
-before re-running.
+**If it prints "REFUSING TO START": stop.** Before writing anything, the script checks that
+every value already encrypted can be decrypted with your key. This message means some can't,
+and nothing has been written. If *none* of them decrypt, the `DATA_ENCRYPTION_KEY` in
+`server/.env` is not the one production uses: compare `server/.env`, Vercel and your offline
+backup, because all three must be identical. If only a few fail, those values are damaged, so
+ask before changing anything. You'll see this at the dry run, which is one reason to do that
+first.
+
+**If it says "the key could not be checked",** nothing has been encrypted yet, so there was
+nothing to test your key against. That's not an error, but it does mean this run can't catch
+a wrong key. Doing the Step 3 test transaction, and not deleting it until after this step,
+gives the check something to work with.
 
 ### CHECK — verify Step 4
 

@@ -657,6 +657,22 @@ test('one damaged ciphertext stops even a dry run, naming it by primary key only
   assert.equal(fake.writes.length, 0);
 });
 
+test('a value that turns unreadable after the key check is still never overwritten', async () => {
+  // The key check runs first, so this takes damage landing mid-run. The write pass
+  // must not be what hides it: left in place, the gate fails on it.
+  const job = JOBS.find((j) => j.table === 'transactions');
+  const row = fullyEncryptedRow(job);
+  const foreign = encryptField('transactions.description', 'u2', row.description);
+  const fake = makeFake({ transactions: [row] });
+  await runBackfill({
+    supabase: fake,
+    jobs: [job],
+    log: (m) => { if (/^Key check/.test(m)) row.description_enc = foreign; },
+  });
+  assert.equal(row.description_enc, foreign);
+  assert.equal(fake.writes.length, 0);
+});
+
 test('with no existing ciphertext to test the key against, the run says so', async () => {
   // Nothing to decrypt means nothing proves this is production's key. Not an
   // error (a first run may genuinely have nothing yet), but not silent either.

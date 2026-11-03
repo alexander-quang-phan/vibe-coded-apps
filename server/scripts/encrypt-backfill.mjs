@@ -22,8 +22,11 @@
  *   encrypted; keying on one column skipped them forever. And an edit made after
  *   going back to `off` leaves stale ciphertext. Missing, stale and orphaned
  *   columns are rewritten from the plaintext; columns already right are left
- *   alone; ciphertext this key cannot decrypt is reported, never overwritten
- *   (see columnState / processRow). [2026-11-01]
+ *   alone (see columnState / processRow). [2026-11-01]
+ *
+ * - Refuses to write under the wrong key. A read-only pass over every table runs
+ *   first, dry run included; if any existing ciphertext will not decrypt, nothing
+ *   is written and the run exits non-zero (see preflightKey). [2026-11-01]
  *
  * - Verified against the DATABASE, not against memory. Comparing
  *   `decryptField(encryptField(x))` to `x` only re-proves the unit tests; it
@@ -114,7 +117,7 @@ const isBlank = (v) => v === null || v === undefined;
  * The first three wrongs are repaired from the plaintext, which is the value the
  * user sees at `dual`. 'stale' and 'orphaned' are what an edit leaves behind
  * after the runbook's Step 3 undo (back to `off`, where only plaintext is
- * written). 'unreadable' is NOT repaired — see processRow.
+ * written). 'unreadable' is NOT repaired — see preflightKey.
  *
  * Compares RAW text: routing an amount through decryptAmount would turn a stored
  * "12.50" into 12.5 and mismatch every two-decimal amount.
@@ -133,9 +136,8 @@ function columnState(job, f, row) {
 /**
  * Repair whatever is wrong with this row, write it, then re-read it from the
  * database and prove the stored bytes decrypt back to the plaintext.
- * Returns { outcome, unreadable }: outcome is 'encrypted', 'already-encrypted' or
- * 'nothing-to-encrypt'; unreadable lists the `_enc` columns left alone because
- * this key cannot decrypt them. Throws on any mismatch.
+ * Returns 'encrypted', 'already-encrypted' or 'nothing-to-encrypt'. Throws on
+ * any mismatch.
  *
  * Decided per column, never per row. At ENCRYPTION_PHASE=dual the routes encrypt
  * only the columns a write touches (encodeWrite keeps a partial update partial),
@@ -146,17 +148,11 @@ function columnState(job, f, row) {
  */
 async function processRow(supabase, job, row, { dryRun }) {
   const pk = pkOf(job);
-  const states = job.fields.map((f) => [f, columnState(job, f, row)]);
   // A NULL plaintext beside a NULL `_enc` is 'ok' (original_amount on every
   // home-currency transaction) — treating it as missing would rewrite that row
-  // on every run.
-  const rewrite = states.filter(([, s]) => s === 'missing' || s === 'stale' || s === 'orphaned').map(([f]) => f);
-  // Never overwritten. With one key there is no honest way to produce this, so
-  // the likeliest cause is that server/.env holds a different key from the one
-  // production encrypted with — and re-encrypting under it would make the gate
-  // PASS on values the live app can no longer read. Left for the gate to fail on;
-  // runJob says why.
-  const unreadable = states.filter(([, s]) => s === 'unreadable').map(([f]) => f.enc);
+  // on every run. 'unreadable' is deliberately not here: preflightKey refused to
+  // start if any existed, and one that appears mid-run is left for the gate.
+  const rewrite = job.fields.filter((f) => ['missing', 'stale', 'orphaned'].includes(columnState(job, f, row)));
   // A blind index needs writing when it does not recompute from the plaintext
   // beside it — the gate's own test, so anything it would reject, this repairs.
   const staleBlind = (job.blind ?? []).filter(
@@ -166,8 +162,7 @@ async function processRow(supabase, job, row, { dryRun }) {
   if (!rewrite.length && !staleBlind.length) {
     // Never written, so never expected to leave any filter: the cursor (or the
     // offset) has already moved past it, which is what keeps the scan finite.
-    const outcome = job.fields.every((f) => isBlank(row[f.column])) ? 'nothing-to-encrypt' : 'already-encrypted';
-    return { outcome, unreadable };
+    return job.fields.every((f) => isBlank(row[f.column])) ? 'nothing-to-encrypt' : 'already-encrypted';
   }
 
   // Only what is wrong. Ciphertext that already matches is left exactly as it is
@@ -201,7 +196,7 @@ async function processRow(supabase, job, row, { dryRun }) {
     }
   }
 
-  if (dryRun) return { outcome: 'encrypted', unreadable };
+  if (dryRun) return 'encrypted';
 
   // 2. Write.
   let update = supabase.from(job.table).update(patch);
@@ -278,7 +273,7 @@ async function processRow(supabase, job, row, { dryRun }) {
     throw err;
   }
 
-  return { outcome: 'encrypted', unreadable };
+  return 'encrypted';
 }
 
 /**
@@ -454,17 +449,13 @@ async function preflightKey(supabase, jobs, log) {
 }
 
 async function runJob(supabase, job, { dryRun, log }) {
-  const counts = { encrypted: 0, nothingToEncrypt: 0, alreadyEncrypted: 0, scanned: 0, unreadable: 0 };
+  const counts = { encrypted: 0, nothingToEncrypt: 0, alreadyEncrypted: 0, scanned: 0 };
   const onRow = async (row) => {
     counts.scanned += 1;
-    const { outcome, unreadable } = await processRow(supabase, job, row, { dryRun });
+    const outcome = await processRow(supabase, job, row, { dryRun });
     if (outcome === 'encrypted') counts.encrypted += 1;
     else if (outcome === 'already-encrypted') counts.alreadyEncrypted += 1;
     else counts.nothingToEncrypt += 1;
-    if (unreadable.length) {
-      counts.unreadable += unreadable.length;
-      log(`  !! ${job.table} ${pkLabel(job, row)}: this key cannot decrypt ${unreadable.join(', ')} — left as it is`);
-    }
   };
 
   if (pkOf(job).length === 1) await keysetScan(supabase, job, onRow);
@@ -490,7 +481,7 @@ async function runJob(supabase, job, { dryRun, log }) {
 export async function runBackfill({ supabase, jobs = JOBS, dryRun = false, log = console.log } = {}) {
   if (dryRun) log('DRY RUN — encrypting and verifying in memory, writing nothing.\n');
   await preflightKey(supabase, jobs, log);
-  const totals = { encrypted: 0, nothingToEncrypt: 0, alreadyEncrypted: 0, scanned: 0, unreadable: 0 };
+  const totals = { encrypted: 0, nothingToEncrypt: 0, alreadyEncrypted: 0, scanned: 0 };
   for (const job of jobs) {
     const counts = await runJob(supabase, job, { dryRun, log });
     for (const k of Object.keys(totals)) totals[k] += counts[k];
@@ -507,15 +498,6 @@ export async function runBackfill({ supabase, jobs = JOBS, dryRun = false, log =
       '\nWARNING: not a single row was scanned in ANY table. This is what an empty or\n' +
         'wrong database looks like, and it is NOT evidence that encryption is complete.\n' +
         'Do NOT treat this run as authorising migration 019.',
-    );
-  }
-  if (totals.unreadable > 0) {
-    log(
-      `\nWARNING: ${totals.unreadable} encrypted value(s) could not be decrypted with this key and were left\n` +
-        'as they are (the rows are listed above by primary key). The gate will fail on them.\n' +
-        'STOP and check DATA_ENCRYPTION_KEY in server/.env is the exact key set in Vercel: a\n' +
-        'different key would also have encrypted every gap filled in this run. Only once you\n' +
-        'are sure the key is right, set those columns back to NULL and re-run this script.',
     );
   }
   return totals;

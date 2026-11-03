@@ -29,9 +29,9 @@ was written is verified against the database, and a failed verify rolls back onl
 key **cannot decrypt** is never overwritten — the likeliest cause is a different key in `server/.env`
 than in production, and re-encrypting under it would make the gate pass on values the live app cannot
 read — so a read-only key check runs over every table first, and if any existing value will not
-decrypt the run writes NOTHING and exits non-zero (also in --dry-run). Found by the second review. Tests are driven by the registry (every
-column of every table, both scan paths), and the test fake now returns only the selected columns, as
-PostgREST does, so a scan that forgets to SELECT an `_enc` column cannot pass.
+decrypt the run writes NOTHING and exits non-zero (also in --dry-run). Tests are driven by the registry
+(every column of every table, both scan paths), and the test fake now returns only the selected columns,
+as PostgREST does, so a scan that forgets to SELECT an `_enc` column cannot pass.
 *Caught in review:* the first version wrote only MISSING columns, which quietly dropped the stale-
 ciphertext repair the old code did by accident (it rewrote every column of a row whose first `_enc` was
 NULL). The independent review reproduced it; the per-column states above restore it on purpose.
