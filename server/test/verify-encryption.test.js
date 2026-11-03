@@ -231,6 +231,32 @@ test('a sampled run can never authorise the drop', async () => {
   assert.equal(r.pass, false, 'INCOMPLETE is not PASS');
 });
 
+test('a sampled run PRINTS the failures it found, not just INCOMPLETE', async () => {
+  // Step 4 of the runbook reads a --sample run to see whether anything is wrong.
+  // Failures used to print only on a complete run, so a stale value showed `[ok]`
+  // lines and INCOMPLETE, which reads as "Step 4 verified".
+  const rows = [{ id: 'a', user_id: U, amount: 12.5, amount_enc: enc(999) }];
+  const lines = [];
+  await verifyEncryption({ supabase: makeFake(rows), jobs: JOB, sample: 10, log: (m) => lines.push(m), env: ENV });
+  const out = lines.join('\n');
+  assert.match(out, /INCOMPLETE/);
+  assert.match(out, /transactions id=a amount_enc: ciphertext is STALE/);
+});
+
+test('a failure hides a merchant_key primary key: it is user data', async () => {
+  const job = [{
+    table: 'subscription_overrides',
+    pk: ['user_id', 'merchant_key'],
+    fields: [{ table: 'subscription_overrides', column: 'display_name', enc: 'display_name_enc', kind: 'text' }],
+  }];
+  const rows = [{ user_id: U, merchant_key: 'dr jane', display_name: 'Therapy', display_name_enc: null }];
+  const r = await verifyEncryption({ supabase: makeFake(rows), jobs: job, log: silent, env: ENV });
+  const msg = r.failures.find((f) => f.includes('display_name_enc'));
+  assert.ok(msg, 'the missing ciphertext must be reported');
+  assert.ok(!msg.includes('dr jane'), 'the merchant must not be printed');
+  assert.match(msg, /merchant_key=sha256:[0-9a-f]{12}/);
+});
+
 test('every row is checked across pagination, so a stale row on page 2 is still caught', async () => {
   const rows = Array.from({ length: 600 }, (_, i) => ({
     id: String(i).padStart(4, '0'), user_id: U, amount: i, amount_enc: enc(i),

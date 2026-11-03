@@ -120,6 +120,31 @@ export function runGoalsWinsRouteSuite(phase) {
     }
   });
 
+  test(`${label} goals POST / writes every column migration 019 makes NOT NULL`, async () => {
+    // The insert used to omit current_amount and lean on the plaintext column's
+    // default of 0. 019 drops that column and makes current_amount_enc NOT NULL with
+    // no default, so at `enc` every new goal would fail. This fake enforces no NOT
+    // NULL, which is why the failure has to be asserted from the registry.
+    const { ENCRYPTED_FIELDS } = await import('../../lib/encryptedFields.js');
+    const { decryptField } = await import('../../lib/crypto.js');
+    const { db, http } = await boot('goals');
+    try {
+      const { status, body } = await http.send('POST', '/', { name: 'New laptop', targetAmount: 1200 });
+      assert.equal(status, 201, JSON.stringify(body));
+      assert.equal(body.goal.currentAmount, 0);
+
+      const stored = db.store.savings_goals.at(-1);
+      for (const f of ENCRYPTED_FIELDS.filter((x) => x.table === 'savings_goals' && x.notNull)) {
+        if (phase !== 'enc') assert.notEqual(stored[f.column], undefined, `${f.column} must be written`);
+        if (phase !== 'off') assert.match(String(stored[f.enc]), /^v2:/, `${f.enc} must be written`);
+      }
+      if (phase === 'off') assert.equal(stored.current_amount, 0);
+      else assert.equal(decryptField('savings_goals.current_amount', stored.user_id, stored.current_amount_enc), '0');
+    } finally {
+      await http.close();
+    }
+  });
+
   test(`${label} goals PATCH renames and re-encrypts`, async () => {
     const { db, http } = await boot('goals');
     try {

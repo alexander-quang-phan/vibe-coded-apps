@@ -33,6 +33,89 @@ mode pre-dated still shows Date / Special / Repeat and still sends `isSpecial: t
 control is a promise that the value will be sent — if a code path can't send it, that path must not
 render it. Hiding by a different condition from the one the submit path uses lets the two drift.
 
+## 2026-11-01 — A weekly budget's card said "over" next to a green bar
+
+**What it was.** `BudgetCard` in `client/src/pages/Budgets.jsx` worked out "of £X", "£X left" and "£X
+over" from the raw `budget.limit`, but the bar uses the server's `percent`, which is measured against
+`effectiveLimit` — the weekly limit scaled to the month (`server/lib/budgetPeriod.js`). `spent` is a whole
+month, so a £50/week Food budget with £150 spent showed "£150.00 of £50.00", a green 70% bar, "You have
+room to breathe." and "£100.00 over" in rose, all on one card. Reproduced under `npm run dev:mock` before
+fixing. The 2026-08-11 fix that added `effectiveLimit` corrected the bar and Ask Trim but never changed the
+card's figures, so the mismatch stayed in the code for almost three months. A code read found it on
+2026-10-13, and the task card for it expired unstarted.
+
+**Why it mattered.** The card contradicted itself, so neither number could be trusted. That is recurring
+shape #1, one number with two definitions: the bar used the scaled limit and the figures used the raw one.
+
+**How it was fixed.** The card now reads `budget.effectiveLimit` for "of", "left" and "over", so all three
+match the bar ("£150.00 of £214.29 this month · £64.29 left"). The raw amount is still shown under the
+category name ("£50.00 a week"), and the Edit dialog still edits it. The route and `devMock.js` already
+returned `effectiveLimit` the same way, so the server was unchanged. FEATURES.md's progress-colour line was
+also wrong (it said amber-300/amber-400, and the code uses amber-200→400 and amber-300→500 gradients, with
+exactly 100% counting as over) and was corrected. Checked in the running UI with the real page under a
+throwaway preview harness: under budget, over budget, phone width, and that monthly cards are unchanged.
+**Lesson:** when a fix adds a corrected field beside an old one, search for every reader of the old field.
+A fix that only reaches some of them leaves the screen disagreeing with itself.
+
+## 2026-11-01 — Two encryption defects that would have blocked the switch-on (fixed before `dual`)
+
+Both found by a 2026-10-13 code read, filed as cards that expired unstarted, and still in the code on
+2026-11-01. Both inert at `ENCRYPTION_PHASE=off` (production today).
+
+**1. "Already encrypted" was decided by ONE column, so half-encrypted rows were skipped forever.**
+At `dual` the codec encrypts only the columns a write touches (`encodeWrite`: "a partial update stays
+partial"). So a transaction created at `off` and re-priced at `dual` gets `amount_enc` and nothing
+else, and **every goal created at `dual`** gets `name_enc` and `target_amount_enc` but no
+`current_amount_enc` — the insert omits `current_amount`, and the database default fills the plaintext
+with 0. The backfill chose rows with `.is(<first _enc column>, null)` (the composite-key path skipped on
+the same column), so both kinds were invisible to it. The gate would fail on them, and its own remedy —
+re-run the backfill — could never repair them, leaving migration 019 blocked with no way forward but
+hand-editing around the gate. *Fixed:* no "already done" filter; each row's own columns decide, by the
+gate's own per-row checks (`columnState`). A column that is **missing** (plaintext, no ciphertext),
+**stale** (ciphertext decrypts to something else — what an edit leaves after the runbook's Step 3 undo
+back to `off`) or **orphaned** (ciphertext beside a cleared plaintext) is rewritten from the plaintext;
+a blind index is rewritten when it does not recompute. Columns already right are left alone, only what
+was written is verified against the database, and a failed verify rolls back only that. Ciphertext the
+key **cannot decrypt** is never overwritten — the likeliest cause is a different key in `server/.env`
+than in production, and re-encrypting under it would make the gate pass on values the live app cannot
+read — so a read-only key check runs over every table first, and if any existing value will not
+decrypt, or nothing is encrypted to test against, the run writes NOTHING and exits non-zero (also in
+--dry-run). Tests are driven by the registry
+(every column of every table, both scan paths), and the test fake now returns only the selected columns,
+as PostgREST does, so a scan that forgets to SELECT an `_enc` column cannot pass.
+*Caught in review:* the first version wrote only MISSING columns, which quietly dropped the stale-
+ciphertext repair the old code did by accident (it rewrote every column of a row whose first `_enc` was
+NULL). The independent review reproduced it; the per-column states above restore it on purpose.
+
+**2. The AI parse route read `categories.name` raw.** `POST /api/transactions/parse` was the one
+category read the Part A sweep missed: `.select('id, name, type')`, no `selectFor`, no decode. Fine
+while the plaintext exists; after 019 PostgREST rejects the query and every Quick Add parse fails. The
+sweep's completeness audit checked each FILE against the registry, and `transactions.js` was swept —
+so one raw query inside a swept file was invisible to it. *Fixed:* `selectFor` + `presentRows`, so the
+parser gets exactly `id, name, type`, decoded, and no ciphertext or `user_id` can reach the prompt.
+Tested at all three phases; it failed at `enc` before the fix.
+
+**3. A `--sample` gate run hid the failures it found.** Step 4 of the runbook says to read that run for
+failures, but they printed only on a complete run, so a stale value showed `[ok]` lines and INCOMPLETE:
+a false "Step 4 verified". *Fixed:* a sampled run now lists them. It still can never authorise 019.
+
+**4. Failure messages printed user data as a "primary key".** `subscription_overrides.merchant_key` is
+a merchant name or an amount bucket, for any user, and the backfill, the gate and the runbook all
+promised never to log user data. *Fixed:* `lib/rowLabel.js` prints a primary-key column that is itself
+encrypted as a short hash, with the SQL to find the row in its header.
+
+**5. Every new savings goal would have failed after migration 019.** `POST /api/goals` omitted
+`current_amount` and relied on the plaintext column's default of 0. Migration 019 drops that column and
+makes `current_amount_enc` NOT NULL with no default, and only a value in the insert gets encrypted. The
+route tests could not see it, because the fake database enforces no NOT NULL. *Fixed:* the insert sends
+`current_amount: 0` explicitly, which also stops new goals being half-encrypted at `dual` (bug 1). The
+new test takes its columns from the registry's `notNull` flags and checks them at all three phases.
+
+**The shape:** at `dual`, "is this row done?" has no row-level answer — only per-column ones. Anything
+that judges a multi-column row by one column (a filter, a skip, a `first` anything) is this bug.
+
+---
+
 ## 2026-10-16 — The second review: duplicates from the other direction, and state wiped by every refetch
 
 **What it was.** (1) The first fix refused *marking* a note an active Repeat-this schedule logs — but the

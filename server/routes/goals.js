@@ -90,6 +90,10 @@ router.post('/', async (req, res, next) => {
         name,
         emoji: emoji || null,
         target_amount: targetAmount,
+        // Explicit, not left to the column default: only a value in this insert gets
+        // encrypted, and migration 019 drops that default and makes
+        // current_amount_enc NOT NULL.
+        current_amount: 0,
         target_date: targetDate || null,
       }))
       .select(selectFor('savings_goals', GOAL_COLUMNS))

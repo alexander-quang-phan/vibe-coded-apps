@@ -887,6 +887,43 @@ older than the 200-row window load. Verify by tapping into an old month in the r
 >   up `DATA_ENCRYPTION_KEY`; migrations 012/018/018a are applied; `ENCRYPTION_PHASE=dual` and a
 >   redeploy; the backfill runs. Then **Part B** — the gate, the barrier and migration 019 — which
 >   must not proceed until the parked cutover machinery has an independent review (see CHAT_HANDOFF).
+>
+> - **2026-11-01 — two fixes that must be DEPLOYED before the runbook's Step 3 (`dual`).** Both from a
+>   2026-10-13 code read; details in `BUGS-FIXED.md`. Inert at `off`, so deploying them is low-risk.
+>   **Ordering (Alex, 2026-11-01: "Trips first"):** the runbook's Steps 1–4 wait until Phase 18 trips is
+>   merged, because trips edits the unapplied 018/018a/019 and `lib/encryptedFields.js` in place. The
+>   backfill and its new tests derive from that registry, so trips' encrypted columns are covered
+>   without touching them.
+>     1. **`scripts/encrypt-backfill.mjs` skipped half-encrypted rows.** It judged "already done" by each
+>        table's FIRST `_enc` column, but at `dual` a route encrypts only the columns it writes — a
+>        re-priced transaction gets `amount_enc` only, and every new goal lacks `current_amount_enc`.
+>        Those rows were skipped forever, so the gate could never pass. Now each column is judged by
+>        the gate's own checks: missing, stale (left by an edit after going back to `off`) and orphaned
+>        ciphertext is rewritten from the plaintext; correct ciphertext is left alone. A read-only key
+>        check runs first, dry run included: if any existing value will not decrypt (most likely the
+>        wrong key in `server/.env`), or nothing is encrypted to test against, nothing is written and
+>        the run exits non-zero. So
+>        the runbook's Step 3 undo is now genuinely undoable: back at `dual`, re-running Step 4
+>        repairs whatever was edited at `off`. The Step 4 summary also prints "N already encrypted"
+>        for every table, and "NO ROWS AT ALL" now means the table is genuinely empty.
+>     2. **`POST /api/transactions/parse` read `categories.name` raw** — the one query the sweep missed
+>        (the audit checked files, not queries). Now `selectFor` + `presentRows`; it would have failed
+>        on every parse after 019.
+>     3. **A `--sample` gate run hid the failures it found**, which is the run Step 4 reads. It now
+>        lists them. **Failure messages printed `merchant_key`** (user data) as a primary key; now a
+>        short hash (`lib/rowLabel.js`).
+>   Suite 722 -> 747. Independently reviewed over three rounds (no P0/P1; the P2s are fixed: see
+>   BUGS-FIXED). `docs/PHASE-9.5-PART-A-RUNBOOK.md` gained notes (keep the Step 3 test transaction
+>   until Step 4 is done; re-run Step 4 after any time back at `off`; STOP on "REFUSING TO START"; what
+>   to look for in the sampled check). **Its PDF was NOT regenerated** — do that after trips merges,
+>   before Alex follows the runbook.
+> - **Known limit of the key check:** the value it tests against must have been written by the deployed
+>   app. A row written by a local server at `dual` uses the laptop's own key, so it proves nothing. The
+>   runbook says so.
+> - **Also fixed, found the same day:** `POST /api/goals` would have failed on every new goal after 019
+>   (it relied on the plaintext `current_amount` default, which 019 drops while making
+>   `current_amount_enc` NOT NULL). It now sends `current_amount: 0`. Suite 747 -> 750. Unlike the backfill and
+>   gate script changes this is an API route, so it went out with a `trim-api` deploy on 2026-11-03.
 
 > **Codex stage-4 VERIFY: FAIL (2026-08-18).** Eleven findings, including two reproduced false
 > PASSes in the gate itself (a 501-row composite-PK scan that verified 500; a value-only edit after

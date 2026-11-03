@@ -50,12 +50,25 @@ export function runTransactionsRouteSuite(phase) {
     from: (t) => currentDb.from(t),
     rpc: (...args) => currentDb.rpc(...args),
   };
+  // POST /parse calls the model. Stand in for it and record what the route
+  // handed over, which is the thing under test.
+  const parseCalls = [];
+  const fakeParse = async (args) => {
+    parseCalls.push(args);
+    return {
+      ok: true,
+      data: {
+        amount: 1200, currency: 'GBP', categoryId: CAT, description: 'tesco', occurredAt: '2026-08-05', confidence: 'high',
+      },
+    };
+  };
 
   async function boot(tables, opts) {
     const { fakeSupabase, serve } = await import('./routeHarness.js');
     currentDb = fakeSupabase(tables ?? (await seed(phase)), opts);
     if (!mocked) {
       mock.module('../../lib/supabase.js', { exports: { supabase: supabaseProxy } });
+      mock.module('../../lib/parser.js', { exports: { parseTransactionText: fakeParse } });
       mocked = true;
     }
     const { default: router } = await import('../../routes/transactions.js');
@@ -74,6 +87,27 @@ export function runTransactionsRouteSuite(phase) {
       assert.equal(t.description, 'Tesco Express 1234');
       assert.equal(t.type, 'expense');
       assert.equal(t.date, '2026-08-05');
+    } finally {
+      await http.close();
+    }
+  });
+
+  test(`${label} POST /parse hands the parser decoded category names and nothing else`, async () => {
+    // The parser writes every category's name into the prompt sent to the model.
+    // This read used to be a raw `.select('id, name, type')`: fine while the
+    // plaintext column exists, but once migration 019 drops categories.name the
+    // real PostgREST rejects the query and every parse fails — and a lenient read
+    // would hand the model a null for every name. Exact shape, so no ciphertext
+    // or user id can reach the prompt either.
+    const { http } = await boot();
+    try {
+      parseCalls.length = 0;
+      const { status, body } = await http.send('POST', '/parse', { text: '12 quid at tesco' });
+      assert.equal(status, 200, JSON.stringify(body));
+      assert.equal(body.parsed.categoryId, CAT);
+      assert.equal(parseCalls.length, 1);
+      assert.deepEqual(parseCalls[0].categories, [{ id: CAT, name: 'Groceries', type: 'expense' }]);
+      assert.equal(parseCalls[0].currency, 'GBP');
     } finally {
       await http.close();
     }

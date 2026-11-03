@@ -66,6 +66,7 @@ import { pathToFileURL } from 'node:url';
 import { createHash } from 'node:crypto';
 import { decryptField, decryptRegistered } from '../lib/crypto.js';
 import { fieldsByTable, fieldKey } from '../lib/encryptedFields.js';
+import { pkLabel } from '../lib/rowLabel.js';
 // From lib/, NOT from the script this gate audits. The gate importing its own
 // scope from encrypt-backfill.mjs is exactly the defect the 2026-08-18 audit
 // found; the same reasoning applies to the blind-index helpers.
@@ -84,7 +85,6 @@ export const COUNTERS_RPC = 'encryption_write_counters';
 export const JOBS = fieldsByTable();
 
 const pkOf = (job) => job.pk ?? ['id'];
-const pkLabel = (job, row) => pkOf(job).map((k) => `${k}=${row[k]}`).join(' ');
 const isBlank = (v) => v === null || v === undefined;
 
 /**
@@ -541,6 +541,13 @@ export async function verifyEncryption({
   if (!complete) {
     log(`INCOMPLETE — ran with --sample ${sample}, so ${checked} row(s) were checked and the rest were not.`);
     log('A sampled run is NOT an authorisation for migration 019. Re-run with no --sample.');
+    // Step 4 of the runbook reads this run to see whether anything is wrong, so
+    // what it found has to be on the screen, whatever the verdict.
+    if (failures.length) {
+      log(`\nProblems in the rows checked (${failures.length}):`);
+      for (const f of failures.slice(0, 20)) log(`    ${f}`);
+      if (failures.length > 20) log(`    ...and ${failures.length - 20} more`);
+    }
   }
   if (pass) {
     log(`PASS — every row verified (${checked}). No plaintext would be lost and no ciphertext is stale.`);

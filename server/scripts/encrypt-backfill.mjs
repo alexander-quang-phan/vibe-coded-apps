@@ -14,8 +14,20 @@
  *   the filter — it is re-fetched forever. That is not hypothetical:
  *   `user_stats.monthly_limit` (migration 008) is NULL for every user until
  *   they set a limit, and `subscription_overrides.display_name` (migration 005)
- *   explicitly permits NULL. `is null` is now only an idempotency filter; the
- *   cursor, not the mutation, is what makes progress.
+ *   explicitly permits NULL. The cursor, not the mutation, is what makes
+ *   progress.
+ *
+ * - Repairs, per COLUMN, what the gate would reject. At phase `dual` a route
+ *   encrypts only what its write touches, so rows edited mid-rollout are partly
+ *   encrypted; keying on one column skipped them forever. And an edit made after
+ *   going back to `off` leaves stale ciphertext. Missing and stale columns are
+ *   rewritten from the plaintext; columns already right are left alone (see
+ *   columnState / processRow). [2026-11-01]
+ *
+ * - Refuses to write under the wrong key. A read-only pass over every table runs
+ *   first, dry run included. If any existing ciphertext will not decrypt, or there
+ *   is none to test the key against, nothing is written and the run exits non-zero
+ *   (see preflightKey). [2026-11-01]
  *
  * - Verified against the DATABASE, not against memory. Comparing
  *   `decryptField(encryptField(x))` to `x` only re-proves the unit tests; it
@@ -49,6 +61,7 @@ import 'dotenv/config';
 import { pathToFileURL } from 'node:url';
 import { encryptField, decryptField, decryptRegistered } from '../lib/crypto.js';
 import { fieldsByTable, fieldKey } from '../lib/encryptedFields.js';
+import { pkLabel } from '../lib/rowLabel.js';
 // Moved to lib/blindIndex.js so the ROUTE codec can use them without importing
 // from a maintenance script — and so the migration-019 gate stops importing them
 // from the script it audits. Re-exported here because both the gate and this
@@ -89,47 +102,93 @@ export const JOBS = fieldsByTable();
 
 const uniq = (xs) => xs.filter((v, i, a) => a.indexOf(v) === i);
 const pkOf = (job) => job.pk ?? ['id'];
-/** Safe to log: primary key values only, never user data. */
-const pkLabel = (job, row) => pkOf(job).map((k) => `${k}=${row[k]}`).join(' ');
 const isBlank = (v) => v === null || v === undefined;
 
 /**
- * Encrypt one row, write it, then re-read it from the database and prove the
- * stored bytes decrypt back to the original plaintext.
- * Returns 'encrypted' or 'nothing-to-encrypt'. Throws on any mismatch.
+ * What the gate would say about one column of one row — its per-row checks in
+ * scripts/verify-encryption.mjs verifyRows, column by column:
+ *
+ *   'ok'          ciphertext matches the plaintext, or both are NULL
+ *   'missing'     plaintext present, no ciphertext
+ *   'stale'       ciphertext decrypts, but not to the plaintext beside it, which
+ *                 may be NULL
+ *   'unreadable'  ciphertext this key cannot decrypt
+ *
+ * 'missing' and 'stale' are repaired from the plaintext, which is the value the
+ * user sees at `dual`. 'stale' is what an edit leaves behind after the runbook's
+ * Step 3 undo (back to `off`, where only plaintext is written). 'unreadable' is
+ * NOT repaired — see preflightKey.
+ *
+ * Compares RAW text: routing an amount through decryptAmount would turn a stored
+ * "12.50" into 12.5 and mismatch every two-decimal amount.
+ */
+function columnState(job, f, row) {
+  const plain = isBlank(row[f.column]) ? null : String(row[f.column]);
+  if (isBlank(row[f.enc])) return plain === null ? 'ok' : 'missing';
+  try {
+    return decryptField(fieldKey(job.table, f.column), row.user_id, row[f.enc]) === plain ? 'ok' : 'stale';
+  } catch {
+    return 'unreadable';
+  }
+}
+
+/**
+ * Repair whatever is wrong with this row, write it, then re-read it from the
+ * database and prove the stored bytes decrypt back to the plaintext.
+ * Returns 'encrypted', 'already-encrypted' or 'nothing-to-encrypt'. Throws on
+ * any mismatch.
+ *
+ * Decided per column, never per row. At ENCRYPTION_PHASE=dual the routes encrypt
+ * only the columns a write touches (encodeWrite keeps a partial update partial),
+ * so a row created at `off` and edited at `dual` is HALF-encrypted: a PATCH of a
+ * transaction's amount writes amount_enc and leaves description_enc NULL. This
+ * used to skip any row whose FIRST `_enc` column was set, so that row was never
+ * finished, the gate failed on it, and no re-run could repair it. [2026-11-01]
  */
 async function processRow(supabase, job, row, { dryRun }) {
   const pk = pkOf(job);
+  const states = job.fields.map((f) => [f, columnState(job, f, row)]);
+  // preflightKey refused to start if any existed, so this one landed mid-run. Under
+  // a wrong key that is the strongest signal there is: stop before touching the row.
+  const unreadable = states.find(([, s]) => s === 'unreadable');
+  if (unreadable) {
+    throw new Error(
+      `REFUSING TO CONTINUE — ${job.table} ${pkLabel(job, row)} ${unreadable[0].enc} will not decrypt with this key, ` +
+        `and it appeared after the key check passed. Check DATA_ENCRYPTION_KEY before re-running.`,
+    );
+  }
+  // A NULL plaintext beside a NULL `_enc` is 'ok' (original_amount on every
+  // home-currency transaction) — treating it as missing would rewrite that row
+  // on every run.
+  const rewrite = states.filter(([, s]) => s === 'missing' || s === 'stale').map(([f]) => f);
+  // A blind index needs writing when it does not recompute from the plaintext
+  // beside it — the gate's own test, so anything it would reject, this repairs.
+  const staleBlind = (job.blind ?? []).filter(
+    (b) => !blindValueEquals(row[b.column], blindValueFor(job.table, b, row)),
+  );
+
+  if (!rewrite.length && !staleBlind.length) {
+    // Never written, so never expected to leave any filter: the cursor (or the
+    // offset) has already moved past it, which is what keeps the scan finite.
+    return job.fields.every((f) => isBlank(row[f.column])) ? 'nothing-to-encrypt' : 'already-encrypted';
+  }
+
+  // Only what is wrong. Ciphertext that already matches is left exactly as it is
+  // — re-encrypting it from this scan's snapshot could only make it older.
   const patch = {};
-  let hasPlaintext = false;
-  for (const f of job.fields) {
-    if (isBlank(row[f.column])) {
-      patch[f.enc] = null;
-    } else {
-      patch[f.enc] = encryptField(fieldKey(job.table, f.column), row.user_id, String(row[f.column]));
-      hasPlaintext = true;
-    }
+  for (const f of rewrite) {
+    patch[f.enc] = isBlank(row[f.column])
+      ? null // the plaintext was cleared, so is its ciphertext
+      : encryptField(fieldKey(job.table, f.column), row.user_id, String(row[f.column]));
   }
-
-  // A row with nothing but NULLs has nothing to encrypt. Counting it as done
-  // (rather than writing NULL over NULL) is what stops the old infinite loop:
-  // we never write, so we never expect the `is null` filter to drop it — the
-  // keyset cursor has already moved past it.
-  // Blind indexes ride along in the same patch. They are derived from the same
-  // plaintext, so they must be written in the same statement — a row with a
-  // ciphertext but no index is invisible to merchant memory, and a row with an
-  // index but no ciphertext is worse.
-  for (const b of job.blind ?? []) {
-    patch[b.column] = blindValueFor(job.table, b, row);
-    if (patch[b.column] !== null) hasPlaintext = true;
-  }
-
-  if (!hasPlaintext) return 'nothing-to-encrypt';
+  // An index rides in the same statement as its ciphertext, so a row is never
+  // left with one and not the other.
+  for (const b of staleBlind) patch[b.column] = blindValueFor(job.table, b, row);
 
   // 1. In-memory check. Cheap, and catches a broken key before we touch the DB.
   //    Compare RAW text — routing an amount through decryptAmount would turn a
   //    stored "12.50" into 12.5 and mismatch every two-decimal amount.
-  for (const f of job.fields) {
+  for (const f of rewrite) {
     if (isBlank(row[f.column])) continue;
     if (decryptField(fieldKey(job.table, f.column), row.user_id, patch[f.enc]) !== String(row[f.column])) {
       throw new Error(`VERIFY FAILED (in-memory round-trip) ${job.table} ${pkLabel(job, row)} column=${f.enc}`);
@@ -179,8 +238,12 @@ async function processRow(supabase, job, row, { dryRun }) {
       throw new Error(`VERIFY FAILED (row not found on re-read after write) ${job.table} ${pkLabel(job, row)}`);
     }
 
-    // 4. Decrypt the DATABASE's bytes and compare to the DATABASE's plaintext.
-    for (const f of job.fields) {
+    // 4. Decrypt the DATABASE's bytes and compare to the DATABASE's plaintext —
+    //    for what THIS run wrote. A column a route wrote is the gate's to judge:
+    //    failing here on one the backfill cannot repair would abort every re-run
+    //    on the same row, and the rollback would erase this run's good work.
+    //    (A cleared column reads back NULL on both sides; decryptField(null) is null.)
+    for (const f of rewrite) {
       const expected = isBlank(stored[f.column]) ? null : String(stored[f.column]);
       let got;
       try {
@@ -204,7 +267,7 @@ async function processRow(supabase, job, row, { dryRun }) {
     // same value from the plaintext the database currently holds". A silently
     // wrong index does not throw anywhere — merchant memory just stops
     // suggesting, forever, with no error to notice.
-    for (const b of job.blind ?? []) {
+    for (const b of staleBlind) {
       const want = blindValueFor(job.table, b, { ...stored, user_id: row.user_id });
       if (!blindValueEquals(stored[b.column], want)) {
         throw new Error(
@@ -214,7 +277,7 @@ async function processRow(supabase, job, row, { dryRun }) {
       }
     }
   } catch (err) {
-    await rollbackEnc(supabase, job, row, err);
+    await rollbackEnc(supabase, job, row, Object.keys(patch), err);
     throw err;
   }
 
@@ -222,28 +285,27 @@ async function processRow(supabase, job, row, { dryRun }) {
 }
 
 /**
- * Undo an unverified write by NULLing the `_enc` columns again.
+ * Undo an unverified write by NULLing the columns THIS run wrote.
  *
  * Why this has to exist (found by adversarial audit 2026-08-09, and required by
  * the spec all along): the write at step 2 commits BEFORE verification. If
  * anything after it fails — including a transient PostgREST timeout on the
  * re-read, which says nothing about the data — the row stays committed with a
- * NON-NULL `_enc`. The idempotency filter in keysetScan is `.is(<enc>, null)`,
- * so on the re-run this script's own header invites, that row is now INVISIBLE.
- * It is never re-encrypted and never re-verified, the run prints "Backfill
- * complete", and migration 019 drops its plaintext on the strength of a check
- * that never actually passed for it.
+ * NON-NULL `_enc`. A re-run treats a non-NULL `_enc` as done, so on the re-run
+ * this script's own header invites, that column is now INVISIBLE. It is never
+ * re-encrypted and never re-verified, the run prints "Backfill complete", and
+ * migration 019 drops its plaintext on the strength of a check that never
+ * actually passed for it.
  *
- * NULLing the columns puts the row back in the filter's sights so a re-run
- * fixes it. If the rollback ITSELF fails we must be loud: that is the one state
- * a re-run cannot repair on its own.
+ * NULLing the columns puts them back in the re-run's sights. Only the ones we
+ * wrote: ciphertext a route wrote correctly is not ours to erase. Blind indexes
+ * we wrote go back too — leaving one behind means a row whose ciphertext was
+ * rolled back is still findable by merchant, the exact leak this is for. If the
+ * rollback ITSELF fails we must be loud: that is the one state a re-run cannot
+ * repair on its own.
  */
-async function rollbackEnc(supabase, job, row, cause) {
-  const patch = {};
-  for (const f of job.fields) patch[f.enc] = null;
-  // Blind indexes go back too. Leaving one behind means a row whose ciphertext
-  // was rolled back is still findable by merchant — the exact leak this is for.
-  for (const b of job.blind ?? []) patch[b.column] = null;
+async function rollbackEnc(supabase, job, row, columns, cause) {
+  const patch = Object.fromEntries(columns.map((c) => [c, null]));
   try {
     let undo = supabase.from(job.table).update(patch);
     for (const k of pkOf(job)) undo = undo.eq(k, row[k]);
@@ -253,34 +315,46 @@ async function rollbackEnc(supabase, job, row, cause) {
     cause.message +=
       `\n  !! ROLLBACK ALSO FAILED for ${job.table} ${pkLabel(job, row)}.` +
       `\n  !! This row is committed with UNVERIFIED ciphertext and a re-run will SKIP it.` +
-      `\n  !! Set its ${job.fields.map((f) => f.enc).join(', ')} back to NULL by hand before re-running,` +
+      `\n  !! Set its ${columns.join(', ')} back to NULL by hand before re-running,` +
       `\n  !! and do NOT run migration 019 until you have.`;
   }
 }
 
 /**
+ * Every column processRow decides from: each plaintext beside its `_enc`, and each
+ * blind index beside its source. Both scans read the same set, so neither can
+ * judge a row on a column it never selected — PostgREST would hand back nothing
+ * for it, and an `_enc` that was never read looks exactly like a missing one.
+ */
+const scanColumns = (job) => uniq([
+  ...pkOf(job), 'user_id',
+  ...job.fields.flatMap((f) => [f.column, f.enc]),
+  ...(job.blind ?? []).flatMap((b) => [b.from, b.column]),
+]).join(', ');
+
+/**
  * Single-column PK: keyset pagination.
  * Termination: `cursor` is the last row's PK and every query demands
  * `pk > cursor`, so each page covers a strictly higher, disjoint slice of a
- * finite, totally-ordered domain. Whether or not a write removes a row from
- * the `is null` filter is irrelevant to progress. The explicit non-advance
- * guard turns any violation of that assumption into a crash, not a hang.
+ * finite, totally-ordered domain. Whether or not a write changes a row is
+ * irrelevant to progress. The explicit non-advance guard turns any violation of
+ * that assumption into a crash, not a hang.
+ *
+ * There is no server-side "already done" filter. It used to be
+ * `.is(<first _enc column>, null)`, which hid every half-encrypted row whose
+ * first column a route had already written (see processRow). Each row's own
+ * columns decide instead. That reads the whole table, which at Trim's size is
+ * seconds — the gate already reads every row twice.
  */
 async function keysetScan(supabase, job, onRow) {
   const cursorCol = pkOf(job)[0];
-  const cols = uniq([
-    ...pkOf(job), 'user_id',
-    ...job.fields.map((f) => f.column),
-    ...(job.blind ?? []).map((b) => b.from),
-  ]).join(', ');
-  const firstEnc = job.fields[0].enc;
+  const cols = scanColumns(job);
   let cursor = null;
 
   for (;;) {
     let q = supabase
       .from(job.table)
       .select(cols)
-      .is(firstEnc, null) // idempotency only — already-encrypted rows are skipped
       .order(cursorCol, { ascending: true })
       .limit(PAGE_SIZE);
     if (cursor !== null) q = q.gt(cursorCol, cursor);
@@ -309,21 +383,16 @@ async function keysetScan(supabase, job, onRow) {
  * Termination: `offset` grows by rows.length >= 1 every iteration over a finite
  * table, and we stop on an empty or short page.
  *
- * The `is null` idempotency filter is deliberately NOT applied here. A positional
- * window over a set that our own writes shrink skips rows: encrypt the first 500,
- * they leave the filter, and `range(500, 999)` now starts 500 rows further into a
- * set that is 500 rows shorter. We scan in PK order and skip already-encrypted
- * rows client-side instead.
+ * No server-side filter, for a second reason besides the keyset one: a positional
+ * window over a set that our own writes shrink skips rows — encrypt the first
+ * 500, they leave the filter, and `range(500, 999)` now starts 500 rows further
+ * into a set that is 500 rows shorter. We scan every row in PK order and
+ * processRow decides. (This path used to skip a row client-side on its FIRST
+ * `_enc` column alone — the same half-encrypted-row bug as keysetScan.)
  */
-async function offsetScan(supabase, job, onRow, counts) {
+async function offsetScan(supabase, job, onRow) {
   const pk = pkOf(job);
-  const firstEnc = job.fields[0].enc;
-  const cols = uniq([
-    ...pk, 'user_id',
-    ...job.fields.map((f) => f.column),
-    ...(job.blind ?? []).map((b) => b.from),
-    firstEnc,
-  ]).join(', ');
+  const cols = scanColumns(job);
   let offset = 0;
 
   for (;;) {
@@ -334,16 +403,70 @@ async function offsetScan(supabase, job, onRow, counts) {
     if (error) throw error;
     if (!rows.length) break;
 
-    for (const row of rows) {
-      if (!isBlank(row[firstEnc])) {
-        counts.alreadyEncrypted += 1;
-        continue;
-      }
-      await onRow(row);
-    }
+    for (const row of rows) await onRow(row);
 
     offset += rows.length;
     if (rows.length < PAGE_SIZE) break;
+  }
+}
+
+/**
+ * Read-only pass over EVERY table before the first write: refuse to start if any
+ * existing ciphertext will not decrypt with this key. [2026-11-01, review]
+ *
+ * The likeliest cause is that server/.env holds a different key from the one
+ * production encrypts with. Skipping just the unreadable values was not enough:
+ * the run would still fill every gap and rewrite every blind index (under another
+ * key each one looks stale) with values the live app cannot read, and a gate run
+ * under the same wrong key would agree with it. So: nothing is written, in any
+ * table, until every existing value decrypts. Runs in --dry-run too, which is
+ * where the runbook has Alex look first.
+ *
+ * And nothing is written until at least one value HAS decrypted: with nothing to
+ * test against, a wrong key would encrypt everything, and the next run would
+ * "prove" that key by decrypting its own work. Following the runbook always leaves
+ * something to test, because Step 3 adds a row through the live app. Only the test
+ * file turns this off, since most of its fixtures start with nothing encrypted.
+ */
+async function preflightKey(supabase, jobs, { log, requireKeyEvidence }) {
+  // An unset or malformed key must report itself in its own words, which the
+  // runbook's rollback card tells Alex to look for, not as "will not decrypt".
+  if (jobs.length) encryptField(fieldKey(jobs[0].table, jobs[0].fields[0].column), 'key-probe', '0');
+
+  let readable = 0;
+  const unreadable = [];
+  for (const job of jobs) {
+    const onRow = async (row) => {
+      for (const f of job.fields) {
+        if (isBlank(row[f.enc])) continue;
+        if (columnState(job, f, row) === 'unreadable') unreadable.push(`${job.table} ${pkLabel(job, row)} ${f.enc}`);
+        else readable += 1;
+      }
+    };
+    if (pkOf(job).length === 1) await keysetScan(supabase, job, onRow);
+    else await offsetScan(supabase, job, onRow);
+  }
+  if (unreadable.length) {
+    const shown = unreadable.slice(0, 20).map((u) => `    ${u}`).join('\n');
+    const more = unreadable.length > 20 ? `\n    …and ${unreadable.length - 20} more` : '';
+    throw new Error(
+      `REFUSING TO START — ${unreadable.length} encrypted value(s) will not decrypt with this key ` +
+        `(${readable} other(s) did). Nothing was written.\n${shown}${more}\n` +
+        '  Check the key first, however many failed: DATA_ENCRYPTION_KEY in server/.env, in Vercel and in\n' +
+        '  your offline backup must be identical. Only when you are sure of that are these values damaged:\n' +
+        '  then set the listed columns back to NULL and re-run.',
+    );
+  }
+  if (readable) {
+    log(`Key check: ${readable} existing encrypted value(s) decrypt with this key.\n`);
+  } else if (requireKeyEvidence) {
+    throw new Error(
+      'REFUSING TO START — nothing is encrypted yet, so there is nothing to test this key against. ' +
+        'Nothing was written.\n' +
+        '  Do Step 3 of the runbook first: with ENCRYPTION_PHASE=dual deployed, add a transaction in the\n' +
+        '  live app, then re-run. If Step 3 is already done, check SUPABASE_URL in server/.env: this may\n' +
+        '  be the wrong database.',
+    );
   }
 }
 
@@ -353,11 +476,12 @@ async function runJob(supabase, job, { dryRun, log }) {
     counts.scanned += 1;
     const outcome = await processRow(supabase, job, row, { dryRun });
     if (outcome === 'encrypted') counts.encrypted += 1;
+    else if (outcome === 'already-encrypted') counts.alreadyEncrypted += 1;
     else counts.nothingToEncrypt += 1;
   };
 
   if (pkOf(job).length === 1) await keysetScan(supabase, job, onRow);
-  else await offsetScan(supabase, job, onRow, counts);
+  else await offsetScan(supabase, job, onRow);
 
   const suffix = dryRun ? 'would be encrypted (dry run — nothing written)' : 'encrypted + verified against the database';
   const extras = [
@@ -366,17 +490,21 @@ async function runJob(supabase, job, { dryRun, log }) {
   ].filter(Boolean);
   log(`${job.table}: ${counts.encrypted} rows ${suffix}${extras.length ? `, ${extras.join(', ')}` : ''}`);
   // "0 rows encrypted" is the SAME output for "already done" and for "pointed at
-  // the wrong database / the table is empty / the filter matched nothing". Say
-  // which. [audit 2026-08-18, High — vacuous success]
+  // the wrong database / the table is empty". Say which. Every row is scanned now,
+  // already-encrypted ones included, so zero scanned means zero rows exist.
+  // [audit 2026-08-18, High — vacuous success]
   if (counts.scanned === 0) {
-    log(`  ^ NOTE: ${job.table} returned NO ROWS AT ALL. Either every row is already`);
-    log(`    encrypted, or this is the wrong database. Confirm before trusting a PASS.`);
+    log(`  ^ NOTE: ${job.table} returned NO ROWS AT ALL. Either the table is empty,`);
+    log(`    or this is the wrong database. Confirm before trusting a PASS.`);
   }
   return counts;
 }
 
-export async function runBackfill({ supabase, jobs = JOBS, dryRun = false, log = console.log } = {}) {
+export async function runBackfill({
+  supabase, jobs = JOBS, dryRun = false, log = console.log, requireKeyEvidence = true,
+} = {}) {
   if (dryRun) log('DRY RUN — encrypting and verifying in memory, writing nothing.\n');
+  await preflightKey(supabase, jobs, { log, requireKeyEvidence });
   const totals = { encrypted: 0, nothingToEncrypt: 0, alreadyEncrypted: 0, scanned: 0 };
   for (const job of jobs) {
     const counts = await runJob(supabase, job, { dryRun, log });

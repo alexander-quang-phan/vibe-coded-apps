@@ -204,7 +204,12 @@ function OverallBudgetCard({ overall, currency, onSave, onClear, saving }) {
 function BudgetCard({ budget, currency, onEdit, onDelete }) {
   const percent = Math.min(budget.percent, 1.1);
   const tone = progressTone(percent);
-  const remaining = budget.limit - budget.spent;
+  // `spent` is a whole month, so a weekly budget is measured against its
+  // month-scaled limit (server/lib/budgetPeriod.js). The bar's `percent` already
+  // used it, but "of", "left" and "over" read the raw weekly limit — a £50/week
+  // budget with £150 spent showed a green 70% bar beside "£100.00 over".
+  const isWeekly = budget.period === 'weekly';
+  const remaining = budget.effectiveLimit - budget.spent;
   const cat = budget.category;
   const color = cat?.color ?? '#10b981';
 
@@ -226,7 +231,13 @@ function BudgetCard({ budget, currency, onEdit, onDelete }) {
             </span>
             <div>
               <h3 className="font-semibold leading-tight">{cat?.name ?? 'Category'}</h3>
-              <p className="text-xs text-muted-foreground capitalize">{budget.period}</p>
+              <p className="text-xs text-muted-foreground">
+                {isWeekly ? (
+                  `${formatMoney(budget.limit, currency)} a week`
+                ) : (
+                  <span className="capitalize">{budget.period}</span>
+                )}
+              </p>
             </div>
           </div>
           <div className="flex gap-1">
@@ -250,7 +261,8 @@ function BudgetCard({ budget, currency, onEdit, onDelete }) {
               {formatMoney(budget.spent, currency)}
             </span>
             <span className="nums text-sm text-muted-foreground">
-              of {formatMoney(budget.limit, currency)}
+              of {formatMoney(budget.effectiveLimit, currency)}
+              {isWeekly ? ' this month' : null}
             </span>
           </div>
           <div className="mt-2 h-2 overflow-hidden rounded-full bg-muted/70">
