@@ -85,7 +85,10 @@ for (const c of CITY_CASES) {
 
 // Quick Add's decisions, client side only: the riskiest rules in the feature, and the
 // client has no test runner of its own.
-const { tagFor, tripSubmitFields, seedCurrency, mayRevertCurrency, tripLabel } = client;
+const {
+  tagFor, tripSubmitFields, seedCurrency, mayRevertCurrency, tripLabel,
+  starAfterTripChange, stopFieldFor, freshRate, dashboardTrips, tripDates,
+} = client;
 
 const stopRome = { id: 'sr', name: 'Rome', startDate: '2026-10-12', endDate: '2026-10-15', currency: 'EUR', createdAt: '2026-10-01T00:00:00Z' };
 const stopNaples = { id: 'sn', name: 'Naples', startDate: '2026-10-16', endDate: '2026-10-19', currency: null, createdAt: '2026-10-01T00:00:00Z' };
@@ -193,4 +196,62 @@ test('mayRevertCurrency: only with nothing typed and no chip armed', () => {
 test('tripLabel: with and without a city', () => {
   assert.equal(tripLabel('Italy', 'Rome'), '✈️ Italy · Rome');
   assert.equal(tripLabel('Italy', null), '✈️ Italy');
+});
+
+const keepOut = { id: 'k', keepOutOfMonthly: true };
+const keepOff = { id: 'o', keepOutOfMonthly: false };
+const starCase = (storedTripId, nextTripId, storedSpecial) =>
+  starAfterTripChange({ storedTripId, nextTripId, storedSpecial, trips: [keepOut, keepOff] });
+
+test('starAfterTripChange shows what the server will do', () => {
+  assert.equal(starCase(null, 'k', false), true, 'joining keep-out');
+  assert.equal(starCase(null, 'o', true), true, 'joining keep-out-off keeps it');
+  assert.equal(starCase(null, 'o', false), false, 'joining keep-out-off keeps it');
+  assert.equal(starCase('k', null, true), false, 'clearing a keep-out trip');
+  assert.equal(starCase('k', 'o', true), false, 'moving to keep-out-off');
+  assert.equal(starCase('o', null, true), true, 'leaving keep-out-off keeps it');
+  assert.equal(starCase('k', 'k', false), false, 'no change keeps a hand-set star');
+  assert.equal(starCase(null, null, true), true, 'no trip at all');
+});
+
+test('stopFieldFor sends a stop only when the override really changes', () => {
+  const field = (over) => stopFieldFor({
+    storedTripId: 'k', storedStopId: null, nextTripId: 'k', choice: null, derivedId: 'rome', ...over,
+  });
+  assert.deepEqual(field({}), {}, 'nothing changed');
+  assert.deepEqual(field({ choice: 'rome' }), {}, 'the derived stop is no override');
+  assert.deepEqual(field({ choice: 'naples' }), { tripStopId: 'naples' }, 'a new override');
+  assert.deepEqual(field({ storedStopId: 'naples', choice: 'naples' }), {}, 'the same override');
+  assert.deepEqual(field({ storedStopId: 'naples', choice: null }), { tripStopId: null }, 'back to the date');
+  assert.deepEqual(field({ storedStopId: 'naples', choice: 'rome' }), { tripStopId: null }, 'the derived stop clears it');
+  assert.deepEqual(
+    field({ storedStopId: 'naples', nextTripId: 'o', choice: null, derivedId: null }),
+    {},
+    'changing trip: the server clears it, so nothing to send',
+  );
+});
+
+test('freshRate accepts up to 30 days and nothing odd', () => {
+  const entry = (date, rate = 0.85) => ({ date, rate });
+  assert.equal(freshRate(entry('2026-10-04'), '2026-11-03').rate, 0.85, '30 days');
+  assert.equal(freshRate(entry('2026-10-03'), '2026-11-03'), null, '31 days');
+  assert.equal(freshRate(entry('2026-11-04'), '2026-11-03'), null, 'from the future');
+  assert.equal(freshRate(entry('2026-11-03', 0), '2026-11-03'), null, 'a zero rate');
+  assert.equal(freshRate(undefined, '2026-11-03'), null);
+});
+
+test('dashboardTrips: on now first, then within 7 days, at most two, never archived', () => {
+  const t = (id, status, extra = {}) => ({ id, status, archivedAt: null, ...extra });
+  const pick = (list) => dashboardTrips(list).map((x) => x.id);
+  assert.deepEqual(pick([t('soon', 'upcoming', { daysUntilStart: 3 }), t('now', 'active')]), ['now', 'soon']);
+  assert.deepEqual(pick([t('a', 'upcoming', { daysUntilStart: 7 }), t('b', 'upcoming', { daysUntilStart: 2 })]), ['b', 'a']);
+  assert.deepEqual(pick([t('far', 'upcoming', { daysUntilStart: 8 }), t('old', 'past')]), []);
+  assert.deepEqual(pick([t('x', 'active', { archivedAt: '2026-10-01' })]), []);
+  assert.equal(pick([t('a', 'active'), t('b', 'active'), t('c', 'active')]).length, 2);
+});
+
+test('tripDates reads naturally', () => {
+  assert.equal(tripDates('2026-10-12', '2026-10-19'), '12 Oct – 19 Oct 2026');
+  assert.equal(tripDates('2026-10-12', '2026-10-12'), '12 Oct 2026');
+  assert.equal(tripDates('2026-12-28', '2027-01-03'), '28 Dec 2026 – 3 Jan 2027');
 });

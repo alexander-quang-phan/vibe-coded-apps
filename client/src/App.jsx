@@ -5,6 +5,7 @@ import { Button } from '@/components/ui/button';
 import { AskChatbot } from '@/components/AskChatbot';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useApi } from '@/hooks/useApi';
+import { useTrips } from '@/hooks/useTrips';
 import { useAuth } from '@/hooks/useAuth';
 import { cn } from '@/lib/utils';
 
@@ -12,6 +13,7 @@ const links = [
   { to: '/dashboard', label: 'Dashboard' },
   { to: '/transactions', label: 'Transactions' },
   { to: '/budgets', label: 'Budgets' },
+  { to: '/trips', label: 'Trips' },
   { to: '/savings', label: 'Savings' },
   { to: '/subscriptions', label: 'Subscriptions' },
   { to: '/analytics', label: 'Analytics' },
@@ -62,7 +64,13 @@ function useReportTimezone() {
     if (!local || local === stored) return;
     api
       .patch('/api/me', { timezone: local })
-      .then(() => queryClient.invalidateQueries({ queryKey: ['me'] }))
+      .then(() => {
+        // Trips too: on arrival day the trip card and Quick Add's tag must agree on
+        // whether the trip has started, and that depends on this zone.
+        for (const key of ['me', 'trips', 'dashboard']) {
+          queryClient.invalidateQueries({ queryKey: [key] });
+        }
+      })
       .catch(() => {
         // Never surface this. A failed timezone report degrades to the previous
         // stored zone, which is what the user had a moment ago anyway.
@@ -75,6 +83,8 @@ export default function App() {
   const navigate = useNavigate();
   const { isDark, toggle } = useTheme();
   useReportTimezone();
+  // Fetched at start, not when Quick Add opens, so the trip tag is never late.
+  useTrips();
 
   async function handleLogout() {
     await signOut();
@@ -109,7 +119,7 @@ export default function App() {
             </span>
           </Link>
 
-          <nav className="hidden flex-1 justify-center gap-0.5 md:flex">
+          <nav className="hidden flex-1 justify-center gap-0.5 lg:flex">
             {links.map((l) => (
               <NavLink
                 key={l.to}
@@ -161,7 +171,7 @@ export default function App() {
         </div>
 
         {/* Mobile nav — horizontally scrollable */}
-        <nav className="container flex gap-1 overflow-x-auto px-4 pb-2 md:hidden">
+        <nav className="container flex gap-1 overflow-x-auto px-4 pb-2 lg:hidden">
           {links.map((l) => (
             <NavLink
               key={l.to}

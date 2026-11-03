@@ -12,6 +12,7 @@ import { RecentTransactions } from '@/components/RecentTransactions';
 import { MonthProjection } from '@/components/MonthProjection';
 import { WinsFeed } from '@/components/WinsFeed';
 import { QuickAddButton } from '@/components/QuickAddButton';
+import { TripCards } from '@/components/TripCard';
 import { formatMoney } from '@/lib/format';
 import { invalidateMoney } from '@/lib/invalidate';
 
@@ -276,6 +277,8 @@ export default function Dashboard() {
         onToggleSpecial={toggleIncludeSpecial}
       />
 
+      <TripCards currency={currency} />
+
       {simpleMode ? null : (
         <div className="animate-fade-up" style={{ animationDelay: '40ms' }}>
           <AffordabilityCheck
@@ -291,6 +294,7 @@ export default function Dashboard() {
           <SpecialGroupsPanel
             currency={currency}
             specialThisMonth={month.specialThisMonth ?? 0}
+            specialOnTripsThisMonth={month.specialOnTripsThisMonth ?? 0}
           />
         </div>
       ) : null}

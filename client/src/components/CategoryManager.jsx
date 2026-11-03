@@ -56,7 +56,9 @@ function isProtected(cat) {
   return cat.is_default && PROTECTED_DEFAULT_NAMES.has(cat.name);
 }
 
-function CategoryDialog({ open, onOpenChange, editing, onSubmit, submitting }) {
+// `lockType` fixes new categories to one type and hides the switch: a trip budget can
+// only ever be for spending.
+export function CategoryDialog({ open, onOpenChange, editing, onSubmit, submitting, lockType = null }) {
   const [name, setName] = useState('');
   const [icon, setIcon] = useState('📦');
   const [color, setColor] = useState('#64748b');
@@ -73,9 +75,9 @@ function CategoryDialog({ open, onOpenChange, editing, onSubmit, submitting }) {
       setName('');
       setIcon('📦');
       setColor(COLOR_CHOICES[5]);
-      setType('expense');
+      setType(lockType ?? 'expense');
     }
-  }, [editing, open]);
+  }, [editing, open, lockType]);
 
   const trimmed = name.trim();
   const canSubmit = trimmed.length > 0 && trimmed.length <= 40;
@@ -88,7 +90,9 @@ function CategoryDialog({ open, onOpenChange, editing, onSubmit, submitting }) {
           <DialogDescription>
             {editing
               ? 'Tweak the name, icon, or colour. Type stays the same.'
-              : 'Pick a name, an icon, and a colour. Spending or earning?'}
+              : lockType
+                ? 'Pick a name, an icon, and a colour.'
+                : 'Pick a name, an icon, and a colour. Spending or earning?'}
           </DialogDescription>
         </DialogHeader>
 
@@ -105,7 +109,7 @@ function CategoryDialog({ open, onOpenChange, editing, onSubmit, submitting }) {
             />
           </div>
 
-          {!editing ? (
+          {!editing && !lockType ? (
             <div className="space-y-1.5">
               <Label>Type</Label>
               <SegmentGroup>

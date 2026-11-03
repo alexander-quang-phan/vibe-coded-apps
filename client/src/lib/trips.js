@@ -109,3 +109,80 @@ export function seedCurrency({ stop, base, amountTyped, armed, currencyTouched, 
 export function mayRevertCurrency({ amountTyped, armed }) {
   return !amountTyped && !armed;
 }
+
+/**
+ * What the Special box should show after the Edit dialog's trip picker changes, which
+ * is what the server will do (lib/tripRules.js) if Alex doesn't touch the box himself.
+ * Going back to the stored trip means no change at all.
+ */
+export function starAfterTripChange({ storedTripId, nextTripId, storedSpecial, trips }) {
+  if ((nextTripId ?? null) === (storedTripId ?? null)) return !!storedSpecial;
+  const find = (id) => trips.find((t) => t.id === id);
+  if (nextTripId && find(nextTripId)?.keepOutOfMonthly) return true;
+  if (storedTripId && find(storedTripId)?.keepOutOfMonthly) return false;
+  return !!storedSpecial;
+}
+
+/**
+ * The stop field for an edit: nothing unless the override really changes. Choosing the
+ * date's own stop means "no override", because storing it would freeze the city.
+ */
+export function stopFieldFor({ storedTripId, storedStopId, nextTripId, choice, derivedId }) {
+  const wanted = choice && choice !== derivedId ? choice : null;
+  const stored = (nextTripId ?? null) === (storedTripId ?? null) ? storedStopId ?? null : null;
+  return wanted === stored ? {} : { tripStopId: wanted };
+}
+
+// --- remembered rates ---------------------------------------------------------------
+//
+// So the stop's currency works on day 1 of a day abroad with bad signal. A browser
+// convenience, so every read and write survives storage being unavailable.
+
+const RATE_KEY = 'trim:fx-rates';
+const RATE_MAX_AGE_DAYS = 30;
+
+/** A remembered rate if it is within the last 30 days, else null. */
+export function freshRate(entry, today) {
+  if (!entry || !(entry.rate > 0) || !entry.date) return null;
+  const age = dayNumber(today) - dayNumber(entry.date);
+  return age >= 0 && age <= RATE_MAX_AGE_DAYS ? entry : null;
+}
+
+export function recallRate(from, to, today) {
+  try {
+    const all = JSON.parse(localStorage.getItem(RATE_KEY) ?? '{}');
+    return freshRate(all[`${from}->${to}`], today);
+  } catch {
+    return null;
+  }
+}
+
+export function rememberRate(from, to, rate, date) {
+  try {
+    const all = JSON.parse(localStorage.getItem(RATE_KEY) ?? '{}');
+    all[`${from}->${to}`] = { rate, date };
+    localStorage.setItem(RATE_KEY, JSON.stringify(all));
+  } catch {
+    // Only a convenience: without it the normal "Getting today's rate" gate applies.
+  }
+}
+
+/** At most two for the Dashboard: on now first, then starting within 7 days, soonest first. */
+export function dashboardTrips(trips) {
+  const live = trips.filter((t) => !t.archivedAt);
+  const onNow = live.filter((t) => t.status === 'active');
+  const soon = live
+    .filter((t) => t.status === 'upcoming' && t.daysUntilStart <= 7)
+    .sort((a, b) => a.daysUntilStart - b.daysUntilStart);
+  return [...onNow, ...soon].slice(0, 2);
+}
+
+/** "12 Oct – 19 Oct 2026", or one date for a single-day trip. */
+export function tripDates(startDate, endDate) {
+  const show = (iso, withYear) => new Date(`${iso}T00:00:00`).toLocaleDateString('en-GB', {
+    day: 'numeric', month: 'short', ...(withYear ? { year: 'numeric' } : {}),
+  });
+  if (startDate === endDate) return show(endDate, true);
+  const sameYear = startDate.slice(0, 4) === endDate.slice(0, 4);
+  return `${show(startDate, !sameYear)} – ${show(endDate, true)}`;
+}

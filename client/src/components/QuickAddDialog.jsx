@@ -14,13 +14,19 @@ import { Input } from '@/components/ui/input';
 import { MoneyInput, isValidMoney } from '@/components/ui/money-input';
 import { CurrencyPicker, ConversionLine } from '@/components/CurrencyEntry';
 import { SpecialGroupPicker } from '@/components/SpecialGroupPicker';
+import { TripPicker } from '@/components/TripPicker';
+import { TripTag } from '@/components/TripTag';
 import { Textarea } from '@/components/ui/textarea';
 import { Label } from '@/components/ui/label';
 import { SegmentGroup, SegmentButton } from '@/components/ui/toggle-group';
 import { useApi } from '@/hooks/useApi';
+import { useTrips } from '@/hooks/useTrips';
 import { cn } from '@/lib/utils';
 import { todayISO } from '@/lib/format';
 import { invalidateMoney } from '@/lib/invalidate';
+import {
+  tagFor, tripSubmitFields, seedCurrency, mayRevertCurrency, recallRate, rememberRate,
+} from '@/lib/trips';
 import { subscriptionLabel } from '@/lib/subscriptions';
 import { runSubscriptionAction, subscriptionActionMessage } from '@/lib/subscriptionActions';
 import {
@@ -45,6 +51,9 @@ export function QuickAddDialog({
   // card to backfill a month with nothing logged. Defaults to today, so every
   // existing caller is unaffected.
   initialDate = todayISO(),
+  // Phase 18: opened from a trip's own page. Attached whatever the date; only ✕ or the
+  // chooser removes it, so a March flight can be logged from the trip it belongs to.
+  presetTripId = null,
 }) {
   const api = useApi();
   const queryClient = useQueryClient();
@@ -73,8 +82,36 @@ export function QuickAddDialog({
   const [entryCurrency, setEntryCurrency] = useState(currency);
   const [rate, setRate] = useState('1');
   const [rateState, setRateState] = useState('idle'); // idle | loading | ready | unavailable
+  // Phase 18 — trip mode. The tag is DERIVED from these, never stored: a refetch can't
+  // wipe a choice (BUGS-FIXED shape 8). `tripChoice` is what Alex did by hand in this
+  // entry; the reset below clears it, so a ✕ applies to one entry, not the session.
+  const [tripChoice, setTripChoice] = useState(null);
+  const [currencyTouched, setCurrencyTouched] = useState(false);
+  const [currencyDeclined, setCurrencyDeclined] = useState(false);
+  const [rememberedOn, setRememberedOn] = useState(null); // the date of a remembered rate in use
   const amountRef = useRef(null);
   const freeformRef = useRef(null);
+  // The reset and the effects after it run in one commit and share one render's closure,
+  // so an effect in that commit would read the previous entry's amount and flags.
+  const justReset = useRef(false);
+  // For what happens later than the render that started it: a rate that fails after
+  // Alex has typed must see what he typed, or £4,500 forints (the Phase 12 bug class).
+  const latest = useRef({});
+
+  const { data: tripsData, isLoading: tripsLoading, isError: tripsFailed } = useTrips();
+  const trips = tripsData?.trips;
+  const tag = useMemo(
+    () => tagFor({ trips, date, type, presetTripId, choice: tripChoice }),
+    [trips, date, type, presetTripId, tripChoice],
+  );
+  const attached = !!tag;
+  latest.current = {
+    amountTyped: amountStr !== '',
+    armed: armedCategoryId !== null,
+    currencyTouched,
+    stopCurrency: tag?.stop?.currency ?? null,
+    rateTouched: latest.current.rateTouched ?? false,
+  };
 
   useEffect(() => {
     if (open) {
@@ -94,12 +131,52 @@ export function QuickAddDialog({
       setIsSpecial(false);
       setRecurringInterval(null);
       setSpecialGroupId(null);
-      setEntryCurrency(currency);
+      setTripChoice(null);
+      setCurrencyTouched(false);
+      setCurrencyDeclined(false);
+      setRememberedOn(null);
+      // Seeded here, from the freshly reset values. Read from the cache, not `trips`, so
+      // this effect is never keyed on query data.
+      const seedTag = tagFor({
+        trips: queryClient.getQueryData(['trips'])?.trips,
+        date: initialDate,
+        type: 'expense',
+        presetTripId,
+      });
+      const seeded = seedCurrency({ stop: seedTag?.stop, base: currency }) ?? currency;
+      setEntryCurrency(seeded);
+      justReset.current = true;
+      latest.current = {
+        amountTyped: false,
+        armed: false,
+        currencyTouched: false,
+        stopCurrency: seedTag?.stop?.currency ?? null,
+        rateTouched: false,
+      };
       setRate('1');
       setRateState('idle');
       setTimeout(() => amountRef.current?.focus(), 80);
     }
-  }, [open, initialDate, currency]);
+  }, [open, initialDate, currency, presetTripId, queryClient]);
+
+  // Later changes only: trip data arriving, the date moving, a tag chosen or cleared.
+  // seedCurrency refuses under a typed amount, an armed chip or a picked currency.
+  useEffect(() => {
+    if (!open) return;
+    if (justReset.current) {
+      justReset.current = false;
+      return;
+    }
+    const next = seedCurrency({
+      stop: tag?.stop,
+      base: currency,
+      amountTyped: amountStr !== '',
+      armed: armedCategoryId !== null,
+      currencyTouched,
+      declined: currencyDeclined,
+    });
+    if (next && next !== entryCurrency) setEntryCurrency(next);
+  }, [open, tag, amountStr, armedCategoryId, currencyTouched, currencyDeclined, currency, entryCurrency]);
 
   // Phase 12 — fetch the day's rate whenever the entry currency changes to
   // something other than the user's own. Same currency short-circuits to 1
@@ -114,25 +191,50 @@ export function QuickAddDialog({
       return;
     }
     let cancelled = false;
-    setRateState('loading');
-    // Clear the old rate immediately. Leaving the previous currency's rate in
-    // the box meant switching EUR -> SEK showed "No rate available" and
-    // "Logs as £38.50" side by side, the second computed at the euro rate.
-    setRate('');
+    latest.current.rateTouched = false;
+    // Only a currency a stop seeded may use a remembered rate. One Alex picked by hand
+    // keeps waiting for today's, so it can't log on a rate up to 30 days old.
+    const seededByStop = !latest.current.currencyTouched && latest.current.stopCurrency === entryCurrency;
+    const remembered = seededByStop ? recallRate(entryCurrency, currency, todayISO()) : null;
+    if (remembered) {
+      setRate(String(remembered.rate));
+      setRateState('ready');
+      setRememberedOn(remembered.date);
+    } else {
+      setRateState('loading');
+      setRememberedOn(null);
+      // Clear the old rate immediately. Leaving the previous currency's rate in
+      // the box meant switching EUR -> SEK showed "No rate available" and
+      // "Logs as £38.50" side by side, the second computed at the euro rate.
+      setRate('');
+    }
+    const failed = () => {
+      if (cancelled) return;
+      // A remembered rate stays, and the currency never changes under it.
+      if (remembered) return;
+      if (!latest.current.currencyTouched && mayRevertCurrency(latest.current)) {
+        // Nothing typed yet, so nothing can change meaning. `declined` stops the seeding
+        // effect putting it straight back.
+        setCurrencyDeclined(true);
+        setEntryCurrency(currency);
+        return;
+      }
+      setRateState('unavailable');
+    };
     api
       .get(`/api/fx?from=${entryCurrency}&to=${currency}`)
       .then((r) => {
         if (cancelled) return;
-        if (r && typeof r.rate === 'number' && r.rate > 0) {
-          setRate(String(r.rate));
-          setRateState('ready');
-        } else {
-          setRateState('unavailable');
-        }
+        if (!(r && typeof r.rate === 'number' && r.rate > 0)) return failed();
+        rememberRate(entryCurrency, currency, r.rate, r.date ?? todayISO());
+        // Never swapped in behind an armed chip or a rate Alex typed: what he is about
+        // to confirm must be what gets logged.
+        if (remembered && (latest.current.armed || latest.current.rateTouched)) return;
+        setRate(String(r.rate));
+        setRateState('ready');
+        setRememberedOn(null);
       })
-      .catch(() => {
-        if (!cancelled) setRateState('unavailable');
-      });
+      .catch(failed);
     return () => {
       cancelled = true;
     };
@@ -189,7 +291,8 @@ export function QuickAddDialog({
   // both 0, so the empty and half-typed cases have to be caught here too.
   const fxRate = Number(rate);
   const rateValid = !isForeign || (rate !== '' && Number.isFinite(fxRate) && fxRate > 0);
-  const canSubmit = amountValid && rateValid;
+  // Waits on the first load only. A failed trips query never blocks logging.
+  const canSubmit = amountValid && rateValid && !tripsLoading;
 
   // Phase 17 — "Is this your Netflix subscription?" Asked, never assumed: Yes
   // attaches the charge, No (or ignoring it) leaves it alone. The answer runs after
@@ -199,9 +302,9 @@ export function QuickAddDialog({
     const attach = (reactivate) => {
       const action = { type: 'attach', merchantKey: match.merchantKey, reactivate, label };
       runSubscriptionAction(api, transactionId, action)
-        .then(() => {
+        .then((result) => {
           invalidateMoney(queryClient);
-          const m = subscriptionActionMessage(action);
+          const m = subscriptionActionMessage(action, result);
           toast.success(m.title, { description: m.description });
         })
         .catch((err) => toast.error(err?.message || "Couldn't add it to the subscription"));
@@ -253,10 +356,32 @@ export function QuickAddDialog({
         toast.success(`Repeating ${res.recurrence.interval} 🔁`, {
           description: 'Manage it on Subscriptions.',
         });
-      } else if (type === 'expense' && isSpecial) {
+      } else if (type === 'expense' && isSpecial && !res?.transaction?.trip_id) {
         toast.success('Logged as special ⭐', { description: 'Outside your monthly budget' });
-      } else {
+      } else if (!res?.transaction?.trip_id) {
         toast.success('Logged', { description: `+${d?.awardedXp ?? 0} XP` });
+      }
+
+      // Outside the chain above, so a level-up can never swallow the way to undo a home
+      // phone bill caught by trip mode.
+      if (res?.transaction?.trip_id) {
+        const txId = res.transaction.id;
+        const name = trips?.find((t) => t.id === res.transaction.trip_id)?.name ?? 'your trip';
+        toast.success(`Logged to ${name} ✈️`, {
+          duration: 10000,
+          action: {
+            label: 'Not trip spending',
+            onClick: () => {
+              api
+                .patch(`/api/transactions/${txId}`, { tripId: null })
+                .then(() => {
+                  invalidateMoney(queryClient);
+                  toast.success('Taken off the trip');
+                })
+                .catch((err) => toast.error(err?.message || "Couldn't take it off the trip"));
+            },
+          },
+        });
       }
 
       if (d?.shieldUsed) {
@@ -329,11 +454,15 @@ export function QuickAddDialog({
       type,
       description: description.trim() || null,
       date,
-      ...(type === 'expense' ? { isSpecial } : {}),
-      ...(type === 'expense' && isSpecial && specialGroupId ? { specialGroupId } : {}),
-      ...(type === 'expense' && recurringInterval
+      // While a trip is attached these are hidden, so none of them is sent: the server
+      // derives the star and clears any group. Sending isSpecial:false here would count
+      // every trip expense in the monthly budget.
+      ...(type === 'expense' && !attached ? { isSpecial } : {}),
+      ...(type === 'expense' && !attached && isSpecial && specialGroupId ? { specialGroupId } : {}),
+      ...(type === 'expense' && !attached && recurringInterval
         ? { recurring: { interval: recurringInterval } }
         : {}),
+      ...tripSubmitFields(tag),
       ...foreignPayload(),
       // The streak belongs to the user's calendar day, not the server's UTC one.
       clientToday: todayISO(),
@@ -373,6 +502,7 @@ export function QuickAddDialog({
       type: 'expense',
       description: null,
       date,
+      ...tripSubmitFields(tag),
       ...foreignPayload(),
       // The streak belongs to the user's calendar day, not the server's UTC one.
       clientToday: todayISO(),
@@ -501,6 +631,12 @@ export function QuickAddDialog({
           </div>
         ) : (
           <>
+            {/* Phase 18: visible, with its own ✕. Hidden for income by tagFor. */}
+            {tag ? <TripTag tag={tag} onChoose={setTripChoice} /> : null}
+            {tripsFailed && !tripsData ? (
+              <p className="text-xs text-muted-foreground">Couldn’t check your trips, so this logs as a normal expense.</p>
+            ) : null}
+
             {/* Step 1: type (hidden in simple mode — everything is an expense) */}
             {simpleMode ? null : (
               <SegmentGroup className="self-start">
@@ -531,7 +667,14 @@ export function QuickAddDialog({
                 <Label htmlFor="qa-amount">Amount</Label>
                 {/* Phase 12. Defaults to the user's own currency, so the normal
                     two-tap path is untouched — this only does anything abroad. */}
-                <CurrencyPicker value={entryCurrency} base={currency} onChange={setEntryCurrency} />
+                <CurrencyPicker
+                  value={entryCurrency}
+                  base={currency}
+                  onChange={(c) => {
+                    setCurrencyTouched(true);
+                    setEntryCurrency(c);
+                  }}
+                />
               </div>
               <MoneyInput
                 id="qa-amount"
@@ -553,8 +696,16 @@ export function QuickAddDialog({
                   baseCurrency={currency}
                   rate={rate}
                   rateState={rateState}
-                  onRateChange={setRate}
+                  rememberedOn={rememberedOn}
+                  onRateChange={(v) => {
+                    latest.current.rateTouched = true;
+                    setRate(v);
+                  }}
                 />
+              ) : currencyDeclined && tag?.stop?.currency ? (
+                <p className="text-xs text-muted-foreground">
+                  Couldn’t get a {tag.stop.currency} rate, so this is in {currency}. Pick {tag.stop.currency} above to type a rate.
+                </p>
               ) : null}
             </div>
 
@@ -641,7 +792,9 @@ export function QuickAddDialog({
                   <p className="col-span-full text-sm text-muted-foreground">No categories yet.</p>
                 ) : null}
               </div>
-              {!amountValid ? (
+              {tripsLoading ? (
+                <p className="text-xs text-muted-foreground">Checking your trips…</p>
+              ) : !amountValid ? (
                 <p className="text-xs text-muted-foreground">Enter an amount to enable categories.</p>
               ) : !rateValid ? (
                 <p className="text-xs text-amber-600 dark:text-amber-400">
@@ -676,7 +829,7 @@ export function QuickAddDialog({
                   <ChevronDown className={cn('h-3.5 w-3.5 transition-transform', showMore && 'rotate-180')} />
                   {showMore
                     ? 'Hide details'
-                    : type !== 'expense'
+                    : type !== 'expense' || attached
                       ? 'Change the date'
                       : specialEnabled
                         ? 'Change the date, repeat it, or mark it special'
@@ -686,7 +839,16 @@ export function QuickAddDialog({
                 {showMore ? (
                   <div className="mt-3 space-y-3">
                     {dateField}
-                    {specialEnabled && type === 'expense' ? (
+                    {/* Outside a trip's dates, the way to attach one by hand. */}
+                    {type === 'expense' && !attached ? (
+                      <TripPicker
+                        tripId={null}
+                        date={date}
+                        showStops={false}
+                        onTripChange={(id) => setTripChoice(id ? { tripId: id } : null)}
+                      />
+                    ) : null}
+                    {specialEnabled && type === 'expense' && !attached ? (
                       <label className="flex items-center justify-between rounded-lg border border-border/60 bg-secondary/30 px-3 py-2">
                         <span className="flex items-center gap-2 text-sm">
                           <Star className="h-4 w-4 text-amber-600 dark:text-amber-400" aria-hidden />
@@ -706,7 +868,7 @@ export function QuickAddDialog({
                     ) : null}
 
                     {/* Phase 10 B1 — only meaningful once it IS special. */}
-                    {specialEnabled && type === 'expense' && isSpecial ? (
+                    {specialEnabled && type === 'expense' && isSpecial && !attached ? (
                       <SpecialGroupPicker
                         value={specialGroupId}
                         onChange={setSpecialGroupId}
@@ -714,8 +876,9 @@ export function QuickAddDialog({
                       />
                     ) : null}
 
-                    {/* Task 6.12b — recurring opt-in, expense-only. */}
-                    {type === 'expense' ? (
+                    {/* Task 6.12b — recurring opt-in, expense-only. Hidden on a trip: a
+                        repeating charge is home spending, and the server refuses the pair. */}
+                    {type === 'expense' && !attached ? (
                       <div className="rounded-lg border border-border/60 bg-secondary/30 px-3 py-2">
                         <label className="flex items-center justify-between">
                           <span className="flex items-center gap-2 text-sm">

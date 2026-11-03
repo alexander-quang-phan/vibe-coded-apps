@@ -1,5 +1,6 @@
 import { formatMoney } from '@/lib/format';
 import { cn } from '@/lib/utils';
+import { TripTrackedLine } from '@/components/TripTrackedLine';
 
 /**
  * The budget-pace line (Task 9.3, extended in Phase 10 A4).
@@ -28,6 +29,7 @@ export function PaceLine({ pace, daysElapsed, currency, className }) {
 
   if (overBudget) {
     return (
+      <>
       <p className={cn('text-xs text-muted-foreground', className)}>
         <span className="text-amber-600 dark:text-amber-400">◷</span>{' '}
         You're{' '}
@@ -37,6 +39,8 @@ export function PaceLine({ pace, daysElapsed, currency, className }) {
         over your {formatMoney(pace.budget, currency)} budget — nothing left for the last{' '}
         {pace.daysRemaining} {dayWord}.
       </p>
+      <TripTrackedLine className={className} />
+      </>
     );
   }
 

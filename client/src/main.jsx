@@ -9,6 +9,8 @@ import App from './App';
 import Dashboard from './pages/Dashboard';
 import Transactions from './pages/Transactions';
 import Budgets from './pages/Budgets';
+import Trips from './pages/Trips';
+import TripDetail from './pages/TripDetail';
 import Analytics from './pages/Analytics';
 import SavingsGoals from './pages/SavingsGoals';
 import Subscriptions from './pages/Subscriptions';
@@ -47,6 +49,8 @@ ReactDOM.createRoot(document.getElementById('root')).render(
               <Route path="/dashboard" element={<Dashboard />} />
               <Route path="/transactions" element={<Transactions />} />
               <Route path="/budgets" element={<Budgets />} />
+              <Route path="/trips" element={<Trips />} />
+              <Route path="/trips/:id" element={<TripDetail />} />
               <Route path="/analytics" element={<Analytics />} />
               <Route path="/savings" element={<SavingsGoals />} />
               <Route path="/subscriptions" element={<Subscriptions />} />

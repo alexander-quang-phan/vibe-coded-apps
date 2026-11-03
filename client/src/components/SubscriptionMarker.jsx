@@ -90,6 +90,8 @@ export function SubscriptionMarker({
   noteEditable = true,
   onChangeNote,
   onDetected,
+  // Phase 18: this expense is on a trip, so the Track choice mentions it comes off.
+  onTrip = false,
 }) {
   const api = useApi();
   const [cadence, setCadence] = useState(null);
@@ -345,6 +347,11 @@ export function SubscriptionMarker({
       ) : (
         <p className="text-xs text-muted-foreground">How often is it charged?</p>
       )}
+      {cadence && (onTrip || [...(data?.likely ?? []), ...(data?.maybe ?? [])].some((c) => c.tripId && isTicked(c.id))) ? (
+        <p className="text-xs text-muted-foreground">
+          A subscription is home spending, so anything linked here comes off its trip.
+        </p>
+      ) : null}
     </div>
   );
 }

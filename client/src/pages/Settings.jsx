@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
+import { useTrips } from '@/hooks/useTrips';
 import { Check } from 'lucide-react';
 import { Card, CardContent } from '@/components/ui/card';
 import {
@@ -41,6 +42,8 @@ export default function Settings() {
   const api = useApi();
   const queryClient = useQueryClient();
   const { user, signOut } = useAuth();
+  const { data: tripsData } = useTrips();
+  const keepOutTrips = (tripsData?.trips ?? []).filter((t) => t.keepOutOfMonthly && !t.archivedAt).length;
 
   const { data, isLoading } = useQuery({ queryKey: ['me'], queryFn: () => api.get('/api/me') });
   // `|| !data` matters more here than anywhere: offline, TanStack pauses the
@@ -199,6 +202,13 @@ export default function Settings() {
                     Track gifts, trips and one-offs outside your monthly budget. Off by
                     default — flip it on and a star appears in Quick-Add.
                   </p>
+                  {keepOutTrips > 0 ? (
+                    <p className="text-xs text-amber-600 dark:text-amber-400">
+                      {specialEnabled
+                        ? 'Turning this off would count your trip spending in your monthly budgets again.'
+                        : 'While this is off, your trip spending counts in your monthly budgets.'}
+                    </p>
+                  ) : null}
                 </div>
                 <button
                   id="special-expenses"

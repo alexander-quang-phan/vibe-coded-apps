@@ -23,6 +23,7 @@ const MONEY_KEYS = [
   'budgets',
   'affordability',
   'special-groups',
+  'trips',
   'subscriptions',
   'wins',
   'categories',

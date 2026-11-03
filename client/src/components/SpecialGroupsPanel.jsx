@@ -18,7 +18,7 @@ import { cn } from '@/lib/utils';
  * optional, so without it the rows would quietly fail to add up to the month's
  * special spend and the user would have no way to tell.
  */
-export function SpecialGroupsPanel({ currency, specialThisMonth = 0 }) {
+export function SpecialGroupsPanel({ currency, specialThisMonth = 0, specialOnTripsThisMonth = 0 }) {
   const api = useApi();
   const [open, setOpen] = useState(false);
 
@@ -26,7 +26,8 @@ export function SpecialGroupsPanel({ currency, specialThisMonth = 0 }) {
     queryKey: ['special-groups'],
     queryFn: () => api.get('/api/special-groups'),
   });
-  const groups = data?.groups ?? [];
+  // An archived group with nothing left in it was converted into a trip: no use here.
+  const groups = (data?.groups ?? []).filter((g) => !g.archivedAt || g.count > 0);
 
   // Nothing to show and nothing to explain — stay out of the way entirely.
   if (groups.length === 0 && specialThisMonth === 0) return null;
@@ -63,8 +64,9 @@ export function SpecialGroupsPanel({ currency, specialThisMonth = 0 }) {
           <div className="mt-3 space-y-1 border-t border-border/60 pt-3">
             {active.length === 0 && archived.length === 0 ? (
               <p className="text-xs text-muted-foreground">
-                No groups yet — tick "Special expense" when logging one and you can file it under a
-                trip or occasion.
+                No groups yet — tick "Special expense" when logging one and you can file it under an
+                occasion. Going away?{' '}
+                <Link to="/trips" className="font-medium text-primary hover:underline">Give it its own trip →</Link>
               </p>
             ) : null}
 
@@ -98,6 +100,16 @@ export function SpecialGroupsPanel({ currency, specialThisMonth = 0 }) {
                 </span>{' '}
                 of special spend this month
                 {groupedTotal > 0 ? ' · group totals above are lifetime, not monthly' : ''}
+              </p>
+            ) : null}
+            {/* So the hero chip, this panel and the trip card can always be reconciled. */}
+            {specialOnTripsThisMonth > 0 ? (
+              <p className="px-2 text-[11px] text-muted-foreground">
+                <span className="nums font-medium text-foreground">
+                  {formatMoney(specialOnTripsThisMonth, currency)}
+                </span>{' '}
+                of this month's special spend is on trips{' '}
+                <Link to="/trips" className="font-medium text-primary hover:underline">→ Trips</Link>
               </p>
             ) : null}
           </div>

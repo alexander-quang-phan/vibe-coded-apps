@@ -28,12 +28,34 @@ export function runSubscriptionAction(api, transactionId, action) {
   throw new Error(`Unknown subscription action: ${action.type}`);
 }
 
-/** The success toast for an action: { title, description }. */
-export function subscriptionActionMessage(action) {
+/**
+ * The success toast for an action: { title, description }. `result` is the server's
+ * answer: a subscription is home spending, so linking a charge takes it off any trip.
+ */
+export function subscriptionActionMessage(action, result = null) {
   if (action.type === 'track') {
-    return { title: 'Tracking it as a subscription 🔁', description: 'See it on Subscriptions.' };
+    if (result?.unstarFailed > 0) {
+      return {
+        title: 'Tracked as a subscription',
+        description: `But ${result.unstarFailed} ${result.unstarFailed === 1 ? 'charge is' : 'charges are'} still starred. Un-star them in Transactions.`,
+      };
+    }
+    return {
+      title: 'Tracking it as a subscription 🔁',
+      description: result?.leftTrip > 0
+        ? 'A subscription is home spending, so it came off its trip.'
+        : 'See it on Subscriptions.',
+    };
   }
   if (action.type === 'attach') {
+    if (result?.leftTrip) {
+      return {
+        title: action.reactivate ? `${action.label} is back 🔁` : `Added to ${action.label} 🔁`,
+        description: result.unstarred
+          ? 'A subscription is home spending, so it came off its trip and counts in your monthly budget.'
+          : 'A subscription is home spending, so it came off its trip.',
+      };
+    }
     return action.reactivate
       ? { title: `${action.label} is back 🔁`, description: 'Marked active and added this charge.' }
       : { title: `Added to ${action.label} 🔁`, description: 'Its monthly cost follows this charge if it is the newest.' };
