@@ -16,7 +16,7 @@ import { Input } from '@/components/ui/input';
 import { Skeleton } from '@/components/ui/skeleton';
 import { QuickAddButton } from '@/components/QuickAddButton';
 import { TransactionEditDialog } from '@/components/TransactionEditDialog';
-import { TripEditor } from '@/components/TripEditor';
+import { TripEditor, noticeSpecialTurnedOn } from '@/components/TripEditor';
 import { useApi } from '@/hooks/useApi';
 import { celebrateGoalCompleted } from '@/lib/confetti';
 import { formatDate, formatMoney } from '@/lib/format';
@@ -266,8 +266,9 @@ export default function TripDetail() {
 
   const archive = useMutation({
     mutationFn: (archived) => api.patch(`/api/trips/${id}`, { archived }),
-    onSuccess: (_res, archived) => {
+    onSuccess: (res, archived) => {
       invalidateMoney(queryClient);
+      noticeSpecialTurnedOn(res);
       toast.success(archived ? 'Trip archived' : 'Trip restored', {
         description: archived ? 'Its expenses and figures stay. Quick Add won’t tag it any more.' : undefined,
       });

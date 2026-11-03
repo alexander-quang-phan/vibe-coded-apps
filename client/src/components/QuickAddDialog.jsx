@@ -48,9 +48,11 @@ export function QuickAddDialog({
   simpleMode = false,
   specialEnabled = false,
   // Opens the dialog pre-dated to another month. Used by the Analytics average
-  // card to backfill a month with nothing logged. Defaults to today, so every
-  // existing caller is unaffected.
-  initialDate = todayISO(),
+  // card to backfill a month with nothing logged. Left undefined it means today,
+  // read when the dialog OPENS. A `= todayISO()` default here changed value at
+  // midnight, which re-ran the reset below under an open dialog: the keystroke was
+  // wiped, and a foreign entry was left holding a rate of 1 (BUGS-FIXED 2026-11-03).
+  initialDate,
   // Phase 18: opened from a trip's own page. Attached whatever the date; only ✕ or the
   // chooser removes it, so a March flight can be logged from the trip it belongs to.
   presetTripId = null,
@@ -62,7 +64,7 @@ export function QuickAddDialog({
   const [type, setType] = useState('expense');
   const [amountStr, setAmountStr] = useState('');
   const [description, setDescription] = useState('');
-  const [date, setDate] = useState(initialDate);
+  const [date, setDate] = useState(initialDate ?? todayISO());
   const [showMore, setShowMore] = useState(false);
   const [freeformText, setFreeformText] = useState('');
   const [parseError, setParseError] = useState(null);
@@ -89,11 +91,15 @@ export function QuickAddDialog({
   const [currencyTouched, setCurrencyTouched] = useState(false);
   const [currencyDeclined, setCurrencyDeclined] = useState(false);
   const [rememberedOn, setRememberedOn] = useState(null); // the date of a remembered rate in use
+  // Bumped by every reset, so the rate effect always runs again after one, even when the
+  // currency it depends on comes out the same.
+  const [resetCount, setResetCount] = useState(0);
   const amountRef = useRef(null);
   const freeformRef = useRef(null);
   // The reset and the effects after it run in one commit and share one render's closure,
   // so an effect in that commit would read the previous entry's amount and flags.
   const justReset = useRef(false);
+  const skipStaleRate = useRef(false);
   // For what happens later than the render that started it: a rate that fails after
   // Alex has typed must see what he typed, or £4,500 forints (the Phase 12 bug class).
   const latest = useRef({});
@@ -119,11 +125,12 @@ export function QuickAddDialog({
       setType('expense');
       setAmountStr('');
       setDescription('');
-      setDate(initialDate);
+      const openDate = initialDate ?? todayISO();
+      setDate(openDate);
       // Auto-open the advanced section when the date is not today, so a pre-dated
       // add is never invisible. Same rule as the AI parser below, which already
       // does this when it moves the date off today.
-      setShowMore(initialDate !== todayISO());
+      setShowMore(openDate !== todayISO());
       setFreeformText('');
       setParseError(null);
       setSuggestedCategoryId(null);
@@ -139,13 +146,14 @@ export function QuickAddDialog({
       // this effect is never keyed on query data.
       const seedTag = tagFor({
         trips: queryClient.getQueryData(['trips'])?.trips,
-        date: initialDate,
+        date: openDate,
         type: 'expense',
         presetTripId,
       });
       const seeded = seedCurrency({ stop: seedTag?.stop, base: currency }) ?? currency;
       setEntryCurrency(seeded);
       justReset.current = true;
+      skipStaleRate.current = true;
       latest.current = {
         amountTyped: false,
         armed: false,
@@ -153,8 +161,11 @@ export function QuickAddDialog({
         stopCurrency: seedTag?.stop?.currency ?? null,
         rateTouched: false,
       };
-      setRate('1');
-      setRateState('idle');
+      // A rate of 1 is only ever true of the home currency. It passes the rate gate, so
+      // leaving it under a foreign currency would log 4,500 forints as £4,500.
+      setRate(seeded === currency ? '1' : '');
+      setRateState(seeded === currency ? 'idle' : 'loading');
+      setResetCount((n) => n + 1);
       setTimeout(() => amountRef.current?.focus(), 80);
     }
   }, [open, initialDate, currency, presetTripId, queryClient]);
@@ -185,6 +196,12 @@ export function QuickAddDialog({
   const isForeign = entryCurrency !== currency;
   useEffect(() => {
     if (!open) return;
+    // The commit the reset ran in still has the previous entry's currency in this closure.
+    // resetCount has changed, so this runs again next commit with the right one.
+    if (skipStaleRate.current) {
+      skipStaleRate.current = false;
+      return;
+    }
     if (!isForeign) {
       setRate('1');
       setRateState('idle');
@@ -238,7 +255,7 @@ export function QuickAddDialog({
     return () => {
       cancelled = true;
     };
-  }, [open, isForeign, entryCurrency, currency, api]);
+  }, [open, isForeign, entryCurrency, currency, api, resetCount]);
 
   useEffect(() => {
     if (mode === 'freeform') {
@@ -818,7 +835,7 @@ export function QuickAddDialog({
                 handleSimpleLog never sends them, so showing them let a choice be
                 ticked and silently thrown away (BUGS-FIXED.md, 2026-11-01). */}
             {simpleMode ? (
-              initialDate !== todayISO() ? dateField : null
+              initialDate && initialDate !== todayISO() ? dateField : null
             ) : (
               <div>
                 <button
@@ -839,6 +856,13 @@ export function QuickAddDialog({
                 {showMore ? (
                   <div className="mt-3 space-y-3">
                     {dateField}
+                    {/* Ticked before the date moved into a trip. They come back with ✕. */}
+                    {attached && type === 'expense' && (isSpecial || recurringInterval !== null) ? (
+                      <p className="text-xs text-amber-600 dark:text-amber-400">
+                        On a trip, “Special” and “Repeat this” don’t apply, so they’re off for this one.
+                      </p>
+                    ) : null}
+
                     {/* Outside a trip's dates, the way to attach one by hand. */}
                     {type === 'expense' && !attached ? (
                       <TripPicker

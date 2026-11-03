@@ -651,6 +651,10 @@ let tripCategoryBudgets = [];
 
 /** routes/transactions.js resolveTripWrite, over the in-memory rows. */
 function mockTripWrite(existing, args) {
+  // The route's Zod schema refuses these before anything else looks at them.
+  for (const id of [args.tripId, args.tripStopId]) {
+    if (id && !MOCK_UUID_RE.test(id)) return { status: 400, error: 'Invalid transaction' };
+  }
   const resultingTrip = args.tripId !== undefined ? args.tripId : existing?.trip_id ?? null;
   return deriveTripWrite({
     ...args,
@@ -888,11 +892,12 @@ app.get('/api/trips/:id', (req, res) => {
 });
 
 app.patch('/api/trips/:id', (req, res) => {
-  const trip = mockTripFrom(req);
-  if (!trip) return res.status(404).json({ error: 'Trip not found' });
+  if (!MOCK_UUID_RE.test(req.params.id)) return res.status(404).json({ error: 'Trip not found' });
   const parsed = tripPatchSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: 'Invalid update', details: parsed.error.flatten() });
   const body = parsed.data;
+  const trip = mockTripFrom(req);
+  if (!trip) return res.status(404).json({ error: 'Trip not found' });
 
   const existingStops = mockStopsOf(trip.id);
   const existingBudgets = mockBudgetsOf(trip.id);

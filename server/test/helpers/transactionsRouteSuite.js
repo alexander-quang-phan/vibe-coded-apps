@@ -923,4 +923,33 @@ export function runTransactionsRouteSuite(phase) {
       assert.ok(!JSON.stringify(body).includes('_enc'));
     });
   });
+
+  test(`${label} CRITICAL: another user's transaction can't be edited, put on a trip, or deleted`, async () => {
+    const { encodeWrite } = await import('../../lib/encryptionCodec.js');
+    const THEIR_TX = '33333333-3333-4333-8333-333333333399';
+    const tables = await tripTables();
+    tables.transactions.push({
+      id: THEIR_TX, user_id: OTHER_USER, category_id: CAT, type: 'expense', date: '2026-10-13',
+      is_special: false, special_group_id: null, is_recurring: false, recurrence_id: null,
+      trip_id: null, trip_stop_id: null, original_currency: null, fx_rate: null, created_at: '2026-10-13T10:00:00Z',
+      ...encodeWrite('transactions', OTHER_USER, { amount: 99, description: 'Theirs', original_amount: null }, phase),
+    });
+    const { db, http } = await boot(tables);
+    try {
+      const theirs = () => JSON.stringify(db.store.transactions.find((t) => t.id === THEIR_TX));
+      const before = theirs();
+      assert.equal((await http.send('PATCH', `/${THEIR_TX}`, { tripId: KEEP })).status, 404);
+      assert.equal(theirs(), before);
+      await http.send('DELETE', `/${THEIR_TX}`);
+      assert.equal(theirs(), before, 'still there');
+
+      // ...and writing my own row writes only my row.
+      assert.equal((await http.send('PATCH', `/${TX_ID}`, { tripId: KEEP, description: 'Mine' })).status, 200);
+      assert.equal(theirs(), before);
+      assert.equal((await http.send('DELETE', `/${TX_ID}`)).status, 204);
+      assert.equal(theirs(), before);
+    } finally {
+      await http.close();
+    }
+  });
 }

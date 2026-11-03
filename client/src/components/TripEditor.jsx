@@ -20,6 +20,12 @@ import { currencyOptions } from '@/lib/fx';
 import { invalidateMoney } from '@/lib/invalidate';
 import { tripDates } from '@/lib/trips';
 
+/** The Special setting turned on as a side effect of saving a trip: never silently. */
+export function noticeSpecialTurnedOn(res) {
+  if (!res?.specialEnabledNow) return;
+  toast('Special expenses is on now', { description: 'Starred spending stays out of your monthly budgets.' });
+}
+
 let nextKey = 0;
 const rowKey = () => `row-${(nextKey += 1)}`;
 
@@ -148,9 +154,7 @@ export function TripEditor({
     },
     onSuccess: (res) => {
       invalidateMoney(queryClient);
-      if (res?.specialEnabledNow) {
-        toast('Special expenses is on now', { description: 'Trip spending stays out of your monthly budgets.' });
-      }
+      noticeSpecialTurnedOn(res);
       if (fromGroup) {
         toast.success(`${res?.moved ?? 0} expenses moved to ${res?.trip?.name}`, {
           description: res?.groupArchived === false ? 'Its group is empty now and can be archived by hand.' : undefined,
@@ -161,17 +165,21 @@ export function TripEditor({
       onOpenChange(false);
       onSaved?.(res?.trip);
     },
-    onError: (err) => {
+    onError: async (err) => {
       invalidateMoney(queryClient);
       // A 4xx was refused before anything was written, so the form is still right to fix.
-      // Anything else may have saved part-way. Reopening seeds from the server, where any
-      // new stops now have ids, so saving again can't insert them twice.
-      if (trip && !(err?.status >= 400 && err?.status < 500)) {
-        toast.error('Some changes may have saved', { description: 'Open the trip to check, then save again.' });
-        onOpenChange(false);
+      if (err?.status >= 400 && err?.status < 500) {
+        toast.error(err?.message || 'Couldn’t save the trip');
         return;
       }
-      toast.error(err?.message || 'Couldn’t save the trip');
+      // Anything else may have saved, or part-saved, with only the answer lost. So no
+      // retry from this form: a second create would make a second trip, and a second edit
+      // would insert new stops twice. Waiting for the refetch means reopening seeds from
+      // what actually saved, where any new stops now have ids.
+      if (trip) await queryClient.refetchQueries({ queryKey: ['trips', trip.id] });
+      if (trip) toast.error('Some changes may have saved', { description: 'Check the trip, then save again if you need to.' });
+      else toast.error('It may have saved', { description: 'Check Trips before you try again.' });
+      onOpenChange(false);
     },
   });
 

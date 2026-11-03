@@ -15,6 +15,16 @@ After fixing any real bug, append one row: what it was, why it mattered, how it 
 
 **How it was fixed.** The flag clears when the dialog closes, not when it opens, because an effect running in the opening commit would still see the old value. Moved with the dialog into `TransactionEditDialog.jsx`. Found by reading, not reproduced in the running app, and the client has no test that pins it.
 
+## 2026-11-03 — Phase 18's review: a midnight rate bug, and tests that wouldn't notice a missing filter (caught before merge)
+
+**What they were.** (1) **P1.** `QuickAddDialog`'s `initialDate = todayISO()` default changed value at midnight, which re-ran the reset effect under an open dialog: the keystroke was wiped and the rate set to 1. Phase 18 had kept the currency across that reset (a foreign stop still wanted HUF), so the rate effect's dependencies didn't change and it never refetched. Typing 4500 then showed "Logs as £4,500.00", and two taps stored 4,500 forints as £4,500. Before Phase 18 the reset went back to home currency, so this path was new. (2) Undoing a trip pick in the Edit dialog left the form's group cleared, so Save dropped the row out of a group it never left. (3) Archive and Unarchive ignored `specialEnabledNow`, so the Special setting could turn on with no word to Alex. (4) A create whose response was lost invited a retry from the same form, which made a second trip. (5) A failed clean-up after a failed create was swallowed by `.catch(() => {})`, leaving an orphan trip with nothing in the logs. **Also:** a repeated `?q=` was a 500, and "Repeat this" ticked before the date moved into a trip was dropped with no word.
+
+**Why it mattered.** (1) is the Phase 12 bug class: a foreign figure stored as home currency. The line on screen was right there, but one wrong row skews every total on the account. My tests and my click-through both missed it, because neither crossed midnight with the dialog open.
+
+**How it was fixed.** (1) Both causes. `initialDate` is left undefined and read when the dialog opens, so midnight can't re-run the reset (an entry started before midnight now keeps that day's date, and the digit). And a foreign entry can never hold a rate of 1: the reset leaves it blank and loading, and a `resetCount` dependency makes the rate effect always run again. Proved by replaying the reviewer's reproduction: it went from `fxRate:1` to `fxRate:0.0021`. (2) Undoing restores the group. (3) Both paths show the toast. (4) Any non-4xx failure closes the form and says to check first; it waits for the refetch, so reopening reads what actually saved. (5) It's logged, and pinned by a test. Q for Alex: should merely archiving a trip turn the setting on at all? The spec says any write does.
+
+**The lesson about my tests.** The reviewer deleted each `.eq/.is/.in/.not` filter in `routes/trips.js`, one at a time: 38 of 66 deletions left the suite green, including the one that stops `DELETE ?expenses=count` un-starring every expense the user has. The code was right, but a regression wouldn't have been caught. **A test with one user's rows cannot prove a filter works.** Fixed by planting bystanders (another user's rows under my ids, another trip's, another group's) and re-running the sweep until only redundant filters survived: 57 of 69 caught, and the other 12 are second filters on an already-checked id, plus one that only saves work. Check for this by name: when a route scopes a write, delete the filter and see whether a test fails.
+
 ## 2026-11-01 — Simple mode showed Special / "Repeat this" on a pre-dated add, then threw the choice away
 
 **What it was.** `QuickAddDialog` hid its details panel in simple mode only when `initialDate ===
@@ -412,6 +422,7 @@ These failure modes have each produced more than one bug. Check for them by name
    money total with no way back. A duplicate is visible and fixable; a hide is not. So anything that changes
    what the user sees without asking (hiding, refusing, merging) must rest on an exact, user-given
    identifier (the note a subscription was marked with), and everything fuzzier must be a question.
+9. **A green suite that has only one user in it.** (Phase 18, 2026-11-03.) Route tests with no rows belonging to anyone else can't notice a missing `.eq('user_id', …)`, and the service role means nothing else will. Plant bystanders; prove it by deleting the filter.
 8. **UI state reset by an effect keyed on query data.** (Phase 17, three times in two days.) A refetch
    for a new query key makes `data` undefined first, so `useEffect(() => reset(), [data?.x])` fires twice
    and wipes what Alex chose — "different subscription", unticked charges, the final/back answer. Never

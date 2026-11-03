@@ -221,7 +221,8 @@ const UNTAGGED_LIMIT = 200;
 
 /** Newest first, then filtered by `q` on the note, in the two lists "Add expenses" shows. */
 export function splitUntagged(rows, trip, q) {
-  const needle = (q ?? '').trim().toLowerCase();
+  // Express hands back an array for ?q=a&q=b.
+  const needle = (typeof q === 'string' ? q : '').trim().toLowerCase();
   const shown = rows
     .filter((r) => !needle || (r.description ?? '').toLowerCase().includes(needle))
     .sort((a, b) => (a.date === b.date ? (a.id < b.id ? 1 : -1) : a.date < b.date ? 1 : -1));

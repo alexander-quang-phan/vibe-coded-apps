@@ -24,6 +24,8 @@ const NAPLES = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb2';
 const THEIR_STOP = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb3';
 const LISBON = 'cccccccc-cccc-4ccc-8ccc-ccccccccccc1';
 const THEIR_GROUP = 'cccccccc-cccc-4ccc-8ccc-ccccccccccc2';
+const OTHER_GROUP = 'cccccccc-cccc-4ccc-8ccc-ccccccccccc3';
+const SPY_STOP = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb9';
 const REC = 'dddddddd-dddd-4ddd-8ddd-ddddddddddd1';
 const tid = (n) => `33333333-3333-4333-8333-${String(n).padStart(12, '0')}`;
 
@@ -68,6 +70,10 @@ async function seed(phase, { specialOn = false } = {}) {
       stop(NAPLES, U, ITALY, 'Naples', day(2), day(5), null, null),
       stop(ROME, U, ITALY, 'Rome', day(-2), day(1), 500, 'EUR'),
       stop(THEIR_STOP, OTHER, THEIR_TRIP, 'Hidden', day(-2), day(5), null, null),
+      // Another user's rows planted under MY ids. Nothing real looks like this. It's here so
+      // a query that loses its .eq('user_id', …) does visible damage in these tests, because
+      // the service role bypasses RLS and nothing else would stop it.
+      stop(SPY_STOP, OTHER, ITALY, 'Spy stop', day(-2), day(5), null, null),
     ],
     trip_category_budgets: [
       {
@@ -77,6 +83,10 @@ async function seed(phase, { specialOn = false } = {}) {
       {
         id: 'b2', user_id: U, trip_id: ITALY, category_id: FUN, created_at: '2026-10-01T10:00:01Z',
         ...encodeWrite('trip_category_budgets', U, { amount_limit: 100 }, phase),
+      },
+      {
+        id: 'spy-budget', user_id: OTHER, trip_id: ITALY, category_id: FUN, created_at: '2026-10-01T10:00:02Z',
+        ...encodeWrite('trip_category_budgets', OTHER, { amount_limit: 999 }, phase),
       },
     ],
     transactions: [
@@ -93,6 +103,10 @@ async function seed(phase, { specialOn = false } = {}) {
       tx(11, 5, day(-1), 'Their coffee', { user_id: OTHER }),
       tx(12, 12, '2026-03-02', 'Skye ferry', { trip_id: PAST }),
       tx(13, 7, day(-1), 'In a group', { special_group_id: LISBON, is_special: true }),
+      tx(14, 8, day(9), 'After the trip'),
+      tx(15, 6, '2026-07-02', 'Another group', { special_group_id: OTHER_GROUP, is_special: true }),
+      tx(20, 500, day(-1), 'Spy on my trip', { user_id: OTHER, trip_id: ITALY, trip_stop_id: NAPLES, is_special: true }),
+      tx(21, 500, '2026-07-03', 'Spy in my group', { user_id: OTHER, special_group_id: LISBON, is_special: true }),
     ],
     categories: [
       cat(FOOD, U, 'Food', 'expense'),
@@ -100,11 +114,22 @@ async function seed(phase, { specialOn = false } = {}) {
       cat(SALARY, U, 'Salary', 'income'),
       cat(THEIR_CAT, OTHER, 'Theirs', 'expense'),
     ],
-    special_groups: [group(LISBON, U, 'Lisbon weekend'), group(THEIR_GROUP, OTHER, 'Theirs')],
-    user_stats: [{
-      user_id: U, currency: 'GBP', timezone: 'UTC', special_expenses_enabled: specialOn,
-      ...encodeWrite('user_stats', U, { monthly_limit: null }, phase),
-    }],
+    special_groups: [
+      group(LISBON, U, 'Lisbon weekend'),
+      group(THEIR_GROUP, OTHER, 'Theirs'),
+      group(OTHER_GROUP, U, 'Another group of mine'),
+    ],
+    // Another user's first, so a read that loses its user filter picks up the wrong one.
+    user_stats: [
+      {
+        user_id: OTHER, currency: 'VND', timezone: 'UTC', special_expenses_enabled: false,
+        ...encodeWrite('user_stats', OTHER, { monthly_limit: null }, phase),
+      },
+      {
+        user_id: U, currency: 'GBP', timezone: 'UTC', special_expenses_enabled: specialOn,
+        ...encodeWrite('user_stats', U, { monthly_limit: null }, phase),
+      },
+    ],
   };
 }
 
@@ -140,6 +165,7 @@ export function runTripsRouteSuite(phase) {
   }
 
   const row = (db, n) => db.store.transactions.find((t) => t.id === tid(n));
+  const myStats = (db) => db.store.user_stats.find((u) => u.user_id === U);
   const clean = (body) => {
     const json = JSON.stringify(body);
     for (const forbidden of ['_enc', 'v2:', '_hmac', 'user_id', U]) {
@@ -369,7 +395,7 @@ export function runTripsRouteSuite(phase) {
       assert.equal(chf.status, 201);
     });
     const tables = await seed(phase);
-    tables.user_stats[0].currency = 'VND';
+    tables.user_stats.find((u) => u.user_id === U).currency = 'VND';
     await run(async (_db, http) => {
       const home = await http.send('POST', '/', newTrip({
         stops: [{ name: 'Hanoi', startDate: day(10), endDate: day(11), currency: 'VND' }],
@@ -382,7 +408,7 @@ export function runTripsRouteSuite(phase) {
     await run(async (db, http) => {
       const { body } = await http.send('POST', '/', newTrip({ keepOutOfMonthly: true }));
       assert.equal(body.specialEnabledNow, true);
-      assert.equal(db.store.user_stats[0].special_expenses_enabled, true);
+      assert.equal(myStats(db).special_expenses_enabled, true);
     });
   });
 
@@ -390,7 +416,7 @@ export function runTripsRouteSuite(phase) {
     await run(async (db, http) => {
       const { body } = await http.send('POST', '/', newTrip({ keepOutOfMonthly: false }));
       assert.equal(body.specialEnabledNow, false);
-      assert.equal(db.store.user_stats[0].special_expenses_enabled, false);
+      assert.equal(myStats(db).special_expenses_enabled, false);
     });
     await run(async (_db, http) => {
       const { body } = await http.send('POST', '/', newTrip({ keepOutOfMonthly: true }));
@@ -481,7 +507,7 @@ export function runTripsRouteSuite(phase) {
   test(`${label} PATCH: omitting categoryBudgets leaves them alone (simple mode)`, async () => {
     await run(async (db, http) => {
       await http.send('PATCH', `/${ITALY}`, { name: 'Italia' });
-      assert.equal(db.store.trip_category_budgets.filter((b) => b.trip_id === ITALY).length, 2);
+      assert.equal(db.store.trip_category_budgets.filter((b) => b.trip_id === ITALY && b.user_id === U).length, 2);
     });
   });
 
@@ -601,7 +627,7 @@ export function runTripsRouteSuite(phase) {
     await run(async (db, http) => {
       const { body } = await http.send('PATCH', `/${ITALY}`, { name: 'Italia' });
       assert.equal(body.specialEnabledNow, true);
-      assert.equal(db.store.user_stats[0].special_expenses_enabled, true);
+      assert.equal(myStats(db).special_expenses_enabled, true);
     });
   });
 
@@ -609,10 +635,10 @@ export function runTripsRouteSuite(phase) {
     await run(async (db, http) => {
       const { body } = await http.send('PATCH', `/${PAST}`, { name: 'Skye and Mull' });
       assert.equal(body.specialEnabledNow, false);
-      assert.equal(db.store.user_stats[0].special_expenses_enabled, false);
+      assert.equal(myStats(db).special_expenses_enabled, false);
       const flipped = await http.send('PATCH', `/${ITALY}`, { keepOutOfMonthly: false });
       assert.equal(flipped.body.specialEnabledNow, false);
-      assert.equal(db.store.user_stats[0].special_expenses_enabled, false);
+      assert.equal(myStats(db).special_expenses_enabled, false);
     });
   });
 
@@ -776,7 +802,7 @@ export function runTripsRouteSuite(phase) {
       assert.equal(body.moved, 3);
       assert.equal(body.groupArchived, true);
       assert.equal(body.specialEnabledNow, true, 'the setting rule holds here too');
-      assert.equal(db.store.user_stats[0].special_expenses_enabled, true);
+      assert.equal(myStats(db).special_expenses_enabled, true);
       assert.equal(body.trip.sourceGroupId, LISBON);
       assert.equal(body.trip.spent, 123.5);
       for (const n of [4, 5, 13]) {
@@ -869,5 +895,222 @@ export function runTripsRouteSuite(phase) {
     } finally {
       await http.close();
     }
+  });
+  // --- what each write must NOT touch ------------------------------------------------
+  //
+  // The filters are the only thing between one request and every row in the table, so
+  // each write here is checked against rows it must leave alone: another trip's, another
+  // group's, another user's. A mutation sweep of this file's filters is how these were
+  // chosen: deleting a filter has to fail a test.
+
+  const snapshot = (db, n) => JSON.stringify(row(db, n));
+  const untouched = (db, ids, before) => {
+    for (const n of ids) assert.equal(snapshot(db, n), before[n], `transaction ${n} must not be touched`);
+  };
+  const take = (db, ids) => Object.fromEntries(ids.map((n) => [n, snapshot(db, n)]));
+  const BYSTANDERS = [6, 7, 12, 14, 15, 20, 21];
+
+  for (const mode of ['count', 'keep']) {
+    test(`${label} DELETE ?expenses=${mode} touches only this trip's expenses, and only this trip`, async () => {
+      await run(async (db, http) => {
+        const before = take(db, BYSTANDERS);
+        assert.equal((await http.send('DELETE', `/${ITALY}?expenses=${mode}`)).status, 204);
+        untouched(db, BYSTANDERS, before);
+        assert.deepEqual(db.store.trips.map((t) => t.id).sort(), [PAST, THEIR_TRIP].sort());
+      });
+    });
+  }
+
+  test(`${label} DELETE ?expenses=restore touches only this trip's expenses and only its group`, async () => {
+    const tables = await seed(phase);
+    tables.trips[0].source_group_id = LISBON;
+    for (const g of tables.special_groups) g.archived_at = '2026-10-02T00:00:00Z';
+    await run(async (db, http) => {
+      const before = take(db, BYSTANDERS);
+      assert.equal((await http.send('DELETE', `/${ITALY}?expenses=restore`)).status, 204);
+      untouched(db, BYSTANDERS, before);
+      const archived = (id) => db.store.special_groups.find((g) => g.id === id).archived_at;
+      assert.equal(archived(LISBON), null);
+      assert.ok(archived(OTHER_GROUP), 'only its own group comes back');
+      assert.ok(archived(THEIR_GROUP));
+    }, { tables });
+  });
+
+  test(`${label} a keep-out flip stars only this trip's expenses`, async () => {
+    await run(async (db, http) => {
+      const before = take(db, BYSTANDERS);
+      await http.send('PATCH', `/${ITALY}`, { keepOutOfMonthly: false });
+      untouched(db, BYSTANDERS, before);
+    });
+  });
+
+  test(`${label} a flip leaves another user's row on this trip id alone, with income never starred`, async () => {
+    const tables = await seed(phase);
+    tables.transactions.find((t) => t.id === tid(10)).trip_id = ITALY; // can't happen: a CHECK forbids it
+    await run(async (db, http) => {
+      await http.send('PATCH', `/${ITALY}`, { keepOutOfMonthly: false });
+      await http.send('PATCH', `/${ITALY}`, { keepOutOfMonthly: true });
+      assert.equal(row(db, 10).is_special, false, 'the type filter holds');
+    }, { tables });
+  });
+
+  test(`${label} a PATCH writes only this trip's row, stops and budgets`, async () => {
+    await run(async (db, http) => {
+      const trips = JSON.stringify(db.store.trips.filter((t) => t.id !== ITALY));
+      const stops = JSON.stringify(db.store.trip_stops.filter((s) => s.id !== ROME && s.id !== NAPLES));
+      const budgets = JSON.stringify(db.store.trip_category_budgets.filter((b) => b.user_id !== U));
+      const { status, body } = await http.send('PATCH', `/${ITALY}`, {
+        name: 'Italia',
+        totalBudget: 2000,
+        stops: [{ id: ROME, name: 'Roma', startDate: day(-2), endDate: day(1), budget: 600, currency: 'EUR' }],
+        categoryBudgets: [{ categoryId: FOOD, amount: 250 }],
+      });
+      assert.equal(status, 200, JSON.stringify(body));
+      assert.equal(JSON.stringify(db.store.trips.filter((t) => t.id !== ITALY)), trips);
+      assert.equal(JSON.stringify(db.store.trip_stops.filter((s) => s.id !== ROME && s.id !== NAPLES)), stops);
+      assert.equal(JSON.stringify(db.store.trip_category_budgets.filter((b) => b.user_id !== U)), budgets);
+      // Removing Naples nulls overrides on MY rows only.
+      assert.equal(row(db, 3).trip_stop_id, null);
+      assert.equal(row(db, 20).trip_stop_id, NAPLES, "another user's row keeps its stop");
+    });
+  });
+
+  test(`${label} reads never show another user's stops, budgets or spending under my trip`, async () => {
+    await run(async (_db, http) => {
+      const { body: list } = await http.get('/');
+      const italy = list.trips.find((t) => t.id === ITALY);
+      assert.ok(!italy.stops.some((s) => s.id === SPY_STOP));
+      assert.ok(!italy.categoryBudgets.some((b) => b.id === 'spy-budget'));
+      assert.equal(italy.spent, 288.9, 'their £500 is not in my figures');
+
+      const { body: one } = await http.get(`/${ITALY}`);
+      assert.ok(!one.trip.stops.some((s) => s.id === SPY_STOP));
+      assert.ok(!one.trip.categoryBudgets.some((b) => b.id === 'spy-budget'));
+      assert.equal(one.summary.spent, 288.9);
+      assert.ok(!one.transactions.some((t) => t.description === 'Spy on my trip'));
+    });
+  });
+
+  test(`${label} untagged keeps to its window and to eligible rows, and survives a repeated ?q=`, async () => {
+    await run(async (_db, http) => {
+      const { body } = await http.get(`/${ITALY}/untagged`);
+      const notes = [...body.during, ...body.before].map((t) => t.description);
+      assert.ok(!notes.includes('After the trip'), 'after the end date');
+      assert.ok(!notes.includes('Too old'), 'more than 180 days before');
+      const repeated = await http.get(`/${ITALY}/untagged?q=a&q=b`);
+      assert.equal(repeated.status, 200, 'Express makes this an array');
+    });
+  });
+
+  test(`${label} from-group moves only this group's rows and archives only this group`, async () => {
+    await run(async (db, http) => {
+      const before = take(db, BYSTANDERS);
+      const { status, body } = await http.send('POST', '/from-group', { groupId: LISBON, trip: newTrip() });
+      assert.equal(status, 201, JSON.stringify(body));
+      assert.equal(body.moved, 3);
+      untouched(db, BYSTANDERS, before);
+      const archived = (id) => db.store.special_groups.find((g) => g.id === id).archived_at;
+      assert.ok(archived(LISBON));
+      assert.equal(archived(OTHER_GROUP), null);
+      assert.equal(archived(THEIR_GROUP), null);
+    });
+  });
+
+  test(`${label} a failed clean-up is logged, not swallowed`, async () => {
+    const logged = [];
+    const original = console.error;
+    console.error = (...args) => logged.push(args);
+    try {
+      await run(async (db, http) => {
+        const { status } = await http.send('POST', '/', newTrip({
+          stops: [{ name: 'Madrid', startDate: day(10), endDate: day(11) }],
+        }));
+        assert.equal(status, 500);
+        assert.equal(logged.filter((l) => String(l[0]).includes('clean-up failed')).length, 1);
+        assert.equal(JSON.stringify(logged).includes('Madrid'), false, 'never logs what was typed');
+        assert.equal(JSON.stringify(logged).includes('Spain'), false);
+        assert.equal(db.store.trips.length, 4, 'the orphan the log is warning about');
+      }, {
+        opts: {
+          failOn: (table, op) => (table === 'trip_stops' && op === 'insert') || (table === 'trips' && op === 'delete'),
+        },
+      });
+    } finally {
+      console.error = original;
+    }
+  });
+
+  test(`${label} CRITICAL: turning the Special setting on changes my account only`, async () => {
+    await run(async (db, http) => {
+      await http.send('POST', '/', newTrip({ keepOutOfMonthly: true }));
+      assert.equal(myStats(db).special_expenses_enabled, true);
+      assert.equal(db.store.user_stats.find((u) => u.user_id === OTHER).special_expenses_enabled, false);
+    });
+  });
+
+  test(`${label} income is never counted on a trip, even if a row somehow claims one`, async () => {
+    const tables = await seed(phase);
+    tables.transactions.find((t) => t.id === tid(10)).trip_id = ITALY; // a CHECK forbids this
+    await run(async (_db, http) => {
+      const { body: list } = await http.get('/');
+      assert.equal(list.trips.find((t) => t.id === ITALY).spent, 288.9);
+      const { body: one } = await http.get(`/${ITALY}`);
+      assert.equal(one.summary.spent, 288.9);
+      assert.ok(!one.transactions.some((t) => t.type === 'income'));
+    }, { tables });
+  });
+
+  test(`${label} from-group moves expenses only`, async () => {
+    const tables = await seed(phase);
+    tables.transactions.find((t) => t.id === tid(10)).special_group_id = LISBON; // the route refuses this
+    await run(async (db, http) => {
+      const { body } = await http.send('POST', '/from-group', { groupId: LISBON, trip: newTrip() });
+      assert.equal(body.moved, 3);
+      assert.equal(row(db, 10).trip_id, null, 'a trip on income would fail the database CHECK');
+    }, { tables });
+  });
+
+  test(`${label} GET /:id names exactly its own group, and never another user's`, async () => {
+    const mine = await seed(phase);
+    mine.trips[0].source_group_id = OTHER_GROUP;
+    await run(async (_db, http) => {
+      const { body } = await http.get(`/${ITALY}`);
+      assert.deepEqual(body.sourceGroup, { id: OTHER_GROUP, name: 'Another group of mine' });
+    }, { tables: mine });
+    const forged = await seed(phase);
+    forged.trips[0].source_group_id = THEIR_GROUP;
+    await run(async (_db, http) => {
+      const { body } = await http.get(`/${ITALY}`);
+      assert.equal(body.sourceGroup, null);
+    }, { tables: forged });
+  });
+
+  test(`${label} removing one stop leaves the other stop and overrides on it alone`, async () => {
+    const tables = await seed(phase);
+    tables.transactions.find((t) => t.id === tid(2)).trip_stop_id = ROME;
+    await run(async (db, http) => {
+      const { status } = await http.send('PATCH', `/${ITALY}`, { stops: stopsAs(-2).slice(0, 1) });
+      assert.equal(status, 200);
+      assert.equal(db.store.trip_stops.some((s) => s.id === ROME), true, 'the kept stop survives');
+      assert.equal(db.store.trip_stops.some((s) => s.id === NAPLES), false);
+      assert.equal(row(db, 2).trip_stop_id, ROME, 'an override on the kept stop survives');
+      assert.equal(row(db, 3).trip_stop_id, null);
+    }, { tables });
+  });
+
+  test(`${label} removing a category budget touches this trip's line only`, async () => {
+    const tables = await seed(phase);
+    const { encodeWrite } = await import('../../lib/encryptionCodec.js');
+    tables.trip_category_budgets.push({
+      id: 'past-fun', user_id: U, trip_id: PAST, category_id: FUN, created_at: '2026-03-01T10:00:00Z',
+      ...encodeWrite('trip_category_budgets', U, { amount_limit: 50 }, phase),
+    });
+    await run(async (db, http) => {
+      await http.send('PATCH', `/${ITALY}`, { categoryBudgets: [{ categoryId: FOOD, amount: 200 }] });
+      const ids = db.store.trip_category_budgets.map((b) => b.id);
+      assert.ok(!ids.includes('b2'), 'this trip’s Fun line goes');
+      assert.ok(ids.includes('past-fun'), 'another trip’s Fun line stays');
+      assert.ok(ids.includes('spy-budget'), 'another user’s row stays');
+    }, { tables });
   });
 }

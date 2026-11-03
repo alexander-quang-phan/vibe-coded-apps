@@ -14,7 +14,7 @@ import {
 } from '@/components/ui/dialog';
 import { Skeleton } from '@/components/ui/skeleton';
 import { QuickAddButton } from '@/components/QuickAddButton';
-import { TripEditor } from '@/components/TripEditor';
+import { TripEditor, noticeSpecialTurnedOn } from '@/components/TripEditor';
 import { tripHeadline } from '@/components/TripCard';
 import { useApi } from '@/hooks/useApi';
 import { useTrips } from '@/hooks/useTrips';
@@ -97,8 +97,9 @@ export default function Trips() {
 
   const unarchive = useMutation({
     mutationFn: (id) => api.patch(`/api/trips/${id}`, { archived: false }),
-    onSuccess: () => {
+    onSuccess: (res) => {
       invalidateMoney(queryClient);
+      noticeSpecialTurnedOn(res);
       toast.success('Trip restored');
     },
     onError: (err) => toast.error(err?.message || 'Couldn’t restore the trip'),

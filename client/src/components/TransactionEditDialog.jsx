@@ -213,7 +213,10 @@ export function TransactionEditDialog({
     setTripId(next);
     setTripTouched(true);
     setStopChoice(next === storedTripId ? tx.trip_stop_id ?? null : null);
+    // Undoing the pick gives the group back, or Save would drop the row out of a group
+    // it never meant to leave.
     if (next) setSpecialGroupId(null);
+    else if (next === storedTripId) setSpecialGroupId(tx.special_group_id ?? null);
     if (!specialTouched) {
       setIsSpecial(starAfterTripChange({
         storedTripId, nextTripId: next, storedSpecial: tx.is_special, trips,

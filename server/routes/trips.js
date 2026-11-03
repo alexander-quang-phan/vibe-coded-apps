@@ -179,8 +179,8 @@ async function createTrip(uid, body, sourceGroupId = null) {
       amount_limit: b.amount,
     })));
   } catch (err) {
-    // Best effort, and children cascade: no half-made trip for Alex to find.
-    await deleteTripRow(uid, created.id).catch(() => {});
+    // Children cascade: no half-made trip for Alex to find.
+    await cleanUpTrip(uid, created.id);
     throw err;
   }
   return { tripId: created.id, specialEnabledNow };
@@ -189,6 +189,17 @@ async function createTrip(uid, body, sourceGroupId = null) {
 async function deleteTripRow(uid, id) {
   const { error } = await supabase.from('trips').delete().eq('id', id).eq('user_id', uid);
   if (error) throw error;
+}
+
+/** Best effort after a failed create. If it fails too, the orphan must at least show in the logs. */
+async function cleanUpTrip(uid, tripId) {
+  try {
+    await deleteTripRow(uid, tripId);
+  } catch (err) {
+    console.error('[trips:create] clean-up failed, an empty trip is left behind', {
+      userId: uid, tripId, message: err?.message,
+    });
+  }
 }
 
 /**
@@ -277,7 +288,7 @@ router.post('/from-group', async (req, res, next) => {
       .is('recurrence_id', null)
       .select('id');
     if (moveErr) {
-      await deleteTripRow(uid, made.tripId).catch(() => {});
+      await cleanUpTrip(uid, made.tripId);
       throw moveErr;
     }
 

@@ -1268,6 +1268,34 @@ export function runSubscriptionsRouteSuite(phase) {
     }
   });
 
+  test(`${label} attach: a charge that joined a trip in between is refused, not silently pulled off it`, async () => {
+    const t = await tables({
+      recurrences: [await trackedRec()],
+      transactions: [await txRow({ n: 1, date: '2026-10-03', amount: 10.99, description: 'Netflix' })],
+    });
+    const { db, http } = await boot(t);
+    try {
+      const orig = db.from.bind(db);
+      db.from = (table) => {
+        const q = orig(table);
+        if (table === 'transactions') {
+          const update = q.update;
+          q.update = (payload) => {
+            Object.assign(stored(db, 1), { trip_id: KEEP_TRIP, is_special: true }); // after our read
+            return update(payload);
+          };
+        }
+        return q;
+      };
+      const { status } = await http.send('POST', `/${encodeURIComponent(`manual:${T_REC}`)}/attach`, { transactionId: id(1) });
+      assert.equal(status, 409);
+      assert.equal(stored(db, 1).trip_id, KEEP_TRIP);
+      assert.equal(stored(db, 1).recurrence_id, null);
+    } finally {
+      await http.close();
+    }
+  });
+
   test(`${label} track: linked charges come off their trips; only keep-out rows are un-starred`, async () => {
     const t = await tables({
       transactions: [
