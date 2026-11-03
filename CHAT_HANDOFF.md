@@ -1,14 +1,12 @@
-# Chat Handoff — updated 2026-11-01 (PHASE 17 SHIPPED AND LIVE; trips designed, not built)
+# Chat Handoff — updated 2026-11-03 (PHASE 17 + BUG FIXES LIVE AND ON GITHUB; trips in progress)
 
 ## DUAL-AGENT BATON  (both models: update this the MOMENT you finish work)
-- Current stage:  **Phase 17 shipped to production on 2026-11-01**, in the gated order (017a → main →
-                  trim-api → client), each step verified. Nothing is in flight.
+- Current stage:  **Phase 17 and the 13 Oct bug fixes are live.** Trips is part-built on its own branch
+                  (`claude/confident-northcutt-6cd9f9`), waiting for Alex's answers.
 - Model A is:     Claude Code. Single-model feature work per CLAUDE.md.
-- Up next:        **Alex** — the 2-minute logged-in check (next step 1). Then Phase 18 trips in its own
-                  session (plan first; it needs the full independent-review loop because it edits the
-                  unapplied 9.5 migrations).
-- Last actor did: Claude Code, 2026-11-01 — re-ran 722/722 + client build, applied 017a with Alex's
-                  approval, fast-forwarded main, deployed both projects, verified live, this handoff.
+- Up next:        **Alex** — answer the trips session's questions, and do the logged-in checks (next step 1).
+- Last actor did: Claude Code, 2026-11-03 — merged the weekly-budget and encryption-blocker branches
+                  (747/747, build passes), deployed trim-api then client, verified live, this handoff.
 
 ## Goal
 Alex (13 Oct): (1) trips with a set budget per category and per city; (2) "I don't see a way to mark a
@@ -24,20 +22,26 @@ check everything for me?" → "Yes, do it all" — so Claude ran the database st
 - **Nightly job:** its own select (`cancelled_at is null and auto_log = true and next_run_at <= …`, with the
   full column list) ran clean against the live schema, so the 03:00 UTC cron cannot fail on the new column.
   The "check the logs next morning" step from the 16 Oct checklist is no longer needed.
-- **Code:** `main` = `origin/main` = `827fe62` plus the docs commit for this session.
-- **API:** trim-api deployment `trim-375ms327g…` — `/api/health` 200 (fresh uptime), `/api/subscriptions`
-  401 without login. Encryption env vars still absent (re-checked before deploying).
-- **Client:** `trim-budget-ezswqul8x…` aliased to trim-budget.vercel.app; bundle `index-DTIgFDHz.js`
-  contains "This is a subscription" ×2, "Add a subscription" ×3, "Logs itself" ×1, and still points at
-  trim-api-jade. Login page loads with no console errors.
-- **Rollback, if ever needed:** in Vercel promote trim-api `trim-8bxbhdwgr…` and client
-  `trim-budget-566fimvrc…`, and LEAVE 017a in place (the old API works with it).
-- **Not verified:** a logged-in click-through with real data (Claude can't sign in).
+- **Code:** live code = `main` at `0447d23` (later commits are handoff notes only), and `origin/main` matches.
+- **Pushing:** on 3 Nov `git push` failed because git's osxkeychain helper returned -128 in the Claude session.
+  Alex then said "Use my gh login", so the fixes and this note were pushed with `gh auth git-credential`, set
+  per command; git's saved config is unchanged. If it recurs, ask him again: that OK isn't a standing rule.
+- **API (3 Nov):** trim-api deployment `trim-rly8wvq7h…` — `/api/health` 200 (fresh uptime),
+  `/api/subscriptions` and `POST /api/transactions/parse` 401 without login. Encryption env vars still absent.
+- **Client (3 Nov):** `trim-budget-d5x19bctp…` aliased to trim-budget.vercel.app; bundle `index-CXu4igOF.js`
+  contains `effectiveLimit` and " a week" (0 before), and still points at trim-api-jade.
+- **Rollback, if ever needed:** in Vercel promote trim-api `trim-375ms327g…` and client
+  `trim-budget-8liqaliub…` (the 1 Nov builds). To go back before Phase 17: `trim-8bxbhdwgr…` and
+  `trim-budget-566fimvrc…`. LEAVE 017a in place either way (the old API works with it).
+- **Not verified:** any logged-in click-through with real data (Claude can't sign in): Phase 17, the weekly
+  budget card, and pre-dated Simple-mode Quick Add. All were checked against `dev:mock` and the live bundle.
 - Alex has **no Repeat-this items** in the live DB, so "Logs itself" tags won't show until he makes one.
 - Known limit (documented, not fixed): after a >30% price rise, unattached new-price charges can form a
   second detected row until attached.
 
-**Phase 18 — trips:** spec `docs/superpowers/specs/2026-10-13-trips-design.md` (+ PDF). No code.
+**Phase 18 — trips:** spec `docs/superpowers/specs/2026-10-13-trips-design.md` (+ PDF). Plan and the pure
+date/money logic are on `claude/confident-northcutt-6cd9f9` (not merged, nothing visible in the app yet). Its
+session is waiting for Alex's answers; see that session, not this file, for the questions.
 
 ## Key decisions (and why)
 - **Claude ran the production SQL this time**, because Alex said "Yes, do it all" in chat; with that
@@ -56,38 +60,46 @@ check everything for me?" → "Yes, do it all" — so Claude ran the database st
 - `BUGS-FIXED.md` (read before coding), `BUILD_PLAN.md` 17.11 (shipped) and Phase 18
 
 ## Next steps (in order)
-1. **Alex — 2-minute check, logged in at https://trim-budget.vercel.app:**
+1. **Alex — logged-in check at https://trim-budget.vercel.app:**
    Transactions → pencil on any expense → **Subscription** section → "This is a subscription";
-   Subscriptions → **Add a subscription**; Quick Add with "Repeat this" ticked still saves.
+   Subscriptions → **Add a subscription**; Quick Add with "Repeat this" ticked still saves; a weekly budget
+   on **Budgets** reads "£X a week" and "of £Y this month", and its left/over agrees with the bar.
    Report anything odd (a screenshot is ideal).
-2. **Phase 18 trips**, its own session: plan → re-check the live DB → build → independent review.
+2. **Phase 18 trips** continues in its own session once Alex answers. Before merging, sync with `main`.
 3. Unmerged branches `claude/affectionate-shirley-83720f`, `claude/phase-10-batch-a`,
    `docs/task-6.12-spec-unbuilt` are kept on purpose (their features shipped other ways; see older notes).
 
-## Open bugs — filed 13 Oct as task cards, which EXPIRED unstarted; re-checked 1 Nov, all still in the code
-Task cards expire after 7 days, so this list is the durable record. Re-filed as cards on 1 Nov.
-1. **Weekly budget card shows wrong left/over** — `client/src/pages/Budgets.jsx` ~207 uses the raw
-   weekly `budget.limit` against a month of spend; the bar uses the server's scaled `effectiveLimit`.
-   User-visible. (Read in code, not reproduced.)
-2. **Simple-mode Quick Add drops Special / Repeat on pre-dated adds** — `QuickAddDialog.jsx` ~652 shows
-   the controls; `handleSimpleLog()` never sends them, and the toast still says "Logged as special".
-3. **Backfill may skip half-encrypted rows** — `server/scripts/encrypt-backfill.mjs` ~283
-   `.is(firstEnc, null)`. Unverified; must be settled BEFORE encryption runbook Steps 3–4.
-4. **AI parse route reads categories raw** — `server/routes/transactions.js` ~506; harmless until 019,
-   must be ported to the codec before Part B.
-5. **Stale docs** — FEATURES.md still says "The category tap auto-submits" (it's two taps) and "No FX"
+## Bugs filed 13 Oct (the task cards EXPIRED unstarted — task cards last 7 days, this list is the durable record)
+1. ✅ **Fixed and live 3 Nov** — weekly budget card's of/left/over now use the month-scaled `effectiveLimit`.
+2. ✅ **Fixed and live 1 Nov** — Simple-mode Quick Add dropped Special / Repeat on pre-dated adds.
+3. ✅ **Fixed, on `main` 3 Nov** — backfill skipped half-encrypted rows (it was real). Not yet run on a real
+   database; the runbook PDF still needs regenerating after trips merges.
+4. ✅ **Fixed and live 3 Nov** — AI parse route now reads categories through the codec.
+5. **STILL OPEN: stale docs** — FEATURES.md says "The category tap auto-submits" (it's two taps) and "No FX"
    (Phase 12 added foreign-currency entry); more items in the 13 Oct brief. Docs-only.
 
-**Ordering decision for Alex: trips or encryption first?** The trips spec edits the UNAPPLIED
-018/018a/019 in place. Encryption Part A applies 012/018/018a — doing it first means re-planning the trips
-migrations as new files.
+## Known flaky test — a FALSE ALARM, don't chase it (found 3 Nov)
+**Symptom:** roughly 1 `npm test` run in 25 fails a random route test with `404 !== 200` and a `null` body (seen
+twice in about 50 runs; the one captured was `[phase=dual] PATCH: changing expense↔income…`). A re-run passes.
+**Cause:** `test/helpers/routeHarness.js:197` calls `app.listen(0)`, which binds all addresses. macOS can then
+hand it a port another app already holds on 127.0.0.1 (Cursor holds two here), and the more specific address
+wins, so the request never reaches the test's server. Proven: with two of my own processes, the 127.0.0.1 one
+answered; `listen(0)` was handed one of Cursor's ports 1 time in 6,000. Inferred, not observed: that Cursor sent
+the 404 (no request was sent to it). The route's own 404s are JSON, so a `null` body isn't the route.
+Not a product bug, and it can't happen on Vercel. **Likely one-line fix, not applied or tested:**
+`app.listen(0, '127.0.0.1', …)`. If a failure looks different from this, investigate it properly.
+
+**DECIDED 1 Nov — trips first** (Alex: "Trips first"). The trips spec edits the UNAPPLIED 018/018a/019
+in place, so encryption runbook Steps 1–4 (which apply 012/018/018a) wait until trips is merged and
+deployed.
 
 ## Open questions for Alex
 - Delete the unused `SUPABASE_JWT_SECRET` line from `server/.env`? (pending since 13 Oct)
 - (Carried from 23 Sep) repo public? account-deletion path? rotate service-role key? `RECOVERY.md`?
 
 ## How to resume
-Start a new session in this folder and say: "Read @CHAT_HANDOFF.md and continue with next step 2."
+Trips has its own session; continue it there. Otherwise start a new session in this folder and say:
+"Read @CHAT_HANDOFF.md and continue with next step 2."
 
 ## Previous sessions
 

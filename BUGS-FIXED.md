@@ -7,6 +7,56 @@ After fixing any real bug, append one row: what it was, why it mattered, how it 
 
 ---
 
+## 2026-11-01 — Simple mode showed Special / "Repeat this" on a pre-dated add, then threw the choice away
+
+**What it was.** `QuickAddDialog` hid its details panel in simple mode only when `initialDate ===
+todayISO()`. A pre-dated add (Analytics' empty-month prompt) therefore showed the WHOLE panel —
+Special expense, the special-group picker and "Repeat this" — not just the date it meant to reveal.
+They could be ticked, but `handleSimpleLog()` never sends `isSpecial`, `specialGroupId` or
+`recurring`, so the server saved a plain expense — while the success toast, which reads local state,
+said "Logged as special ⭐". Filed 2026-10-13 as a task card that expired unstarted; still in the code
+on 2026-11-01. Reproduced under `dev:mock`: both ticked → payload had neither, response
+`is_special: false`, `recurrence: null`, toast "Logged as special ⭐".
+
+**Why it mattered.** A choice the user made was discarded without a word, and the toast confirmed
+the opposite of what was stored — the expense counted against the monthly budget it was meant to be
+kept out of, and the "repeat" never repeated.
+
+**How it was fixed.** Option (b), matching FEATURES.md ("simple mode hides every advanced field";
+the empty-month prompt reveals "the date field"): simple mode now renders the date field ALONE on a
+pre-dated add, and nothing on a today add; the details toggle, Special and "Repeat this" never render
+in simple mode. Option (a) — sending the flags from `handleSimpleLog` — was rejected: simple mode
+sends no note, so "Repeat this" would create a no-note schedule in "Other" and pull simple mode into
+Phase 17's one-note-one-kind 409s. Verified in the running dialog: simple pre-dated shows Amount /
+Log / Date only and saves dated 2026-09-01 with "Logged +10 XP"; simple today shows no date; normal
+mode pre-dated still shows Date / Special / Repeat and still sends `isSpecial: true`. **Lesson:** a
+control is a promise that the value will be sent — if a code path can't send it, that path must not
+render it. Hiding by a different condition from the one the submit path uses lets the two drift.
+
+## 2026-11-01 — A weekly budget's card said "over" next to a green bar
+
+**What it was.** `BudgetCard` in `client/src/pages/Budgets.jsx` worked out "of £X", "£X left" and "£X
+over" from the raw `budget.limit`, but the bar uses the server's `percent`, which is measured against
+`effectiveLimit` — the weekly limit scaled to the month (`server/lib/budgetPeriod.js`). `spent` is a whole
+month, so a £50/week Food budget with £150 spent showed "£150.00 of £50.00", a green 70% bar, "You have
+room to breathe." and "£100.00 over" in rose, all on one card. Reproduced under `npm run dev:mock` before
+fixing. The 2026-08-11 fix that added `effectiveLimit` corrected the bar and Ask Trim but never changed the
+card's figures, so the mismatch stayed in the code for almost three months. A code read found it on
+2026-10-13, and the task card for it expired unstarted.
+
+**Why it mattered.** The card contradicted itself, so neither number could be trusted. That is recurring
+shape #1, one number with two definitions: the bar used the scaled limit and the figures used the raw one.
+
+**How it was fixed.** The card now reads `budget.effectiveLimit` for "of", "left" and "over", so all three
+match the bar ("£150.00 of £214.29 this month · £64.29 left"). The raw amount is still shown under the
+category name ("£50.00 a week"), and the Edit dialog still edits it. The route and `devMock.js` already
+returned `effectiveLimit` the same way, so the server was unchanged. FEATURES.md's progress-colour line was
+also wrong (it said amber-300/amber-400, and the code uses amber-200→400 and amber-300→500 gradients, with
+exactly 100% counting as over) and was corrected. Checked in the running UI with the real page under a
+throwaway preview harness: under budget, over budget, phone width, and that monthly cards are unchanged.
+**Lesson:** when a fix adds a corrected field beside an old one, search for every reader of the old field.
+A fix that only reaches some of them leaves the screen disagreeing with itself.
+
 ## 2026-11-01 — Two encryption defects that would have blocked the switch-on (fixed before `dual`)
 
 Both found by a 2026-10-13 code read, filed as cards that expired unstarted, and still in the code on
