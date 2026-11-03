@@ -1,12 +1,10 @@
-# Chat Handoff — updated 2026-11-03 (PHASE 17 + BUG FIXES LIVE; `main` NOT YET PUSHED TO GITHUB; trips in progress)
+# Chat Handoff — updated 2026-11-03 (PHASE 17 + BUG FIXES LIVE AND ON GITHUB; trips in progress)
 
 ## DUAL-AGENT BATON  (both models: update this the MOMENT you finish work)
 - Current stage:  **Phase 17 and the 13 Oct bug fixes are live.** Trips is part-built on its own branch
-                  (`claude/confident-northcutt-6cd9f9`), waiting for Alex's answers. **Local `main` is ahead
-                  of GitHub:** the push failed on 3 Nov (Keychain error -128), so GitHub is behind the live site.
+                  (`claude/confident-northcutt-6cd9f9`), waiting for Alex's answers.
 - Model A is:     Claude Code. Single-model feature work per CLAUDE.md.
-- Up next:        **Alex** — run `git push origin main` in a terminal (Keychain asks him), answer the trips
-                  session's questions, and do the logged-in checks (next step 1).
+- Up next:        **Alex** — answer the trips session's questions, and do the logged-in checks (next step 1).
 - Last actor did: Claude Code, 2026-11-03 — merged the weekly-budget and encryption-blocker branches
                   (747/747, build passes), deployed trim-api then client, verified live, this handoff.
 
@@ -24,9 +22,10 @@ check everything for me?" → "Yes, do it all" — so Claude ran the database st
 - **Nightly job:** its own select (`cancelled_at is null and auto_log = true and next_run_at <= …`, with the
   full column list) ran clean against the live schema, so the 03:00 UTC cron cannot fail on the new column.
   The "check the logs next morning" step from the 16 Oct checklist is no longer needed.
-- **Code:** live code = local `main` (`0447d23`, plus this handoff). `origin/main` is still `1c632d6`: the
-  3 Nov push failed, because git's osxkeychain helper returned -128 in this session. Claude did not switch to
-  another credential without asking.
+- **Code:** live code = `main` at `0447d23` (later commits are handoff notes only), and `origin/main` matches.
+- **Pushing:** on 3 Nov `git push` failed because git's osxkeychain helper returned -128 in the Claude session.
+  Alex then said "Use my gh login", so the fixes and this note were pushed with `gh auth git-credential`, set
+  per command; git's saved config is unchanged. If it recurs, ask him again: that OK isn't a standing rule.
 - **API (3 Nov):** trim-api deployment `trim-rly8wvq7h…` — `/api/health` 200 (fresh uptime),
   `/api/subscriptions` and `POST /api/transactions/parse` 401 without login. Encryption env vars still absent.
 - **Client (3 Nov):** `trim-budget-d5x19bctp…` aliased to trim-budget.vercel.app; bundle `index-CXu4igOF.js`
