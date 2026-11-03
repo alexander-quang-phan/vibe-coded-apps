@@ -200,7 +200,10 @@ total, answer an Ask Trim question, or detect a subscription. So:
   stay exact by decrypting the candidates and re-testing them on the server — so
   the feature is unchanged and only the leakage moved.
 - **Ask Trim still sends decrypted context to Anthropic** per question. Encryption
-  at rest changes nothing about that.
+  at rest changes nothing about that. The same is true of Quick Add's
+  natural-language parser (`POST /api/transactions/parse`): every category name,
+  decrypted, goes into the prompt so the model can pick one — exactly the three
+  columns `id, name, type`, never ciphertext or `user_id`.
 
 ### What is encrypted
 

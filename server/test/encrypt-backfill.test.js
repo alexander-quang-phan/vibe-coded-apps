@@ -4,8 +4,8 @@ import assert from 'node:assert/strict';
 // The backfill imports crypto.js, which needs a key. Set one BEFORE importing.
 process.env.DATA_ENCRYPTION_KEY ||= Buffer.alloc(32, 7).toString('base64');
 
-const { runBackfill, parseArgs, JOBS, PAGE_SIZE } = await import('../scripts/encrypt-backfill.mjs');
-const { decryptField } = await import('../lib/crypto.js');
+const { runBackfill, parseArgs, JOBS, PAGE_SIZE, blindValueFor } = await import('../scripts/encrypt-backfill.mjs');
+const { decryptField, encryptField } = await import('../lib/crypto.js');
 const { fieldKey } = await import('../lib/encryptedFields.js');
 
 /**
@@ -25,8 +25,8 @@ function makeFake(tables, faults = {}) {
     from(table) {
       const rows = tables[table] ?? [];
       const q = {
-        _mode: null, _filters: [], _isNull: null, _gt: null, _limit: null, _patch: null, _range: null,
-        select() { q._mode = 'select'; return q; },
+        _mode: null, _filters: [], _isNull: null, _gt: null, _limit: null, _patch: null, _range: null, _cols: null,
+        select(cols) { q._mode = 'select'; q._cols = cols ?? null; return q; },
         update(patch) { q._mode = 'update'; q._patch = patch; return q; },
         is(col, val) { if (val === null) q._isNull = col; return q; },
         not() { return q; },
@@ -39,10 +39,22 @@ function makeFake(tables, faults = {}) {
 
         _match(r) { return q._filters.every(([c, v]) => r[c] === v); },
 
+        // Hand back only the columns the query asked for, as PostgREST does. Without
+        // this, a scan that forgot to SELECT an `_enc` column would still see it here
+        // and pass, while in production it reads `undefined` for every row.
+        _project(r) {
+          if (!q._cols || q._cols === '*') return { ...r };
+          const out = {};
+          for (const c of String(q._cols).split(',').map((s) => s.trim()).filter(Boolean)) {
+            out[c] = r[c] === undefined ? null : r[c];
+          }
+          return out;
+        },
+
         _runSelectOne() {
           if (faults.selectError) return Promise.resolve({ data: null, error: new Error('transient PostgREST timeout') });
           const found = rows.find((r) => q._match(r));
-          return Promise.resolve({ data: found ? { ...found } : null, error: null });
+          return Promise.resolve({ data: found ? q._project(found) : null, error: null });
         },
 
         then(resolve, reject) {
@@ -75,7 +87,7 @@ function makeFake(tables, faults = {}) {
           out.sort((a, b) => (key(a) > key(b) ? 1 : -1));
           if (q._range) out = out.slice(q._range[0], q._range[1] + 1);
           if (q._limit) out = out.slice(0, q._limit);
-          return Promise.resolve({ data: out.map((r) => ({ ...r })), error: null }).then(resolve, reject);
+          return Promise.resolve({ data: out.map((r) => q._project(r)), error: null }).then(resolve, reject);
         },
       };
       return q;
@@ -377,4 +389,295 @@ test('a composite-PK table is paged and encrypted, not skipped', async () => {
   }
   // The synthetic key embeds an amount bucket; the hash must not.
   assert.ok(!tables.subscription_overrides[1].merchant_key_hmac.includes('25'));
+});
+
+// --- half-encrypted rows (2026-11-01) ---------------------------------------
+//
+// At ENCRYPTION_PHASE=dual a route encrypts only the columns its write touches
+// (lib/encryptionCodec.js encodeWrite: "a partial update stays partial"). So a
+// row created at `off` and then edited at `dual` comes out half-encrypted: a
+// PATCH of a transaction's amount writes amount_enc and nothing else. The scan
+// used to decide "already done" from the table's FIRST `_enc` column alone, so
+// that row was skipped on every run while the gate failed on its description —
+// and no re-run could ever repair it. Same for a goal created at `dual`: the
+// insert has no current_amount, the database default fills the plaintext with
+// 0, and nothing writes current_amount_enc.
+
+/** A row of `job`'s table with every field and blind index already correct. */
+function fullyEncryptedRow(job, userId = 'u1') {
+  const row = { user_id: userId };
+  if (job.pk.includes('id')) row.id = 'r1';
+  for (const f of job.fields) {
+    row[f.column] = f.kind === 'amount' ? 12.5 : `${f.column} text`;
+    row[f.enc] = encryptField(fieldKey(job.table, f.column), userId, String(row[f.column]));
+  }
+  for (const b of job.blind ?? []) row[b.column] = blindValueFor(job.table, b, row);
+  return row;
+}
+
+test('REGRESSION: a row whose first _enc is set but a later one is missing is picked up', async () => {
+  // Exactly what `PATCH /api/transactions/:id {amount}` leaves behind at dual on
+  // a row created at off.
+  const job = JOBS.find((j) => j.table === 'transactions');
+  const amountEnc = encryptField('transactions.amount', 'u1', '25');
+  const tables = {
+    transactions: [{
+      id: 'a', user_id: 'u1',
+      amount: 25, amount_enc: amountEnc,
+      original_amount: null, original_amount_enc: null,
+      description: 'Tesco Express 1234', description_enc: null, merchant_prefix_hmacs: null,
+    }],
+  };
+  const totals = await runBackfill({ supabase: makeFake(tables), jobs: [job], log: silent });
+  const row = tables.transactions[0];
+  assert.equal(totals.encrypted, 1, 'the half-encrypted row must not be skipped');
+  assert.equal(decryptField('transactions.description', 'u1', row.description_enc), 'Tesco Express 1234');
+  assert.deepEqual(
+    row.merchant_prefix_hmacs,
+    blindValueFor('transactions', job.blind[0], row),
+    'its missing merchant index must be written too',
+  );
+
+  // And the re-run the runbook invites now has nothing left to do.
+  const fake2 = makeFake(tables);
+  const again = await runBackfill({ supabase: fake2, jobs: [job], log: silent });
+  assert.equal(again.encrypted, 0);
+  assert.equal(fake2.writes.length, 0, 'a completed row must not be rewritten');
+});
+
+test('REGRESSION: a goal created at dual gets its current_amount_enc (the DB default 0)', async () => {
+  // POST /api/goals inserts name + target_amount only; Postgres fills
+  // current_amount with its default. 0 is falsy, so this also guards against a
+  // `!value` check treating a real zero as "nothing to encrypt".
+  const job = JOBS.find((j) => j.table === 'savings_goals');
+  const tables = {
+    savings_goals: [{
+      id: 'g1', user_id: 'u1',
+      name: 'Holiday', name_enc: encryptField('savings_goals.name', 'u1', 'Holiday'),
+      target_amount: 500, target_amount_enc: encryptField('savings_goals.target_amount', 'u1', '500'),
+      current_amount: 0, current_amount_enc: null,
+    }],
+  };
+  const totals = await runBackfill({ supabase: makeFake(tables), jobs: [job], log: silent });
+  assert.equal(totals.encrypted, 1);
+  assert.equal(decryptField('savings_goals.current_amount', 'u1', tables.savings_goals[0].current_amount_enc), '0');
+});
+
+test('REGRESSION: a row missing ANY one _enc column is picked up, on every table and both scan paths', async () => {
+  // Driven by the registry, so a table or column added later is covered without
+  // anyone remembering to add a case. subscription_overrides takes the
+  // composite-key (offset) path, which had the same first-column check.
+  for (const job of JOBS) {
+    for (const missing of job.fields) {
+      const row = fullyEncryptedRow(job);
+      row[missing.enc] = null;
+      const tables = { [job.table]: [row] };
+      const totals = await runBackfill({ supabase: makeFake(tables), jobs: [job], log: silent });
+      const where = `${job.table}.${missing.column}`;
+      assert.equal(totals.encrypted, 1, `${where}: a row with only this column missing must be picked up`);
+      assert.equal(
+        decryptField(fieldKey(job.table, missing.column), 'u1', row[missing.enc]),
+        String(row[missing.column]),
+        `${where}: the missing column must now decrypt to its plaintext`,
+      );
+    }
+  }
+});
+
+test('only the MISSING columns are written; ciphertext a route already wrote is left alone', async () => {
+  for (const job of JOBS) {
+    for (const missing of job.fields) {
+      const row = fullyEncryptedRow(job);
+      row[missing.enc] = null;
+      const before = { ...row };
+      const fake = makeFake({ [job.table]: [row] });
+      await runBackfill({ supabase: fake, jobs: [job], log: silent });
+      const where = `${job.table}.${missing.column}`;
+      assert.equal(fake.writes.length, 1, `${where}: one write, no rollback`);
+      assert.deepEqual(Object.keys(fake.writes[0].patch), [missing.enc], `${where}: write only the gap`);
+      for (const f of job.fields) {
+        if (f !== missing) assert.equal(row[f.enc], before[f.enc], `${where}: ${f.enc} must be untouched`);
+      }
+    }
+  }
+});
+
+test('a blind index that is missing beside its ciphertext is repaired', async () => {
+  // The gate fails a row whose index does not recompute from its plaintext, so
+  // the backfill must be able to fix that state too, or a re-run cannot help.
+  const job = JOBS.find((j) => j.table === 'categories');
+  const row = fullyEncryptedRow(job);
+  const want = row.name_hmac;
+  row.name_hmac = null;
+  const fake = makeFake({ categories: [row] });
+  const totals = await runBackfill({ supabase: fake, jobs: [job], log: silent });
+  assert.equal(totals.encrypted, 1);
+  assert.equal(row.name_hmac, want);
+  assert.deepEqual(Object.keys(fake.writes[0].patch), ['name_hmac'], 'the ciphertext was fine; leave it');
+});
+
+test('a fully encrypted row is left alone and counted as already encrypted, on every table', async () => {
+  for (const job of JOBS) {
+    const fake = makeFake({ [job.table]: [fullyEncryptedRow(job)] });
+    const totals = await runBackfill({ supabase: fake, jobs: [job], log: silent });
+    assert.equal(fake.writes.length, 0, `${job.table}: nothing to write`);
+    assert.equal(totals.encrypted, 0, job.table);
+    assert.equal(totals.alreadyEncrypted, 1, `${job.table}: reported as already encrypted`);
+  }
+});
+
+test('a legitimately NULL optional column is not mistaken for a missing one', async () => {
+  // original_amount is NULL on every home-currency transaction. Its `_enc` is
+  // NULL too, correctly; treating that as "missing" would rewrite the row forever.
+  const job = JOBS.find((j) => j.table === 'transactions');
+  const row = fullyEncryptedRow(job);
+  row.original_amount = null;
+  row.original_amount_enc = null;
+  const fake = makeFake({ transactions: [row] });
+  const totals = await runBackfill({ supabase: fake, jobs: [job], log: silent });
+  assert.equal(fake.writes.length, 0);
+  assert.equal(totals.encrypted, 0);
+});
+
+test('REGRESSION: a failed verify rolls back only what THIS run wrote', async () => {
+  // Rolling back every `_enc` column would also erase ciphertext a route wrote
+  // correctly. Harmless before 019 (a re-run rewrites it), but it is not ours to
+  // erase, and the row reappears for the re-run either way.
+  const job = JOBS.find((j) => j.table === 'transactions');
+  const row = fullyEncryptedRow(job);
+  const amountEnc = row.amount_enc;
+  row.description_enc = null;
+  const tables = { transactions: [row] };
+
+  await assert.rejects(
+    () => runBackfill({ supabase: makeFake(tables, { corruptColumn: 'description_enc' }), jobs: [job], log: silent }),
+    /VERIFY FAILED/,
+  );
+  assert.equal(row.description_enc, null, 'our unverified write must be rolled back');
+  assert.equal(row.amount_enc, amountEnc, 'ciphertext we did not write must survive the rollback');
+
+  const totals = await runBackfill({ supabase: makeFake(tables), jobs: [job], log: silent });
+  assert.equal(totals.encrypted, 1, 'the re-run picks the row back up');
+  assert.equal(decryptField('transactions.description', 'u1', row.description_enc), row.description);
+});
+
+// --- stale and orphaned ciphertext (2026-11-01, from the independent review) --
+//
+// The runbook's own undo for Step 3 is "set ENCRYPTION_PHASE back to off". An
+// edit made there changes the plaintext and leaves the old `_enc` beside it. The
+// old scan repaired that only by accident (it rewrote every column of a row whose
+// FIRST `_enc` was NULL); the per-column fix must repair it on purpose, or the
+// gate fails "ciphertext is STALE" and no re-run helps.
+
+test('REGRESSION: a STALE ciphertext (edited back at off) is re-encrypted from the plaintext', async () => {
+  const job = JOBS.find((j) => j.table === 'transactions');
+  const row = fullyEncryptedRow(job);
+  const amountEnc = row.amount_enc;
+  // Encrypted as "Tesco" at dual, then renamed to "Aldi" while back at off.
+  row.description_enc = encryptField('transactions.description', 'u1', 'Tesco');
+  row.merchant_prefix_hmacs = blindValueFor('transactions', job.blind[0], { ...row, description: 'Tesco' });
+  row.description = 'Aldi';
+  const fake = makeFake({ transactions: [row] });
+
+  const totals = await runBackfill({ supabase: fake, jobs: [job], log: silent });
+  assert.equal(totals.encrypted, 1);
+  assert.equal(decryptField('transactions.description', 'u1', row.description_enc), 'Aldi');
+  assert.deepEqual(row.merchant_prefix_hmacs, blindValueFor('transactions', job.blind[0], row));
+  assert.deepEqual(Object.keys(fake.writes[0].patch).sort(), ['description_enc', 'merchant_prefix_hmacs']);
+  assert.equal(row.amount_enc, amountEnc, 'a correct column is still left alone');
+});
+
+test('REGRESSION: ciphertext beside a plaintext cleared back at off is cleared', async () => {
+  // A foreign expense switched to home currency at off: original_amount NULL,
+  // its old `_enc` still set. The gate counts it "encrypted-but-plaintext-cleared".
+  const job = JOBS.find((j) => j.table === 'transactions');
+  const row = fullyEncryptedRow(job);
+  row.original_amount = null;
+  const fake = makeFake({ transactions: [row] });
+
+  const totals = await runBackfill({ supabase: fake, jobs: [job], log: silent });
+  assert.equal(totals.encrypted, 1);
+  assert.equal(row.original_amount_enc, null);
+  assert.deepEqual(Object.keys(fake.writes[0].patch), ['original_amount_enc']);
+});
+
+test('CRITICAL: under the WRONG key the run refuses to start and writes nothing, in any table', async () => {
+  // The likeliest operator mistake: server/.env holds a different key from the
+  // one production encrypts with. Without this check the run would fill every
+  // gap and rewrite every blind index (each looks stale under another key) with
+  // values the live app cannot read — merchant suggestions break at once — and
+  // a gate run under the same wrong key would happily agree with it.
+  const tx = JOBS.find((j) => j.table === 'transactions');
+  const cats = JOBS.find((j) => j.table === 'categories');
+  const gappy = fullyEncryptedRow(tx); // written by production's key...
+  gappy.description_enc = null; // ...with one real gap the run would otherwise fill
+  const tables = { transactions: [gappy], categories: [fullyEncryptedRow(cats)] };
+  const before = JSON.stringify(tables);
+  const fake = makeFake(tables);
+
+  const productionKey = process.env.DATA_ENCRYPTION_KEY;
+  process.env.DATA_ENCRYPTION_KEY = Buffer.alloc(32, 9).toString('base64'); // the wrong one
+  let err;
+  try {
+    await runBackfill({ supabase: fake, jobs: [tx, cats], log: silent });
+  } catch (e) {
+    err = e;
+  } finally {
+    process.env.DATA_ENCRYPTION_KEY = productionKey;
+  }
+
+  assert.ok(err, 'the run must refuse');
+  assert.match(err.message, /REFUSING TO START/);
+  assert.match(err.message, /0 other\(s\) did/, 'none readable is how a wrong key looks');
+  assert.match(err.message, /DATA_ENCRYPTION_KEY/);
+  assert.match(err.message, /backup/, 'compare against the offline backup, not only Vercel');
+  assert.equal(fake.writes.length, 0, 'not one write — no gap, no blind index, no table');
+  assert.equal(JSON.stringify(tables), before);
+});
+
+test('one damaged ciphertext stops even a dry run, naming it by primary key only', async () => {
+  // A handful unreadable among many readable means damage, not a wrong key. The
+  // operator still has to look before anything is written, and the dry run the
+  // runbook asks for first is where they should find out.
+  const job = JOBS.find((j) => j.table === 'transactions');
+  const ok = fullyEncryptedRow(job);
+  const damaged = { ...fullyEncryptedRow(job), id: 'r2' };
+  damaged.description_enc = encryptField('transactions.description', 'u2', damaged.description); // not u1's
+  const fake = makeFake({ transactions: [ok, damaged] });
+
+  await assert.rejects(
+    () => runBackfill({ supabase: fake, jobs: [job], dryRun: true, log: silent }),
+    (e) => {
+      assert.match(e.message, /REFUSING TO START — 1 encrypted value/);
+      assert.match(e.message, /transactions id=r2 description_enc/);
+      assert.ok(!e.message.includes(damaged.description), 'never print user data');
+      return true;
+    },
+  );
+  assert.equal(fake.writes.length, 0);
+});
+
+test('with no existing ciphertext to test the key against, the run says so', async () => {
+  // Nothing to decrypt means nothing proves this is production's key. Not an
+  // error (a first run may genuinely have nothing yet), but not silent either.
+  const lines = [];
+  await runBackfill({
+    supabase: makeFake({ transactions: [{ id: 'a', user_id: 'u1', amount: 5, amount_enc: null }] }),
+    jobs: JOB,
+    log: (m) => lines.push(m),
+  });
+  assert.match(lines.join('\n'), /key could not be checked/);
+});
+
+test('a blind index that does not land correctly is caught and rolled back', async () => {
+  // A run can now write ONLY a blind index (name_hmac). Its database check had
+  // no test: delete it and nothing went red.
+  const job = JOBS.find((j) => j.table === 'categories');
+  const row = fullyEncryptedRow(job);
+  row.name_hmac = null;
+  await assert.rejects(
+    () => runBackfill({ supabase: makeFake({ categories: [row] }, { corruptColumn: 'name_hmac' }), jobs: [job], log: silent }),
+    /VERIFY FAILED \(blind index does not match/,
+  );
+  assert.equal(row.name_hmac, null, 'rolled back, so the re-run sees it again');
 });

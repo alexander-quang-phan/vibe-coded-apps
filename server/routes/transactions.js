@@ -30,6 +30,7 @@ const TX_LIST_COLUMNS =
 const TX_WRITE_COLUMNS =
   'id, amount, type, description, date, category_id, is_special, special_group_id, is_recurring, recurrence_id, original_amount, original_currency, fx_rate, created_at';
 const REC_COLUMNS = 'id, category_id, type, amount, description, interval, next_run_at';
+const PARSE_CATEGORY_COLUMNS = 'id, name, type';
 
 /**
  * Phase 17 — the subscriptions Alex marked (as matcher prototypes) and the notes
@@ -500,10 +501,13 @@ router.post('/parse', async (req, res, next) => {
       return res.status(400).json({ error: 'Invalid input', details: parsed.error.flatten() });
     }
 
+    // categories.name is encrypted (migration 019 drops the plaintext), and every
+    // name goes into the prompt — so read it through the codec, and hand the parser
+    // exactly these three columns, never a ciphertext or user_id.
     const [{ data: cats, error: catErr }, { data: stats, error: statsErr }] = await Promise.all([
       supabase
         .from('categories')
-        .select('id, name, type')
+        .select(selectFor('categories', PARSE_CATEGORY_COLUMNS))
         .eq('user_id', req.user.id),
       supabase
         .from('user_stats')
@@ -516,7 +520,7 @@ router.post('/parse', async (req, res, next) => {
 
     const result = await parseTransactionText({
       text: parsed.data.text,
-      categories: cats || [],
+      categories: presentRows('categories', req.user.id, cats || [], PARSE_CATEGORY_COLUMNS),
       currency: stats?.currency || 'GBP',
       today: todayISO(),
     });

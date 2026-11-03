@@ -280,6 +280,10 @@ back to writing plaintext only, and the encrypted columns just sit there ignored
 the single most useful undo in the whole rollout** — it takes about a minute and reverses
 everything Step 3 and Step 4 did.
 
+**If you later switch back to `dual`, run Step 4 again.** Anything edited while you were at
+`off` changed only the readable copy, so its encrypted copy is now out of date. The backfill
+spots that and re-encrypts it (since 1 Nov 2026 — before that it could not).
+
 ---
 
 ## Step 4 — backfill the existing rows
@@ -310,6 +314,11 @@ The script does something worth knowing about: for every row it encrypts, it wri
 **reads the row back out of the database and decrypts what Postgres actually returned**, and
 compares that to the original. If anything doesn't match it stops immediately. It never logs
 amounts or descriptions, only row IDs.
+
+**If it prints "this key cannot decrypt" or a WARNING about values it could not decrypt:
+stop.** It almost certainly means the `DATA_ENCRYPTION_KEY` in `server/.env` is not exactly
+the one in Vercel. Don't try to fix it by hand. Compare the two against your backup, then ask
+before re-running.
 
 ### CHECK — verify Step 4
 
