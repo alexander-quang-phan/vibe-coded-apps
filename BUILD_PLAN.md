@@ -899,19 +899,27 @@ older than the 200-row window load. Verify by tapping into an old month in the r
 >        re-priced transaction gets `amount_enc` only, and every new goal lacks `current_amount_enc`.
 >        Those rows were skipped forever, so the gate could never pass. Now each column is judged by
 >        the gate's own checks: missing, stale (left by an edit after going back to `off`) and orphaned
->        ciphertext is rewritten from the plaintext; correct ciphertext is left alone; ciphertext the
->        key cannot decrypt is reported, never overwritten (it most likely means the wrong key). So
+>        ciphertext is rewritten from the plaintext; correct ciphertext is left alone. A read-only key
+>        check runs first, dry run included: if any existing value will not decrypt (most likely the
+>        wrong key in `server/.env`), or nothing is encrypted to test against, nothing is written and
+>        the run exits non-zero. So
 >        the runbook's Step 3 undo is now genuinely undoable: back at `dual`, re-running Step 4
 >        repairs whatever was edited at `off`. The Step 4 summary also prints "N already encrypted"
 >        for every table, and "NO ROWS AT ALL" now means the table is genuinely empty.
 >     2. **`POST /api/transactions/parse` read `categories.name` raw** — the one query the sweep missed
 >        (the audit checked files, not queries). Now `selectFor` + `presentRows`; it would have failed
 >        on every parse after 019.
->   Suite 722 -> 739. Independently reviewed twice (two P2s found and fixed: see BUGS-FIXED); the second
->   added a read-only key check that refuses to write anything if existing ciphertext will not decrypt.
->   `docs/PHASE-9.5-PART-A-RUNBOOK.md` gained two notes (re-run Step 4 after any time back at `off`;
->   STOP on "this key cannot decrypt"). **Its PDF was NOT regenerated** — do that after trips merges,
+>     3. **A `--sample` gate run hid the failures it found**, which is the run Step 4 reads. It now
+>        lists them. **Failure messages printed `merchant_key`** (user data) as a primary key; now a
+>        short hash (`lib/rowLabel.js`).
+>   Suite 722 -> 747. Independently reviewed over three rounds (no P0/P1; the P2s are fixed: see
+>   BUGS-FIXED). `docs/PHASE-9.5-PART-A-RUNBOOK.md` gained notes (keep the Step 3 test transaction
+>   until Step 4 is done; re-run Step 4 after any time back at `off`; STOP on "REFUSING TO START"; what
+>   to look for in the sampled check). **Its PDF was NOT regenerated** — do that after trips merges,
 >   before Alex follows the runbook.
+> - **Known limit of the key check:** the value it tests against must have been written by the deployed
+>   app. A row written by a local server at `dual` uses the laptop's own key, so it proves nothing. The
+>   runbook says so.
 > - **Still open, found the same day (not fixed):** `POST /api/goals` will fail on every new goal
 >   after 019 (it relies on the plaintext `current_amount` default, which 019 drops while making
 >   `current_amount_enc` NOT NULL) — fix before Part B. Recorded in `BUGS-FIXED.md`.

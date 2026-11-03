@@ -271,7 +271,9 @@ order by created_at desc limit 3;
 
 The newest row must have **all three true**. That is dual-write working: readable value
 saved, encrypted value saved alongside. Older rows will still show `has_ciphertext = false`
-— Step 4 fixes those. Delete your test transaction in the app afterwards if you like.
+— Step 4 fixes those. **Keep your test transaction until Step 4 is done:** the backfill tests
+your laptop's key against it, and won't start with nothing to test against. Delete it
+afterwards if you like.
 
 ### UNDO — Step 3
 
@@ -315,10 +317,16 @@ The script does something worth knowing about: for every row it encrypts, it wri
 compares that to the original. If anything doesn't match it stops immediately. It never logs
 amounts or descriptions, only row IDs.
 
-**If it prints "this key cannot decrypt" or a WARNING about values it could not decrypt:
-stop.** It almost certainly means the `DATA_ENCRYPTION_KEY` in `server/.env` is not exactly
-the one in Vercel. Don't try to fix it by hand. Compare the two against your backup, then ask
-before re-running.
+**If it prints "REFUSING TO START": stop.** Before writing anything, the script tests your key
+against values that are already encrypted. Nothing has been written when you see this, and
+you'll see it at the dry run, which is one reason to do that first. There are two versions:
+
+- **"will not decrypt with this key":** check the key first, however many failed. The
+  `DATA_ENCRYPTION_KEY` in `server/.env`, in Vercel and in your offline backup must be identical.
+  Ask before changing anything.
+- **"nothing is encrypted yet":** there is nothing to test your key against, so go back to
+  Step 3 and add a transaction through the live app. Adding it through a local server wouldn't
+  count, because that would be using your laptop's key to test itself.
 
 ### CHECK — verify Step 4
 
@@ -329,7 +337,8 @@ cd "/Users/alexphan_bon/Vibe Coded Apps/Trim (Budgeting App)/server" && node scr
 `--sample` means "diagnostic, not an authorisation" — it deliberately can't approve anything
 irreversible, which is right, because nothing irreversible is happening. With only 267 rows,
 1000 covers all of them. It will print **INCOMPLETE** by design; what you're reading is
-whether it reports any *failures*.
+whether it reports any *failures*: look for `[PROBLEM]` lines, and for a "Problems in the rows
+checked" list under INCOMPLETE. If you see either, stop and ask.
 
 Then confirm nothing is left behind:
 
