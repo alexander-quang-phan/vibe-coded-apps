@@ -1313,12 +1313,22 @@ final validation pass). Plan: `docs/superpowers/plans/2026-10-14-subscription-ma
 
 Still unverified: a logged-in click-through on the live site (Claude can't sign in). Alex's 2-minute check: Transactions → pencil on an expense → Subscription section; Subscriptions → Add a subscription.
 
-## Phase 18 — trips (designed 2026-10-13, NOT built)
+## Phase 18 — trips (BUILT on a branch, NOT merged, NOT deployed)
 
-Spec: `docs/superpowers/specs/2026-10-13-trips-design.md`. Separate trips with a per-trip "keep out of my
-monthly budget" switch; stops whose city is derived from the date; overall, per-category and per-city
-budgets; encrypted names and limits (in-place edits to the unapplied 018/018a/019); migration `017b_trips.sql`;
-its own Trips nav tab. Build in its own session after Phase 17 is merged; re-check the live DB first.
+Spec: `docs/superpowers/specs/2026-10-13-trips-design.md`. Plan, with Alex's answers: `docs/superpowers/plans/2026-11-01-trips.md`.
+Branch `claude/confident-northcutt-6cd9f9`. **017b is NOT applied to the live database.** Rollout: `docs/2026-11-03-phase18-deploy-checklist.md`.
+
+- [x] **18.1** Live database re-checked 3 Nov with Alex's yes: through 017a applied, no `_enc` column, no barrier, no trip objects.
+- [x] **18.2** `lib/trips.js` + `client/src/lib/trips.js`; the parity test runs the same cases on both, plus Quick Add's currency rules.
+- [x] **18.3** `017b_trips.sql`. A real PostgreSQL replays 001→017b for the first time, then 017b again; CHECKs, unique budget and `set null` proved.
+- [x] **18.4** Phase 9.5 in-place: 5 fields registered; 018, 018a, 019, `GUARDED`, snapshot `TABLES`, runbook (22 encrypted columns, 13 barriers). 001→019 replays. `encodeWrite` throws on an array.
+- [x] **18.5** `lib/tripRules.js`: the star rule on POST and PATCH /api/transactions, in the route and devMock.
+- [x] **18.6** `routes/trips.js`: all eight endpoints, three encryption phases, devMock on the same rules.
+- [x] **18.7** Subscriptions attach and /track take charges off trips; `specialOnTripsThisMonth`.
+- [x] **18.8** Client: Trips, TripDetail, TripEditor, TripCard, TripTag, TripPicker, TripChip, TripTrackedLine, `TransactionEditDialog` extracted, Quick Add trip mode, nav to `lg`.
+- [x] **18.9** Clicked through in the real app (real router and nav, only login swapped out) against `npm run dev:mock`: the spec's 7 manual checks, at 375, 768 and 1024px.
+- [ ] **18.10** Independent review.
+- [ ] **18.11** Apply 017b, merge to `main`, deploy `trim-api`, deploy client. Not verified until then: a logged-in click-through with real data.
 
 ## Deferred further (flagged in FEATURES.md, don't start without explicit ask)
 

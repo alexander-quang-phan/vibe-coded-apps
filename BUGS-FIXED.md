@@ -7,6 +7,14 @@ After fixing any real bug, append one row: what it was, why it mattered, how it 
 
 ---
 
+## 2026-11-03 — The Edit dialog could refetch the wrong rate onto a foreign expense (found while extracting it for trips)
+
+**What it was.** The Edit dialog only fetches a rate when Alex changes currency, tracked by a `rateDirty` flag, and nothing ever reset that flag. The dialog stays mounted on the page, so after changing currency on one expense, opening any other foreign expense in the same visit fired the rate effect in the same commit as the form's reset: it blanked the stored rate and fetched today's.
+
+**Why it mattered.** The rate an expense was logged at is what its home-currency figure was computed from. Saving that second expense would have quietly re-priced it at today's rate. Same family as the Phase 12 bug: the number under a foreign amount silently changing.
+
+**How it was fixed.** The flag clears when the dialog closes, not when it opens, because an effect running in the opening commit would still see the old value. Moved with the dialog into `TransactionEditDialog.jsx`. Found by reading, not reproduced in the running app, and the client has no test that pins it.
+
 ## 2026-11-01 — Simple mode showed Special / "Repeat this" on a pre-dated add, then threw the choice away
 
 **What it was.** `QuickAddDialog` hid its details panel in simple mode only when `initialDate ===
