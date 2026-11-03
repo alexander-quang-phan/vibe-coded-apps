@@ -5,8 +5,8 @@
                   (`claude/confident-northcutt-6cd9f9`), waiting for Alex's answers.
 - Model A is:     Claude Code. Single-model feature work per CLAUDE.md.
 - Up next:        **Alex** — answer the trips session's questions, and do the logged-in checks (next step 1).
-- Last actor did: Claude Code, 2026-11-03 — merged the weekly-budget and encryption-blocker branches
-                  (747/747, build passes), deployed trim-api then client, verified live, this handoff.
+- Last actor did: Claude Code, 2026-11-03 — merged the goals fix for migration 019 (750/750, build passes),
+                  pushed, deployed trim-api only (no client change), verified live, this handoff.
 
 ## Goal
 Alex (13 Oct): (1) trips with a set budget per category and per city; (2) "I don't see a way to mark a
@@ -22,15 +22,16 @@ check everything for me?" → "Yes, do it all" — so Claude ran the database st
 - **Nightly job:** its own select (`cancelled_at is null and auto_log = true and next_run_at <= …`, with the
   full column list) ran clean against the live schema, so the 03:00 UTC cron cannot fail on the new column.
   The "check the logs next morning" step from the 16 Oct checklist is no longer needed.
-- **Code:** live code = `main` at `0447d23` (later commits are handoff notes only), and `origin/main` matches.
+- **Code:** live code = `main` at `895ec39` (later commits are handoff notes only), and `origin/main` matches.
 - **Pushing:** on 3 Nov `git push` failed because git's osxkeychain helper returned -128 in the Claude session.
   Alex then said "Use my gh login", so the fixes and this note were pushed with `gh auth git-credential`, set
   per command; git's saved config is unchanged. If it recurs, ask him again: that OK isn't a standing rule.
-- **API (3 Nov):** trim-api deployment `trim-rly8wvq7h…` — `/api/health` 200 (fresh uptime),
-  `/api/subscriptions` and `POST /api/transactions/parse` 401 without login. Encryption env vars still absent.
+- **API (3 Nov):** trim-api deployment `trim-o3f5huyc9…` (adds `current_amount: 0` to `POST /api/goals`) — `/api/health`
+  200 (fresh uptime), `/api/goals`, `/api/subscriptions` and `POST /api/transactions/parse` 401 without login. Encryption
+  env vars still absent. Not verified: creating a goal while logged in (Savings → New goal).
 - **Client (3 Nov):** `trim-budget-d5x19bctp…` aliased to trim-budget.vercel.app; bundle `index-CXu4igOF.js`
   contains `effectiveLimit` and " a week" (0 before), and still points at trim-api-jade.
-- **Rollback, if ever needed:** in Vercel promote trim-api `trim-375ms327g…` and client
+- **Rollback, if ever needed:** to undo only the goals fix, promote trim-api `trim-rly8wvq7h…`. Otherwise promote trim-api `trim-375ms327g…` and client
   `trim-budget-8liqaliub…` (the 1 Nov builds). To go back before Phase 17: `trim-8bxbhdwgr…` and
   `trim-budget-566fimvrc…`. LEAVE 017a in place either way (the old API works with it).
 - **Not verified:** any logged-in click-through with real data (Claude can't sign in): Phase 17, the weekly
