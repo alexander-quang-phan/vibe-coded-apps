@@ -535,4 +535,358 @@ export function runTransactionsRouteSuite(phase) {
       await http2.close();
     }
   });
+  // --- Phase 18: trips -------------------------------------------------------------
+
+  const OTHER_USER = '00000000-0000-4000-8000-000000000002';
+  const INCOME_CAT = '11111111-1111-4111-8111-111111111112';
+  const KEEP = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1'; // keep out of monthly: on
+  const OPEN = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa2'; // keep out of monthly: off
+  const KEEP2 = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa4';
+  const THEIRS = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa3';
+  const ROME = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb1'; // KEEP, 12th-15th
+  const NAPLES = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb2'; // KEEP, 16th-19th
+  const PARIS = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb3'; // OPEN
+  const GROUP = 'cccccccc-cccc-4ccc-8ccc-ccccccccccc1';
+
+  async function tripTables(row = {}) {
+    const { encodeWrite } = await import('../../lib/encryptionCodec.js');
+    const t = await seed(phase);
+    const trip = (id, user_id, name, keep) => ({
+      id, user_id, start_date: '2026-10-12', end_date: '2026-10-19', keep_out_of_monthly: keep,
+      archived_at: null, source_group_id: null, created_at: '2026-10-01T10:00:00Z',
+      ...encodeWrite('trips', user_id, { name, total_budget: 1000 }, phase),
+    });
+    const stop = (id, trip_id, name, start_date, end_date) => ({
+      id, user_id: U, trip_id, start_date, end_date, currency: null, created_at: '2026-10-01T10:00:00Z',
+      ...encodeWrite('trip_stops', U, { name, budget: null }, phase),
+    });
+    t.trips = [
+      trip(KEEP, U, 'Italy', true),
+      trip(OPEN, U, 'Paris', false),
+      trip(KEEP2, U, 'Spain', true),
+      trip(THEIRS, OTHER_USER, 'Not yours', true),
+    ];
+    t.trip_stops = [
+      stop(ROME, KEEP, 'Rome', '2026-10-12', '2026-10-15'),
+      stop(NAPLES, KEEP, 'Naples', '2026-10-16', '2026-10-19'),
+      stop(PARIS, OPEN, 'Paris', '2026-10-12', '2026-10-19'),
+    ];
+    t.special_groups = [{
+      id: GROUP, user_id: U, archived_at: null, created_at: '2026-10-01T10:00:00Z',
+      ...encodeWrite('special_groups', U, { name: 'Holiday' }, phase),
+    }];
+    t.categories.push({
+      id: INCOME_CAT, user_id: U, icon: '💼', color: '#22c55e', type: 'income',
+      ...encodeWrite('categories', U, { name: 'Salary' }, phase),
+    });
+    t.transactions[0] = {
+      ...t.transactions[0], date: '2026-10-13', trip_id: null, trip_stop_id: null, ...row,
+    };
+    return t;
+  }
+
+  const stored = (db) => db.store.transactions.find((r) => r.id === TX_ID);
+  const logged = (db) => db.store.transactions.at(-1);
+  const threeTap = { categoryId: CAT, amount: 12, type: 'expense', date: '2026-10-13' };
+
+  /** Boot on the trip tables, hand the test its db and http, always close. */
+  async function onTrips(row, fn) {
+    const { db, http } = await boot(await tripTables(row));
+    try {
+      await fn(db, http);
+    } finally {
+      await http.close();
+    }
+  }
+
+  test(`${label} CRITICAL: a 3-tap POST with a keep-out trip and no isSpecial is stored starred`, async () => {
+    // The red team's blocker: Quick Add always sent isSpecial:false, so every trip
+    // expense would have counted in the monthly budget.
+    await onTrips({}, async (db, http) => {
+      const { status, body } = await http.send('POST', '/', { ...threeTap, tripId: KEEP });
+      assert.equal(status, 201, JSON.stringify(body));
+      assert.equal(logged(db).trip_id, KEEP, 'the validated field is also written (2026-08-08)');
+      assert.equal(logged(db).is_special, true);
+      assert.equal(body.transaction.trip_id, KEEP);
+      assert.equal(body.transaction.is_special, true);
+    });
+  });
+
+  test(`${label} POST: a keep-out-off trip leaves the star off, and an explicit isSpecial wins`, async () => {
+    await onTrips({}, async (db, http) => {
+      await http.send('POST', '/', { ...threeTap, tripId: OPEN });
+      assert.equal(logged(db).trip_id, OPEN);
+      assert.equal(logged(db).is_special, false);
+
+      await http.send('POST', '/', { ...threeTap, tripId: KEEP, isSpecial: false });
+      assert.equal(logged(db).is_special, false, 'explicit false beats the keep-out trip');
+
+      await http.send('POST', '/', { ...threeTap, tripId: OPEN, isSpecial: true });
+      assert.equal(logged(db).is_special, true, 'explicit true on a keep-out-off trip');
+    });
+  });
+
+  test(`${label} POST: with no trip fields nothing about trips is read or set`, async () => {
+    await onTrips({}, async (db, http) => {
+      const { status } = await http.send('POST', '/', threeTap);
+      assert.equal(status, 201);
+      assert.equal(logged(db).trip_id, null);
+      assert.equal(logged(db).trip_stop_id, null);
+      assert.equal(logged(db).is_special, false);
+      assert.equal(db.calls.filter((c) => c.table === 'trips').length, 0, 'ordinary logging costs no extra query');
+    });
+  });
+
+  test(`${label} POST: another user's trip is a 404, and nothing is written`, async () => {
+    await onTrips({}, async (db, http) => {
+      const before = db.store.transactions.length;
+      const { status } = await http.send('POST', '/', { ...threeTap, tripId: THEIRS });
+      assert.equal(status, 404);
+      assert.equal(db.store.transactions.length, before);
+    });
+  });
+
+  test(`${label} POST: income can't be on a trip`, async () => {
+    await onTrips({}, async (_db, http) => {
+      const { status, body } = await http.send('POST', '/', { ...threeTap, categoryId: INCOME_CAT, type: 'income', tripId: KEEP });
+      assert.equal(status, 400);
+      assert.match(body.error, /Only expenses/);
+    });
+  });
+
+  test(`${label} POST: a trip and a group together is a 400, never the database CHECK's 500`, async () => {
+    await onTrips({}, async (_db, http) => {
+      const { status, body } = await http.send('POST', '/', { ...threeTap, tripId: KEEP, specialGroupId: GROUP, isSpecial: true });
+      assert.equal(status, 400);
+      assert.match(body.error, /trip or in a special group/);
+    });
+  });
+
+  test(`${label} POST: "Repeat this" on a trip is refused before a schedule is created`, async () => {
+    await onTrips({}, async (db, http) => {
+      const { status, body } = await http.send('POST', '/', { ...threeTap, tripId: KEEP, recurring: { interval: 'monthly' } });
+      assert.equal(status, 400);
+      assert.match(body.error, /subscription or repeating/);
+      assert.equal(db.store.recurrences.length, 0);
+    });
+  });
+
+  test(`${label} POST: a city needs a trip, and must be on that trip`, async () => {
+    await onTrips({}, async (_db, http) => {
+      const none = await http.send('POST', '/', { ...threeTap, tripStopId: ROME });
+      assert.equal(none.status, 400);
+      assert.match(none.body.error, /needs a trip/);
+      const wrong = await http.send('POST', '/', { ...threeTap, tripId: KEEP, tripStopId: PARIS });
+      assert.equal(wrong.status, 400);
+      assert.match(wrong.body.error, /not on this trip/);
+    });
+  });
+
+  test(`${label} POST: the date's own stop is stored as null; a different one is an override`, async () => {
+    await onTrips({}, async (db, http) => {
+      await http.send('POST', '/', { ...threeTap, tripId: KEEP, tripStopId: ROME });
+      assert.equal(logged(db).trip_stop_id, null, 'storing the derived city would freeze it');
+      await http.send('POST', '/', { ...threeTap, tripId: KEEP, tripStopId: NAPLES });
+      assert.equal(logged(db).trip_stop_id, NAPLES);
+    });
+  });
+
+  test(`${label} PATCH: joining a keep-out trip stars it, stores the trip and clears a group`, async () => {
+    await onTrips({ is_special: true, special_group_id: GROUP }, async (db, http) => {
+      const { status, body } = await http.send('PATCH', `/${TX_ID}`, { tripId: KEEP });
+      assert.equal(status, 200, JSON.stringify(body));
+      assert.equal(stored(db).trip_id, KEEP);
+      assert.equal(stored(db).is_special, true);
+      assert.equal(stored(db).special_group_id, null);
+      assert.equal(body.transaction.trip_id, KEEP);
+    });
+    await onTrips({ is_special: false }, async (db, http) => {
+      await http.send('PATCH', `/${TX_ID}`, { tripId: KEEP });
+      assert.equal(stored(db).is_special, true);
+    });
+  });
+
+  test(`${label} PATCH: joining a keep-out-off trip keeps the star exactly as it was`, async () => {
+    await onTrips({ is_special: true }, async (db, http) => {
+      await http.send('PATCH', `/${TX_ID}`, { tripId: OPEN });
+      assert.equal(stored(db).trip_id, OPEN);
+      assert.equal(stored(db).is_special, true);
+    });
+    await onTrips({ is_special: false }, async (db, http) => {
+      await http.send('PATCH', `/${TX_ID}`, { tripId: OPEN });
+      assert.equal(stored(db).is_special, false);
+    });
+  });
+
+  test(`${label} PATCH: leaving a keep-out trip un-stars and drops the override`, async () => {
+    await onTrips({ trip_id: KEEP, trip_stop_id: NAPLES, is_special: true }, async (db, http) => {
+      const { status } = await http.send('PATCH', `/${TX_ID}`, { tripId: null });
+      assert.equal(status, 200);
+      assert.equal(stored(db).trip_id, null);
+      assert.equal(stored(db).trip_stop_id, null);
+      assert.equal(stored(db).is_special, false);
+    });
+  });
+
+  test(`${label} PATCH: leaving a keep-out-off trip leaves the star alone`, async () => {
+    await onTrips({ trip_id: OPEN, is_special: true }, async (db, http) => {
+      await http.send('PATCH', `/${TX_ID}`, { tripId: null });
+      assert.equal(stored(db).trip_id, null);
+      assert.equal(stored(db).is_special, true);
+    });
+  });
+
+  test(`${label} PATCH: moving from a keep-out trip to a keep-out-off one un-stars; keep-out to keep-out stays starred`, async () => {
+    await onTrips({ trip_id: KEEP, is_special: true }, async (db, http) => {
+      await http.send('PATCH', `/${TX_ID}`, { tripId: OPEN });
+      assert.equal(stored(db).trip_id, OPEN);
+      assert.equal(stored(db).is_special, false);
+    });
+    await onTrips({ trip_id: KEEP, is_special: true }, async (db, http) => {
+      await http.send('PATCH', `/${TX_ID}`, { tripId: KEEP2 });
+      assert.equal(stored(db).is_special, true);
+    });
+  });
+
+  test(`${label} CRITICAL: re-sending the same trip never touches a hand-set star or the override`, async () => {
+    await onTrips({ trip_id: KEEP, trip_stop_id: NAPLES, is_special: false }, async (db, http) => {
+      const { status } = await http.send('PATCH', `/${TX_ID}`, { tripId: KEEP, description: 'typo fixed' });
+      assert.equal(status, 200);
+      assert.equal(stored(db).is_special, false, 'a hand-un-starred trip expense stays un-starred');
+      assert.equal(stored(db).trip_stop_id, NAPLES);
+    });
+  });
+
+  test(`${label} PATCH: an edit with no trip fields leaves the trip, stop and star alone, with no trip query`, async () => {
+    await onTrips({ trip_id: KEEP, trip_stop_id: NAPLES, is_special: false }, async (db, http) => {
+      await http.send('PATCH', `/${TX_ID}`, { description: 'typo fixed', date: '2026-10-14' });
+      assert.equal(stored(db).trip_id, KEEP);
+      assert.equal(stored(db).trip_stop_id, NAPLES);
+      assert.equal(stored(db).is_special, false);
+      assert.equal(db.calls.filter((c) => c.table === 'trips').length, 0);
+    });
+  });
+
+  test(`${label} PATCH: an explicit isSpecial always wins over the derived star`, async () => {
+    await onTrips({ trip_id: KEEP, is_special: true }, async (db, http) => {
+      await http.send('PATCH', `/${TX_ID}`, { tripId: null, isSpecial: true });
+      assert.equal(stored(db).trip_id, null);
+      assert.equal(stored(db).is_special, true);
+    });
+    await onTrips({ is_special: false }, async (db, http) => {
+      await http.send('PATCH', `/${TX_ID}`, { tripId: KEEP, isSpecial: false });
+      assert.equal(stored(db).trip_id, KEEP);
+      assert.equal(stored(db).is_special, false);
+    });
+  });
+
+  test(`${label} PATCH: the row star un-stars and the expense stays on its trip`, async () => {
+    await onTrips({ trip_id: KEEP, is_special: true }, async (db, http) => {
+      await http.send('PATCH', `/${TX_ID}`, { isSpecial: false });
+      assert.equal(stored(db).trip_id, KEEP);
+      assert.equal(stored(db).is_special, false);
+    });
+  });
+
+  test(`${label} PATCH: a group onto a trip row, or both together, is a 400`, async () => {
+    await onTrips({ trip_id: KEEP, is_special: true }, async (db, http) => {
+      const onto = await http.send('PATCH', `/${TX_ID}`, { specialGroupId: GROUP });
+      assert.equal(onto.status, 400);
+      assert.match(onto.body.error, /trip or in a special group/);
+      assert.equal(stored(db).special_group_id ?? null, null);
+    });
+    await onTrips({ is_special: true }, async (_db, http) => {
+      const both = await http.send('PATCH', `/${TX_ID}`, { tripId: KEEP, specialGroupId: GROUP });
+      assert.equal(both.status, 400);
+    });
+  });
+
+  test(`${label} PATCH: leaving a keep-out trip for a group needs an explicit star`, async () => {
+    await onTrips({ trip_id: KEEP, is_special: true }, async (db, http) => {
+      const unstarred = await http.send('PATCH', `/${TX_ID}`, { tripId: null, specialGroupId: GROUP });
+      assert.equal(unstarred.status, 400, 'never an unstarred grouped row');
+      assert.equal(stored(db).trip_id, KEEP, 'nothing was written');
+
+      const starred = await http.send('PATCH', `/${TX_ID}`, { tripId: null, specialGroupId: GROUP, isSpecial: true });
+      assert.equal(starred.status, 200);
+      assert.equal(stored(db).trip_id, null);
+      assert.equal(stored(db).special_group_id, GROUP);
+      assert.equal(stored(db).is_special, true);
+    });
+  });
+
+  test(`${label} PATCH: changing a trip row to income is refused unless it leaves the trip too`, async () => {
+    await onTrips({ trip_id: KEEP, is_special: true }, async (db, http) => {
+      const refused = await http.send('PATCH', `/${TX_ID}`, { type: 'income', categoryId: INCOME_CAT });
+      assert.equal(refused.status, 400);
+      assert.match(refused.body.error, /Only expenses/);
+      assert.equal(stored(db).type, 'expense');
+
+      const left = await http.send('PATCH', `/${TX_ID}`, { type: 'income', categoryId: INCOME_CAT, tripId: null });
+      assert.equal(left.status, 200, JSON.stringify(left.body));
+      assert.equal(stored(db).trip_id, null);
+      assert.equal(stored(db).is_special, false);
+    });
+  });
+
+  test(`${label} PATCH: a subscription-linked charge can't join a trip, but can still be edited`, async () => {
+    const REC = 'dddddddd-dddd-4ddd-8ddd-ddddddddddd1';
+    await onTrips({ recurrence_id: REC }, async (db, http) => {
+      const refused = await http.send('PATCH', `/${TX_ID}`, { tripId: KEEP });
+      assert.equal(refused.status, 400);
+      assert.match(refused.body.error, /subscription or repeating/);
+      assert.equal(stored(db).trip_id, null);
+
+      const edited = await http.send('PATCH', `/${TX_ID}`, { description: 'Netflix' });
+      assert.equal(edited.status, 200);
+    });
+  });
+
+  test(`${label} PATCH: another user's trip is a 404 and leaves the row alone`, async () => {
+    await onTrips({ trip_id: KEEP, is_special: true }, async (db, http) => {
+      const { status } = await http.send('PATCH', `/${TX_ID}`, { tripId: THEIRS });
+      assert.equal(status, 404);
+      assert.equal(stored(db).trip_id, KEEP);
+      assert.equal(stored(db).is_special, true);
+    });
+  });
+
+  test(`${label} PATCH: changing trip clears the override, unless a stop of the new trip is sent`, async () => {
+    await onTrips({ trip_id: KEEP, trip_stop_id: NAPLES, is_special: true }, async (db, http) => {
+      await http.send('PATCH', `/${TX_ID}`, { tripId: OPEN });
+      assert.equal(stored(db).trip_stop_id, null);
+    });
+    await onTrips({ trip_id: KEEP, is_special: true }, async (_db, http) => {
+      const { status, body } = await http.send('PATCH', `/${TX_ID}`, { tripStopId: PARIS });
+      assert.equal(status, 400, 'a stop from another trip');
+      assert.match(body.error, /not on this trip/);
+    });
+    await onTrips({ date: '2026-10-13' }, async (db, http) => {
+      const { status } = await http.send('PATCH', `/${TX_ID}`, { tripId: KEEP, tripStopId: NAPLES });
+      assert.equal(status, 200);
+      assert.equal(stored(db).trip_stop_id, NAPLES);
+    });
+  });
+
+  test(`${label} PATCH: the override is normalised against the RESULTING date`, async () => {
+    await onTrips({ trip_id: KEEP, is_special: true, date: '2026-10-13' }, async (db, http) => {
+      // Naples is not the 13th's stop, but it IS the 17th's, so this is just the derived city.
+      await http.send('PATCH', `/${TX_ID}`, { date: '2026-10-17', tripStopId: NAPLES });
+      assert.equal(stored(db).trip_stop_id, null);
+    });
+    await onTrips({ trip_id: KEEP, trip_stop_id: NAPLES, is_special: true }, async (db, http) => {
+      await http.send('PATCH', `/${TX_ID}`, { tripStopId: null });
+      assert.equal(stored(db).trip_stop_id, null, 'null goes back to deriving from the date');
+    });
+  });
+
+  test(`${label} GET / carries the trip fields and still leaks nothing`, async () => {
+    await onTrips({ trip_id: KEEP, trip_stop_id: NAPLES, is_special: true }, async (_db, http) => {
+      const { body } = await http.get('/');
+      const row = body.transactions.find((t) => t.id === TX_ID);
+      assert.equal(row.trip_id, KEEP);
+      assert.equal(row.trip_stop_id, NAPLES);
+      assert.ok(!JSON.stringify(body).includes('_enc'));
+    });
+  });
 }

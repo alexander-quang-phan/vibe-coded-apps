@@ -37,6 +37,8 @@ import { buildRunningAverage } from '../lib/runningAverage.js';
 import { convertToBase } from '../lib/fx.js';
 import { dayInZone, monthBounds, addMonths } from '../lib/month.js';
 import { monthlyEquivalentLimit } from '../lib/budgetPeriod.js';
+// Phase 18 — the SAME trip rules and figures the real routes use, never re-implemented.
+import { deriveTripWrite } from '../lib/tripRules.js';
 
 const PORT = process.env.PORT || 3001;
 const app = express();
@@ -98,6 +100,8 @@ function seedTx(categoryName, amount, description, dAgo, type = 'expense', isSpe
     is_recurring: false,
     is_special: isSpecial,
     recurrence_id: null,
+    trip_id: null,
+    trip_stop_id: null,
     created_at: new Date(Date.now() - dAgo * 86_400_000).toISOString(),
   });
 }
@@ -416,7 +420,7 @@ app.get('/api/transactions', (req, res) => {
 });
 
 app.post('/api/transactions', (req, res) => {
-  const { categoryId, amount, type, description, date, isSpecial, specialGroupId, recurring, foreign, clientToday } = req.body ?? {};
+  const { categoryId, amount, type, description, date, isSpecial, specialGroupId, tripId, tripStopId, recurring, foreign, clientToday } = req.body ?? {};
   const c = catById(categoryId);
   if (!c) return res.status(404).json({ error: 'Category not found' });
   if (c.type !== type) return res.status(400).json({ error: 'Category type does not match transaction type' });
@@ -426,7 +430,13 @@ app.post('/api/transactions', (req, res) => {
   if (recurring && type === 'income') {
     return res.status(400).json({ error: 'Only expenses can be recurring' });
   }
-  if (specialGroupId && !isSpecial) {
+  // Phase 18 — lib/tripRules.js, exactly as routes/transactions.js.
+  const tripWrite = mockTripWrite(null, {
+    tripId, tripStopId, isSpecial, specialGroupId, type, date: date || todayUTC(), recurring: !!recurring,
+  });
+  if (tripWrite.error) return res.status(tripWrite.status).json({ error: tripWrite.error });
+  const effectiveSpecial = isSpecial ?? tripWrite.fields.is_special ?? false;
+  if (specialGroupId && !effectiveSpecial) {
     return res.status(400).json({ error: 'Only special expenses can belong to a group' });
   }
 
@@ -487,8 +497,10 @@ app.post('/api/transactions', (req, res) => {
     date: txDate,
     category_id: categoryId,
     is_recurring: !!recurrence,
-    is_special: !!isSpecial,
+    is_special: !!effectiveSpecial,
     special_group_id: specialGroupId ?? null,
+    trip_id: tripWrite.fields.trip_id ?? null,
+    trip_stop_id: tripWrite.fields.trip_stop_id ?? null,
     recurrence_id: recurrence?.id ?? null,
     original_amount: fx?.originalAmount ?? null,
     original_currency: fx?.originalCurrency ?? null,
@@ -548,9 +560,13 @@ app.post('/api/transactions/parse', (req, res) => {
 app.patch('/api/transactions/:id', (req, res) => {
   const tx = transactions.find((t) => t.id === req.params.id);
   if (!tx) return res.status(404).json({ error: 'Transaction not found' });
-  const { categoryId, amount, type, description, date, isSpecial, specialGroupId, foreign } = req.body ?? {};
+  const { categoryId, amount, type, description, date, isSpecial, specialGroupId, tripId, tripStopId, foreign } = req.body ?? {};
   const effectiveType = type !== undefined ? type : tx.type;
-  const effectiveSpecial = isSpecial !== undefined ? isSpecial : tx.is_special;
+  const tripWrite = mockTripWrite(tx, {
+    tripId, tripStopId, isSpecial, specialGroupId, type: effectiveType, date: date ?? tx.date,
+  });
+  if (tripWrite.error) return res.status(tripWrite.status).json({ error: tripWrite.error });
+  const effectiveSpecial = isSpecial !== undefined ? isSpecial : tripWrite.fields.is_special ?? tx.is_special;
   if (effectiveSpecial && effectiveType === 'income') {
     return res.status(400).json({ error: 'Only expenses can be special' });
   }
@@ -561,7 +577,9 @@ app.patch('/api/transactions/:id', (req, res) => {
       ? null
       : specialGroupId !== undefined
         ? specialGroupId
-        : tx.special_group_id;
+        : tripWrite.fields.special_group_id === null
+          ? null
+          : tx.special_group_id;
   if (effectiveGroup && !effectiveSpecial) {
     return res.status(400).json({ error: 'Only special expenses can belong to a group' });
   }
@@ -607,6 +625,7 @@ app.patch('/api/transactions/:id', (req, res) => {
   if (isSpecial !== undefined) tx.is_special = !!isSpecial;
   if (specialGroupId !== undefined) tx.special_group_id = specialGroupId;
   if (isSpecial === false) tx.special_group_id = null;
+  Object.assign(tx, tripWrite.fields);
   res.json({ transaction: tx });
 });
 
@@ -617,6 +636,75 @@ app.delete('/api/transactions/:id', (req, res) => {
 
 // Phase 10 B1 — special-expense groups.
 let specialGroups = [];
+
+// Phase 18 — trips. Stored decoded, as the routes see them after decodeRows.
+let trips = [];
+let tripStops = [];
+let tripCategoryBudgets = [];
+
+/** routes/transactions.js resolveTripWrite, over the in-memory rows. */
+function mockTripWrite(existing, args) {
+  const resultingTrip = args.tripId !== undefined ? args.tripId : existing?.trip_id ?? null;
+  return deriveTripWrite({
+    ...args,
+    existing,
+    oldTrip: trips.find((t) => t.id === existing?.trip_id) ?? null,
+    newTrip: trips.find((t) => t.id === args.tripId) ?? null,
+    stops: tripStops.filter((s) => s.trip_id === resultingTrip),
+  });
+}
+
+function seedTrips() {
+  const now = new Date().toISOString();
+  const italy = {
+    id: randomUUID(), name: 'Italy', start_date: daysAgoISO(2), end_date: daysAgoISO(-5),
+    total_budget: 1200, keep_out_of_monthly: true, source_group_id: null, archived_at: null, created_at: now,
+  };
+  const rome = {
+    id: randomUUID(), trip_id: italy.id, name: 'Rome', start_date: daysAgoISO(2), end_date: daysAgoISO(-1),
+    budget: 500, currency: 'EUR', created_at: now,
+  };
+  const naples = {
+    id: randomUUID(), trip_id: italy.id, name: 'Naples', start_date: daysAgoISO(-2), end_date: daysAgoISO(-5),
+    budget: null, currency: null, created_at: now,
+  };
+  trips.push(italy);
+  tripStops.push(rome, naples);
+  for (const [name, amount_limit] of [['Food', 200], ['Shopping', 150]]) {
+    tripCategoryBudgets.push({
+      id: randomUUID(), trip_id: italy.id, category_id: cat(name).id, amount_limit, created_at: now,
+    });
+  }
+
+  const onTrip = (categoryName, amount, description, dAgo, extra = {}) => {
+    seedTx(categoryName, amount, description, dAgo);
+    Object.assign(transactions.at(-1), { trip_id: italy.id, is_special: true, ...extra });
+  };
+  onTrip('Transport', 186.4, 'Flights to Rome', 30); // pre-trip: lands under No city
+  onTrip('Food', 38.5, 'Trattoria da Enzo', 2, { original_amount: 45, original_currency: 'EUR', fx_rate: 0.85565 });
+  onTrip('Entertainment', 21.4, 'Colosseum tickets', 1);
+  onTrip('Shopping', 64, 'Leather belt', 0, { trip_stop_id: naples.id }); // bought in Rome, filed under Naples by hand
+
+  // A group to convert with "Start from a special group".
+  const lisbon = { id: randomUUID(), name: 'Lisbon weekend', archived_at: null, created_at: now };
+  specialGroups.push(lisbon);
+  for (const [categoryName, amount, description, dAgo] of [
+    ['Transport', 74, 'Lisbon flights', 75],
+    ['Food', 42.5, 'Time Out Market', 60],
+    ['Entertainment', 18, 'Tram 28', 59],
+  ]) {
+    seedTx(categoryName, amount, description, dAgo, 'expense', true);
+    transactions.at(-1).special_group_id = lisbon.id;
+  }
+
+  // Saving a keep-out trip turns this on (routes/trips.js), and every row carries the columns.
+  stats.special_expenses_enabled = true;
+  for (const t of transactions) {
+    t.trip_id ??= null;
+    t.trip_stop_id ??= null;
+  }
+}
+seedTrips();
 
 app.get('/api/special-groups', (_req, res) => {
   const byGroup = new Map();
@@ -1440,6 +1528,8 @@ app.all('/api/cron/recurrences', (req, res) => {
         is_recurring: true,
         is_special: false,
         recurrence_id: r.id,
+        trip_id: null,
+        trip_stop_id: null,
         created_at: new Date().toISOString(),
       });
       created += 1;
