@@ -1,18 +1,18 @@
-# Chat Handoff — updated 2026-11-03 (PHASE 17 + BUG FIXES LIVE; Phase 18 trips being built on a branch)
+# Chat Handoff — updated 2026-11-03 (PHASE 17 + BUG FIXES LIVE; Phase 18 trips built on a branch, not deployed)
 
 ## DUAL-AGENT BATON  (both models: update this the MOMENT you finish work)
-- Current stage:  **Phase 18 trips, BUILD in progress** on branch `claude/confident-northcutt-6cd9f9`
-                  (not merged, nothing deployed). Phase 17 and the 13 Oct bug fixes are live on `main`.
-                  Plan: `docs/superpowers/plans/2026-11-01-trips.md` + PDF, with Alex's answers recorded
-                  (Q3 block, Q4 known limit, Q5 stops only). Live DB re-checked 3 Nov: 012/018/018a/019 not
-                  applied, no trip objects. Server side done; client side next.
-- Model A is:     Claude Code. Independent review by code-reviewer + a fresh red-team pass (Codex is
-                  unavailable for security work).
-- Up next:        **Claude Code** — plan steps 15-25 (client, click-through, docs, review). Alex's logged-in
-                  checks on Phase 17 are still outstanding (next step 1).
-- Last actor did: Claude Code, 2026-11-03 — migration `017b_trips.sql`, the 9.5 in-place edits, the trip rules,
-                  the eight endpoints, subscription and dashboard changes, devMock parity. Nothing is
-                  reachable in the UI yet. 017b is NOT applied to the live database.
+- Current stage:  **Phase 18 trips: built, reviewed and fixed on branch `claude/confident-northcutt-6cd9f9`.**
+                  NOT merged, NOT deployed, **017b NOT on the live database**. Rollout steps:
+                  `docs/2026-11-03-phase18-deploy-checklist.md` + PDF. Phase 17 and the 13 Oct bug fixes are live.
+- Model A is:     Claude Code. Independent review by `code-reviewer` (Codex unavailable for security work).
+- Up next:        **Alex** — decide on the deploy (checklist above) and whether archiving should turn the Special
+                  setting on. His Phase 17 logged-in checks are still outstanding too.
+- Last actor did: Claude Code, 2026-11-03 — fixed the review's P1 and four P2s (BUGS-FIXED 2026-11-03), planted
+                  bystander rows so deleted filters fail a test. `npm test` 1150/1150, 0 skipped; client build
+                  passes; clicked through in the real app against `dev:mock` with only login swapped out.
+- Last verdict:   code-reviewer FAIL (0 P0, 1 P1, 4 P2) → all fixed; P1 proved by replaying its reproduction.
+- Not verified:   a logged-in run with real data, and the routes against real PostgREST (the route suites use a
+                  fake; real PostgreSQL covers the migrations and the restore statement).
 
 ## Goal
 Alex (13 Oct): (1) trips with a set budget per category and per city; (2) "I don't see a way to mark a

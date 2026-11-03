@@ -1327,7 +1327,7 @@ Branch `claude/confident-northcutt-6cd9f9`. **017b is NOT applied to the live da
 - [x] **18.7** Subscriptions attach and /track take charges off trips; `specialOnTripsThisMonth`.
 - [x] **18.8** Client: Trips, TripDetail, TripEditor, TripCard, TripTag, TripPicker, TripChip, TripTrackedLine, `TransactionEditDialog` extracted, Quick Add trip mode, nav to `lg`.
 - [x] **18.9** Clicked through in the real app (real router and nav, only login swapped out) against `npm run dev:mock`: the spec's 7 manual checks, at 375, 768 and 1024px.
-- [ ] **18.10** Independent review.
+- [x] **18.10** Independent review by `code-reviewer`: 0 P0, 1 P1 (a Quick Add open past midnight held a foreign entry at rate 1), 4 P2. All fixed, the P1 proved by replaying the reviewer's reproduction. Route tests gained bystander rows, and a mutation sweep now catches every filter in `routes/trips.js` that can change a result. See BUGS-FIXED 2026-11-03.
 - [ ] **18.11** Apply 017b, merge to `main`, deploy `trim-api`, deploy client. Not verified until then: a logged-in click-through with real data.
 
 ## Deferred further (flagged in FEATURES.md, don't start without explicit ask)
