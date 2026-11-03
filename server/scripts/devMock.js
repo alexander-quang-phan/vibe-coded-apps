@@ -37,6 +37,7 @@ import { buildRunningAverage } from '../lib/runningAverage.js';
 import { convertToBase } from '../lib/fx.js';
 import { dayInZone, monthBounds, addMonths } from '../lib/month.js';
 import { monthlyEquivalentLimit } from '../lib/budgetPeriod.js';
+import { sumSpecialOnTrips } from '../lib/special.js';
 // Phase 18 — the SAME trip rules and figures the real routes use, never re-implemented.
 import {
   deriveTripWrite, tripCreateSchema, tripPatchSchema, fromGroupSchema, bulkAddSchema, DELETE_MODES,
@@ -1096,6 +1097,7 @@ app.get('/api/dashboard', (_req, res) => {
       balance: round2(income - expenses),
       transactionCount: monthTx.length,
       specialThisMonth: round2(specialThisMonth),
+      specialOnTripsThisMonth: round2(sumSpecialOnTrips(monthTx, specialEnabled)),
     },
     categoryBreakdown,
     budgetAlerts,
@@ -1281,6 +1283,14 @@ app.get('/api/analytics', (req, res) => {
 // return rate: null, which is exactly what the real route does for e.g. VND and
 // exercises the client's "type the rate yourself" path.
 const MOCK_RATES = { 'EUR->GBP': 0.85565, 'USD->GBP': 0.7912, 'CHF->GBP': 0.9134, 'JPY->GBP': 0.00512 };
+// Mock only: lets a click-through force "rate unavailable" part-way through an entry,
+// which is the Phase 12 bug class Quick Add's trip mode must not reopen.
+let mockFxUnavailable = false;
+app.post('/api/__mock/fx-unavailable', (req, res) => {
+  mockFxUnavailable = !!req.body?.on;
+  res.json({ on: mockFxUnavailable });
+});
+
 app.get('/api/fx', (req, res) => {
   const from = String(req.query.from ?? '').toUpperCase();
   const to = String(req.query.to ?? '').toUpperCase();
@@ -1288,6 +1298,7 @@ app.get('/api/fx', (req, res) => {
     return res.status(400).json({ error: 'Invalid currency pair' });
   }
   if (from === to) return res.json({ rate: 1, date: todayUTC(), source: 'identity', from, to });
+  if (mockFxUnavailable) return res.json({ rate: null, reason: 'mock-unavailable', from, to });
   const rate = MOCK_RATES[`${from}->${to}`];
   if (!rate) return res.json({ rate: null, reason: 'unsupported-pair', from, to });
   res.json({ rate, date: todayUTC(), source: 'mock', from, to });
@@ -1425,7 +1436,9 @@ function mockSubRef(proto) {
   };
 }
 
-const mockCandidate = (t) => ({ id: t.id, date: t.date, amount: Number(t.amount), description: t.description ?? null });
+const mockCandidate = (t) => ({
+  id: t.id, date: t.date, amount: Number(t.amount), description: t.description ?? null, tripId: t.trip_id ?? null,
+});
 
 app.get('/api/subscriptions', (_req, res) => {
   const { expenses, linkedById, protos } = mockState();
@@ -1568,15 +1581,23 @@ app.post('/api/subscriptions/track', (req, res) => {
     cancelled_at: null, created_at: new Date().toISOString(), auto_log: false,
   });
   let linkedCount = 0;
+  let leftTrip = 0;
   for (const tid of new Set([transactionId, ...includeTransactionIds])) {
     const t = transactions.find((x) => x.id === tid);
     if (t && t.type === 'expense' && !t.recurrence_id) {
       t.recurrence_id = id;
       t.is_recurring = false; // as the real route: a tracked charge is never "logged by a schedule"
       linkedCount += 1;
+      // Phase 18: a subscription is home spending, as routes/subscriptions.js.
+      if (t.trip_id) {
+        if (trips.find((x) => x.id === t.trip_id)?.keep_out_of_monthly) t.is_special = false;
+        t.trip_id = null;
+        t.trip_stop_id = null;
+        leftTrip += 1;
+      }
     }
   }
-  res.status(201).json({ subscription: { merchantKey: manualMerchantKey(id), linkedCount } });
+  res.status(201).json({ subscription: { merchantKey: manualMerchantKey(id), linkedCount }, leftTrip, unstarFailed: 0 });
 });
 
 /** Resolve a manual key to a TRACKED recurrence, or send the same errors as the route. */
@@ -1625,8 +1646,16 @@ app.post('/api/subscriptions/:merchantKey/attach', (req, res) => {
   }
   t.recurrence_id = r.id;
   t.is_recurring = false;
+  // Phase 18, as routes/subscriptions.js: off its trip, un-starred only if keep-out.
+  const leftTrip = !!t.trip_id;
+  const unstarred = !!trips.find((x) => x.id === t.trip_id)?.keep_out_of_monthly;
+  if (leftTrip) {
+    if (unstarred) t.is_special = false;
+    t.trip_id = null;
+    t.trip_stop_id = null;
+  }
   if (reactivate && r.cancelled_at) r.cancelled_at = null; // only AFTER the link succeeded
-  res.json({ ok: true });
+  res.json({ ok: true, leftTrip, unstarred });
 });
 
 app.post('/api/subscriptions/:merchantKey/detach', (req, res) => {
