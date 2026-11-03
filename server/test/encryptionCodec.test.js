@@ -36,6 +36,14 @@ test('CRITICAL: at phase off the codec is a no-op in both directions', () => {
   assert.deepEqual(encodeWrite('budgets', U, patch, 'off'), patch);
 });
 
+test('CRITICAL: encodeWrite refuses an array in every phase, encrypted table or not', () => {
+  // Spread as { 0: row, 1: row } it would be written wrong with no error at all.
+  for (const phase of ['off', 'dual', 'enc']) {
+    assert.throws(() => encodeWrite('trip_stops', 'u1', [{ name: 'Rome' }], phase), /one row, not an array/);
+    assert.throws(() => encodeWrite('user_badges', 'u1', [{ name: 'x' }], phase), /one row, not an array/);
+  }
+});
+
 test('a table with nothing encrypted is untouched in every phase', () => {
   assert.equal(isEncryptedTable('special_group_members'), false);
   for (const phase of ['off', 'dual', 'enc']) {

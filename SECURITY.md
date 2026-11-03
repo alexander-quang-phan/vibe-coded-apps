@@ -210,7 +210,8 @@ total, answer an Ask Trim question, or detect a subscription. So:
 
 **Money:** `transactions.amount` and `.original_amount`, `budgets.amount_limit`,
 `savings_goals.target_amount` and `.current_amount`, `savings_contributions.amount`,
-`user_stats.monthly_limit`, `recurrences.amount`.
+`user_stats.monthly_limit`, `recurrences.amount`, `trips.total_budget`,
+`trip_stops.budget`, `trip_category_budgets.amount_limit`.
 
 `transactions.original_amount` is encrypted because `amount = original_amount ×
 fx_rate` — encrypting only `amount` left every foreign-currency expense
@@ -219,9 +220,13 @@ reconstructable by one multiplication.
 **Free text:** `transactions.description`, `recurrences.description`,
 `ask_messages.content`, `savings_goals.name`, `savings_contributions.note`,
 `special_groups.name`, `subscription_overrides.display_name`, `categories.name`,
-and `subscription_overrides.merchant_key` (which keeps an encrypted copy beside
+`trips.name`, `trip_stops.name`, and `subscription_overrides.merchant_key` (which keeps an encrypted copy beside
 its hash, because a one-way hash alone could never be recomputed after a key
 rotation — and it is that table's primary key).
+
+Trip dates, `trips.keep_out_of_monthly`, `trip_stops.currency` (a public code) and the
+foreign keys stay plaintext: the routes need the dates to file spending by city, and a
+currency code reveals no amount.
 
 **Blind indexes** (keyed hashes, not ciphertext — searchable but unreadable):
 `transactions.merchant_prefix_hmacs` — a `text[]` of one hash per prefix of the

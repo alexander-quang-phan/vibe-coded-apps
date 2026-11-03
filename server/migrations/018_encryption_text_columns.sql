@@ -102,6 +102,21 @@ alter table public.subscription_overrides
   -- blind-index replacement; migration 019 moves the primary key onto it.
   add column if not exists merchant_key_hmac text;
 
+-- Phase 18 trips. These tables come from 017b, which sorts before this file, so a
+-- replay in filename order finds them. Edited in place because 018 had never been
+-- applied anywhere when trips was built (checked against the live database on
+-- 2026-11-03). No blind index: nothing looks a trip or a city up by name in SQL.
+alter table public.trips
+  add column if not exists name_enc text,
+  add column if not exists total_budget_enc text;
+
+alter table public.trip_stops
+  add column if not exists name_enc text,
+  add column if not exists budget_enc text;
+
+alter table public.trip_category_budgets
+  add column if not exists amount_limit_enc text;
+
 -- --- indexes for the blind-index lookups ------------------------------------
 -- Merchant memory runs on every keystroke-ish in Quick Add, so these matter.
 -- Scoped by user_id because every lookup is already `.eq('user_id', …)`.

@@ -445,3 +445,61 @@ test('all three tables have RLS on, four own-row policies, and the service-role 
     assert.equal(grant.rows[0].ok, true, `${table} is reachable by the API`);
   }
 });
+
+test('CRITICAL: the encryption migrations replay on top: 22 encrypted columns, 13 barriers, then 019', async (t) => {
+  if (guard(t)) return;
+  // An EMPTY database: 019's NOT NULLs correctly refuse rows that were never backfilled.
+  await pg.createDatabase('trim019');
+  const db = await connect('trim019');
+  try {
+    await stubSupabase(db);
+    await replay(db, ALL.filter((f) => f <= '018a_encryption_write_barrier.sql'));
+
+    const before = await db.query(
+      `select
+         (select count(*) from information_schema.columns
+           where table_schema = 'public' and column_name like '%\\_enc')::int as enc_columns,
+         (select count(*) from pg_trigger
+           where tgname like '%\\_encryption\\_cutover\\_guard')::int as barriers`,
+    );
+    assert.deepEqual(before.rows[0], { enc_columns: 22, barriers: 13 });
+
+    for (const table of ['trips', 'trip_stops', 'trip_category_budgets']) {
+      const barrier = await db.query(
+        `select 1 from pg_trigger where tgname = $1 and tgrelid = $2::regclass`,
+        [`${table}_encryption_cutover_guard`, `public.${table}`],
+      );
+      assert.equal(barrier.rowCount, 1, `${table} has a write barrier`);
+    }
+
+    const last = ALL[ALL.length - 1];
+    assert.equal(last, '019_encryption_drop_plaintext.sql', '019 must sort last');
+    await replay(db, [last]);
+
+    const cols = await db.query(
+      `select table_name, column_name, is_nullable from information_schema.columns
+       where table_schema = 'public' and table_name in ('trips', 'trip_stops', 'trip_category_budgets')`,
+    );
+    const has = (table, column) => cols.rows.find((c) => c.table_name === table && c.column_name === column);
+    for (const [table, column] of [
+      ['trips', 'name'],
+      ['trips', 'total_budget'],
+      ['trip_stops', 'name'],
+      ['trip_stops', 'budget'],
+      ['trip_category_budgets', 'amount_limit'],
+    ]) {
+      assert.equal(has(table, column), undefined, `${table}.${column} is gone`);
+    }
+    assert.equal(has('trips', 'name_enc').is_nullable, 'NO');
+    assert.equal(has('trip_stops', 'name_enc').is_nullable, 'NO');
+    assert.equal(has('trip_category_budgets', 'amount_limit_enc').is_nullable, 'NO');
+    assert.equal(has('trips', 'total_budget_enc').is_nullable, 'YES');
+    assert.equal(has('trip_stops', 'budget_enc').is_nullable, 'YES');
+    // Plaintext on purpose, and still there.
+    assert.ok(has('trips', 'start_date'));
+    assert.ok(has('trips', 'keep_out_of_monthly'));
+    assert.ok(has('trip_stops', 'currency'));
+  } finally {
+    await db.end().catch(() => {});
+  }
+});
