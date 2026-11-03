@@ -54,6 +54,13 @@ a merchant name or an amount bucket, for any user, and the backfill, the gate an
 promised never to log user data. *Fixed:* `lib/rowLabel.js` prints a primary-key column that is itself
 encrypted as a short hash, with the SQL to find the row in its header.
 
+**5. Every new savings goal would have failed after migration 019.** `POST /api/goals` omitted
+`current_amount` and relied on the plaintext column's default of 0. Migration 019 drops that column and
+makes `current_amount_enc` NOT NULL with no default, and only a value in the insert gets encrypted. The
+route tests could not see it, because the fake database enforces no NOT NULL. *Fixed:* the insert sends
+`current_amount: 0` explicitly, which also stops new goals being half-encrypted at `dual` (bug 1). The
+new test takes its columns from the registry's `notNull` flags and checks them at all three phases.
+
 **The shape:** at `dual`, "is this row done?" has no row-level answer — only per-column ones. Anything
 that judges a multi-column row by one column (a filter, a skip, a `first` anything) is this bug.
 
@@ -366,11 +373,6 @@ Recorded so they are not rediscovered the hard way. Most of the original list be
   column may not exist, so a check against `row.name` compares against `undefined` and fails open.
 - **Return `presentRow`/`presentRows`, never a raw decoded row** — the codec adds `*_enc` and
   `user_id` for its own use, and returning the row wholesale ships them to the browser.
-- **(2026-11-01, open) `POST /api/goals` will fail on every new goal after migration 019.** The insert
-  omits `current_amount` and relies on the plaintext column's default of 0; 019 drops that column and
-  makes `current_amount_enc` NOT NULL with no default, so at `enc` nothing writes it. The route tests
-  cannot see it — the fake database enforces no NOT NULL. Fix before Part B: send `current_amount: 0`
-  explicitly, so `encodeWrite` encrypts it at every phase.
 
 - **Migrations must replay cleanly from scratch.** A statement naming an object no migration
   creates aborts the whole batch in the Supabase SQL editor, silently skipping the statements

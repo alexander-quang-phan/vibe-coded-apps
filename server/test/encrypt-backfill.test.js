@@ -402,9 +402,9 @@ test('a composite-PK table is paged and encrypted, not skipped', async () => {
 // PATCH of a transaction's amount writes amount_enc and nothing else. The scan
 // used to decide "already done" from the table's FIRST `_enc` column alone, so
 // that row was skipped on every run while the gate failed on its description —
-// and no re-run could ever repair it. Same for a goal created at `dual`: the
-// insert has no current_amount, the database default fills the plaintext with
-// 0, and nothing writes current_amount_enc.
+// and no re-run could ever repair it. Same for a goal created at `dual` while
+// the insert had no current_amount: the database default filled the plaintext
+// with 0, and nothing wrote current_amount_enc.
 
 /** A row of `job`'s table with every field and blind index already correct. */
 function fullyEncryptedRow(job, userId = 'u1') {
@@ -449,9 +449,10 @@ test('REGRESSION: a row whose first _enc is set but a later one is missing is pi
 });
 
 test('REGRESSION: a goal created at dual gets its current_amount_enc (the DB default 0)', async () => {
-  // POST /api/goals inserts name + target_amount only; Postgres fills
-  // current_amount with its default. 0 is falsy, so this also guards against a
-  // `!value` check treating a real zero as "nothing to encrypt".
+  // POST /api/goals used to insert name + target_amount only, leaving Postgres to
+  // fill current_amount with its default, so a row like this can still exist. 0 is
+  // falsy, so this also guards against a `!value` check treating a real zero as
+  // "nothing to encrypt".
   const job = JOBS.find((j) => j.table === 'savings_goals');
   const tables = {
     savings_goals: [{

@@ -920,9 +920,10 @@ older than the 200-row window load. Verify by tapping into an old month in the r
 > - **Known limit of the key check:** the value it tests against must have been written by the deployed
 >   app. A row written by a local server at `dual` uses the laptop's own key, so it proves nothing. The
 >   runbook says so.
-> - **Still open, found the same day (not fixed):** `POST /api/goals` will fail on every new goal
->   after 019 (it relies on the plaintext `current_amount` default, which 019 drops while making
->   `current_amount_enc` NOT NULL) — fix before Part B. Recorded in `BUGS-FIXED.md`.
+> - **Also fixed, found the same day:** `POST /api/goals` would have failed on every new goal after 019
+>   (it relied on the plaintext `current_amount` default, which 019 drops while making
+>   `current_amount_enc` NOT NULL). It now sends `current_amount: 0`. Suite 747 -> 750. This one changes
+>   an API route, so unlike the backfill and gate script changes it needs a `trim-api` deploy.
 
 > **Codex stage-4 VERIFY: FAIL (2026-08-18).** Eleven findings, including two reproduced false
 > PASSes in the gate itself (a 501-row composite-PK scan that verified 500; a value-only edit after
