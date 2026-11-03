@@ -38,6 +38,7 @@ const MOUNTS = [
   { path: '/api/projections', open: false },
   { path: '/api/affordability', open: false },
   { path: '/api/special-groups', open: false },
+  { path: '/api/trips', open: false },
   { path: '/api/fx', open: false },
   { path: '/api/ask', open: false },
   // The two documented exceptions. Adding to this list must be a deliberate edit.

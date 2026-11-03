@@ -369,6 +369,37 @@ test('CRITICAL: deleting a stop keeps the spending on the trip and drops only th
   });
 });
 
+test('CRITICAL: the restore delete mode is one statement the CHECK accepts, row by row', async (t) => {
+  if (guard(t)) return;
+  await inTx(async () => {
+    const tripId = await newTrip({ source_group_id: preGroup });
+    const stopId = await newStop(tripId);
+    const first = await newTx({ trip_id: tripId, trip_stop_id: stopId });
+    const second = await newTx({ trip_id: tripId });
+
+    // The exact statement DELETE /api/trips/:id?expenses=restore sends.
+    assert.equal(
+      await attempt(
+        `update public.transactions
+         set special_group_id = $1, is_special = true, trip_id = null, trip_stop_id = null
+         where user_id = $2 and trip_id = $3`,
+        [preGroup, U, tripId],
+      ),
+      null,
+    );
+    await admin.query('delete from public.trips where id = $1', [tripId]);
+
+    const { rows } = await admin.query(
+      `select special_group_id, is_special, trip_id, trip_stop_id from public.transactions where id = any($1)`,
+      [[first, second]],
+    );
+    assert.equal(rows.length, 2);
+    for (const row of rows) {
+      assert.deepEqual(row, { special_group_id: preGroup, is_special: true, trip_id: null, trip_stop_id: null });
+    }
+  });
+});
+
 test('deleting the group a trip came from leaves the trip, with no source', async (t) => {
   if (guard(t)) return;
   await inTx(async () => {

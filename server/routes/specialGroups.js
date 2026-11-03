@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import { supabase } from '../lib/supabase.js';
+import { readAllPages } from '../lib/readAllPages.js';
 
 import { selectFor, decodeRow, decodeRows, encodeWrite } from '../lib/encryptionCodec.js';
 
@@ -11,7 +12,7 @@ const router = Router();
 // at the boundary is enough.
 const GROUP_COLUMNS = 'id, name, archived_at, created_at';
 const GROUP_PATCH_COLUMNS = 'id, name, archived_at';
-const GROUP_TX_COLUMNS = 'amount, date, special_group_id, is_special';
+const GROUP_TX_COLUMNS = 'id, amount, date, special_group_id, is_special';
 
 const UUID_RE = /^[0-9a-f-]{36}$/i;
 
@@ -44,25 +45,29 @@ const round2 = (n) => Number(n.toFixed(2));
  */
 router.get('/', async (req, res, next) => {
   try {
-    const [groupsRes, txRes] = await Promise.all([
+    const [groupsRes, txRows] = await Promise.all([
       supabase
         .from('special_groups')
         .select(selectFor('special_groups', GROUP_COLUMNS))
         .eq('user_id', req.user.id)
         .order('created_at', { ascending: false }),
-      supabase
+      // Paged: "Start from a special group" reports how many expenses fall outside the
+      // dates Alex picks, so a total cut off at the row cap would mislead him.
+      readAllPages(() => supabase
         .from('transactions')
         .select(selectFor('transactions', GROUP_TX_COLUMNS))
         .eq('user_id', req.user.id)
         .eq('type', 'expense')
         .eq('is_special', true)
-        .not('special_group_id', 'is', null),
+        .not('special_group_id', 'is', null)
+        .order('date', { ascending: true })
+        .order('id', { ascending: true })),
     ]);
-    for (const r of [groupsRes, txRes]) if (r.error) throw r.error;
+    if (groupsRes.error) throw groupsRes.error;
 
     const byGroup = new Map();
     const groupRows = decodeRows('special_groups', req.user.id, groupsRes.data);
-    for (const t of decodeRows('transactions', req.user.id, txRes.data)) {
+    for (const t of decodeRows('transactions', req.user.id, txRows)) {
       const g = byGroup.get(t.special_group_id) ?? { total: 0, count: 0, dates: [] };
       g.total += Number(t.amount);
       g.count += 1;
@@ -81,6 +86,7 @@ router.get('/', async (req, res, next) => {
         count: agg?.count ?? 0,
         firstDate: dates[0] ?? null,
         lastDate: dates.at(-1) ?? null,
+        dates,
       };
     });
 
@@ -114,6 +120,7 @@ router.post('/', async (req, res, next) => {
         count: 0,
         firstDate: null,
         lastDate: null,
+        dates: [],
       },
     });
   } catch (err) {

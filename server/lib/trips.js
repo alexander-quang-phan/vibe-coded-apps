@@ -162,3 +162,78 @@ export function summariseTrip(trip, stops, categoryBudgets, txs, today) {
     count: txs.length,
   };
 }
+
+/**
+ * One trip as the API shows it, built field by field so no ciphertext, `user_id` or
+ * other column the codec added can reach the browser. Used by routes/trips.js and
+ * devMock alike. `createdAt` is here because the client's total order needs it.
+ */
+export function presentTrip(trip, stops, categoryBudgets, summary, today) {
+  const { status, daysUntilStart, dayOfTrip, length, daysLeft } = tripStatus(trip, today);
+  return {
+    id: trip.id,
+    name: trip.name,
+    startDate: trip.start_date,
+    endDate: trip.end_date,
+    keepOutOfMonthly: trip.keep_out_of_monthly,
+    sourceGroupId: trip.source_group_id ?? null,
+    archivedAt: trip.archived_at ?? null,
+    createdAt: trip.created_at,
+    status,
+    daysUntilStart,
+    dayOfTrip,
+    length,
+    daysLeft,
+    totalBudget: summary.totalBudget,
+    spent: summary.spent,
+    remaining: summary.remaining,
+    perDayLeft: summary.perDayLeft,
+    overBy: summary.overBy,
+    count: summary.count,
+    stops: stops.map((s) => ({
+      id: s.id,
+      name: s.name,
+      startDate: s.start_date,
+      endDate: s.end_date,
+      budget: s.budget == null ? null : Number(s.budget),
+      currency: s.currency ?? null,
+      createdAt: s.created_at,
+    })),
+    categoryBudgets: categoryBudgets.map((b) => ({
+      id: b.id,
+      categoryId: b.category_id,
+      amount: Number(b.amount_limit),
+    })),
+  };
+}
+
+// Rows are stored under the trip's id, so one read can feed every trip.
+export function groupByTrip(rows) {
+  const out = new Map();
+  for (const row of rows) {
+    if (!out.has(row.trip_id)) out.set(row.trip_id, []);
+    out.get(row.trip_id).push(row);
+  }
+  return out;
+}
+
+const UNTAGGED_LIMIT = 200;
+
+/** Newest first, then filtered by `q` on the note, in the two lists "Add expenses" shows. */
+export function splitUntagged(rows, trip, q) {
+  const needle = (q ?? '').trim().toLowerCase();
+  const shown = rows
+    .filter((r) => !needle || (r.description ?? '').toLowerCase().includes(needle))
+    .sort((a, b) => (a.date === b.date ? (a.id < b.id ? 1 : -1) : a.date < b.date ? 1 : -1));
+  return {
+    during: shown.filter((r) => r.date >= trip.start_date).slice(0, UNTAGGED_LIMIT),
+    before: shown.filter((r) => r.date < trip.start_date).slice(0, UNTAGGED_LIMIT),
+  };
+}
+
+/** The earliest date "Before the trip" reaches: 180 days before the start. */
+export function untaggedWindowStart(trip) {
+  const start = new Date(`${trip.start_date}T00:00:00Z`);
+  start.setUTCDate(start.getUTCDate() - 180);
+  return start.toISOString().slice(0, 10);
+}

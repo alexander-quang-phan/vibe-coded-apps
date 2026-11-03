@@ -38,7 +38,13 @@ import { convertToBase } from '../lib/fx.js';
 import { dayInZone, monthBounds, addMonths } from '../lib/month.js';
 import { monthlyEquivalentLimit } from '../lib/budgetPeriod.js';
 // Phase 18 — the SAME trip rules and figures the real routes use, never re-implemented.
-import { deriveTripWrite } from '../lib/tripRules.js';
+import {
+  deriveTripWrite, tripCreateSchema, tripPatchSchema, fromGroupSchema, bulkAddSchema, DELETE_MODES,
+  checkTripPlan, checkTripCategories, stopRow, diffStops, diffCategoryBudgets,
+} from '../lib/tripRules.js';
+import {
+  summariseTrip, presentTrip, splitUntagged, untaggedWindowStart,
+} from '../lib/trips.js';
 
 const PORT = process.env.PORT || 3001;
 const app = express();
@@ -728,6 +734,7 @@ app.get('/api/special-groups', (_req, res) => {
         count: agg?.count ?? 0,
         firstDate: dates[0] ?? null,
         lastDate: dates.at(-1) ?? null,
+        dates,
       };
     }),
   });
@@ -741,7 +748,7 @@ app.post('/api/special-groups', (req, res) => {
   const g = { id: randomUUID(), name, archived_at: null, created_at: new Date().toISOString() };
   specialGroups.unshift(g);
   res.status(201).json({
-    group: { id: g.id, name: g.name, archivedAt: null, total: 0, count: 0, firstDate: null, lastDate: null },
+    group: { id: g.id, name: g.name, archivedAt: null, total: 0, count: 0, firstDate: null, lastDate: null, dates: [] },
   });
 });
 
@@ -760,6 +767,244 @@ app.delete('/api/special-groups/:id', (req, res) => {
   // `on delete set null` — the spending survives, just ungrouped.
   for (const t of transactions) if (t.special_group_id === req.params.id) t.special_group_id = null;
   res.status(204).end();
+});
+
+// ---------------------------------------------------------------------------
+// Trips — mirrors routes/trips.js, on the same schemas, rules and figures.
+// ---------------------------------------------------------------------------
+
+const MOCK_UUID_RE = /^[0-9a-f-]{36}$/i;
+
+const mockStopsOf = (tripId) => tripStops
+  .filter((s) => s.trip_id === tripId)
+  .sort((a, b) => a.start_date.localeCompare(b.start_date) || a.created_at.localeCompare(b.created_at));
+const mockBudgetsOf = (tripId) => tripCategoryBudgets.filter((b) => b.trip_id === tripId);
+const mockTxsOf = (tripId) => transactions
+  .filter((t) => t.trip_id === tripId && t.type === 'expense')
+  .sort((a, b) => a.date.localeCompare(b.date) || a.id.localeCompare(b.id));
+
+function mockPresentTrip(trip) {
+  const stops = mockStopsOf(trip.id);
+  const budgets = mockBudgetsOf(trip.id);
+  const today = todayUTC();
+  return presentTrip(trip, stops, budgets, summariseTrip(trip, stops, budgets, mockTxsOf(trip.id), today), today);
+}
+
+function mockTurnOnSpecial(keepOut) {
+  if (!keepOut || stats.special_expenses_enabled) return false;
+  stats.special_expenses_enabled = true;
+  return true;
+}
+
+function mockInsertChildren(tripId, stopRows, budgetRows) {
+  const now = new Date().toISOString();
+  for (const row of stopRows) tripStops.push({ id: randomUUID(), trip_id: tripId, created_at: now, ...row });
+  for (const row of budgetRows) tripCategoryBudgets.push({ id: randomUUID(), trip_id: tripId, created_at: now, ...row });
+}
+
+function mockCreateTrip(body, sourceGroupId = null) {
+  const refused = checkTripPlan({ ...body, baseCurrency: stats.currency })
+    ?? checkTripCategories(body.categoryBudgets, categories);
+  if (refused) return { refused };
+  const specialEnabledNow = mockTurnOnSpecial(body.keepOutOfMonthly);
+  const trip = {
+    id: randomUUID(),
+    name: body.name,
+    start_date: body.startDate,
+    end_date: body.endDate,
+    total_budget: body.totalBudget ?? null,
+    keep_out_of_monthly: body.keepOutOfMonthly,
+    source_group_id: sourceGroupId,
+    archived_at: null,
+    created_at: new Date().toISOString(),
+  };
+  trips.push(trip);
+  mockInsertChildren(
+    trip.id,
+    body.stops.map(stopRow),
+    body.categoryBudgets.map((b) => ({ category_id: b.categoryId, amount_limit: b.amount })),
+  );
+  return { trip, specialEnabledNow };
+}
+
+app.get('/api/trips', (_req, res) => {
+  const list = [...trips].sort(
+    (a, b) => b.start_date.localeCompare(a.start_date) || a.created_at.localeCompare(b.created_at),
+  );
+  res.json({ trips: list.map(mockPresentTrip) });
+});
+
+app.post('/api/trips/from-group', (req, res) => {
+  const parsed = fromGroupSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: 'Invalid trip', details: parsed.error.flatten() });
+  const { groupId, trip: body } = parsed.data;
+  const group = specialGroups.find((g) => g.id === groupId);
+  if (!group) return res.status(404).json({ error: 'Group not found' });
+  const made = mockCreateTrip(body, groupId);
+  if (made.refused) return res.status(made.refused.status).json({ error: made.refused.error });
+  let moved = 0;
+  for (const t of transactions) {
+    if (t.special_group_id !== groupId || t.type !== 'expense' || t.recurrence_id) continue;
+    t.trip_id = made.trip.id;
+    t.special_group_id = null;
+    t.is_special = body.keepOutOfMonthly;
+    moved += 1;
+  }
+  group.archived_at = new Date().toISOString();
+  res.status(201).json({
+    trip: mockPresentTrip(made.trip),
+    moved,
+    groupArchived: true,
+    specialEnabledNow: made.specialEnabledNow,
+  });
+});
+
+app.post('/api/trips', (req, res) => {
+  const parsed = tripCreateSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: 'Invalid trip', details: parsed.error.flatten() });
+  const made = mockCreateTrip(parsed.data);
+  if (made.refused) return res.status(made.refused.status).json({ error: made.refused.error });
+  res.status(201).json({ trip: mockPresentTrip(made.trip), specialEnabledNow: made.specialEnabledNow });
+});
+
+const mockTripFrom = (req) => (MOCK_UUID_RE.test(req.params.id) ? trips.find((t) => t.id === req.params.id) : null);
+
+app.get('/api/trips/:id', (req, res) => {
+  const trip = mockTripFrom(req);
+  if (!trip) return res.status(404).json({ error: 'Trip not found' });
+  const stops = mockStopsOf(trip.id);
+  const budgets = mockBudgetsOf(trip.id);
+  const txs = mockTxsOf(trip.id);
+  const today = todayUTC();
+  const summary = summariseTrip(trip, stops, budgets, txs, today);
+  const group = specialGroups.find((g) => g.id === trip.source_group_id);
+  res.json({
+    trip: presentTrip(trip, stops, budgets, summary, today),
+    summary,
+    sourceGroup: group ? { id: group.id, name: group.name } : null,
+    transactions: txs,
+  });
+});
+
+app.patch('/api/trips/:id', (req, res) => {
+  const trip = mockTripFrom(req);
+  if (!trip) return res.status(404).json({ error: 'Trip not found' });
+  const parsed = tripPatchSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: 'Invalid update', details: parsed.error.flatten() });
+  const body = parsed.data;
+
+  const existingStops = mockStopsOf(trip.id);
+  const existingBudgets = mockBudgetsOf(trip.id);
+  const desiredStops = body.stops ?? existingStops.map((s) => ({
+    name: s.name, startDate: s.start_date, endDate: s.end_date,
+  }));
+  const refused = checkTripPlan({
+    startDate: body.startDate ?? trip.start_date,
+    endDate: body.endDate ?? trip.end_date,
+    stops: desiredStops,
+    categoryBudgets: body.categoryBudgets ?? [],
+    baseCurrency: body.stops ? stats.currency : null,
+  }) ?? checkTripCategories(body.categoryBudgets ?? [], categories);
+  if (refused) return res.status(refused.status).json({ error: refused.error });
+
+  const stopDiff = body.stops ? diffStops(existingStops, body.stops) : null;
+  if (stopDiff?.error) return res.status(stopDiff.status).json({ error: stopDiff.error });
+  const budgetDiff = body.categoryBudgets ? diffCategoryBudgets(existingBudgets, body.categoryBudgets) : null;
+
+  const specialEnabledNow = mockTurnOnSpecial(body.keepOutOfMonthly ?? trip.keep_out_of_monthly);
+
+  if (stopDiff) {
+    for (const t of transactions) {
+      if (t.trip_id === trip.id && stopDiff.removedIds.includes(t.trip_stop_id)) t.trip_stop_id = null;
+    }
+    tripStops = tripStops.filter((s) => !stopDiff.removedIds.includes(s.id));
+    for (const { id, row } of stopDiff.toUpdate) Object.assign(tripStops.find((s) => s.id === id), row);
+  }
+  if (budgetDiff) {
+    tripCategoryBudgets = tripCategoryBudgets.filter(
+      (b) => b.trip_id !== trip.id || !budgetDiff.removedCategoryIds.includes(b.category_id),
+    );
+    for (const { id, amount_limit } of budgetDiff.toUpdate) {
+      tripCategoryBudgets.find((b) => b.id === id).amount_limit = amount_limit;
+    }
+  }
+  mockInsertChildren(trip.id, stopDiff?.toInsert ?? [], budgetDiff?.toInsert ?? []);
+
+  if (body.keepOutOfMonthly !== undefined && body.keepOutOfMonthly !== trip.keep_out_of_monthly) {
+    for (const t of mockTxsOf(trip.id)) t.is_special = body.keepOutOfMonthly;
+  }
+  if (body.startDate !== undefined) trip.start_date = body.startDate;
+  if (body.endDate !== undefined) trip.end_date = body.endDate;
+  if (body.keepOutOfMonthly !== undefined) trip.keep_out_of_monthly = body.keepOutOfMonthly;
+  if (body.archived !== undefined) trip.archived_at = body.archived ? new Date().toISOString() : null;
+  if (body.name !== undefined) trip.name = body.name;
+  if (body.totalBudget !== undefined) trip.total_budget = body.totalBudget;
+  res.json({ trip: mockPresentTrip(trip), specialEnabledNow });
+});
+
+app.delete('/api/trips/:id', (req, res) => {
+  const mode = req.query.expenses;
+  if (!MOCK_UUID_RE.test(req.params.id)) return res.status(404).json({ error: 'Trip not found' });
+  if (!DELETE_MODES.includes(mode)) return res.status(400).json({ error: 'Say what should happen to its expenses' });
+  const trip = mockTripFrom(req);
+  if (!trip) return res.status(404).json({ error: 'Trip not found' });
+  const group = specialGroups.find((g) => g.id === trip.source_group_id);
+  if (mode === 'restore' && !group) {
+    return res.status(409).json({ error: 'The group this trip came from no longer exists' });
+  }
+  for (const t of transactions) {
+    if (t.trip_id !== trip.id) continue;
+    t.trip_id = null;
+    t.trip_stop_id = null;
+    if (mode === 'count') t.is_special = false;
+    if (mode === 'restore') {
+      t.special_group_id = group.id;
+      t.is_special = true;
+    }
+  }
+  if (mode === 'restore') group.archived_at = null;
+  trips = trips.filter((t) => t.id !== trip.id);
+  tripStops = tripStops.filter((s) => s.trip_id !== trip.id);
+  tripCategoryBudgets = tripCategoryBudgets.filter((b) => b.trip_id !== trip.id);
+  res.status(204).end();
+});
+
+app.get('/api/trips/:id/untagged', (req, res) => {
+  const trip = mockTripFrom(req);
+  if (!trip) return res.status(404).json({ error: 'Trip not found' });
+  const from = untaggedWindowStart(trip);
+  const rows = transactions.filter((t) => (
+    t.type === 'expense' && !t.trip_id && !t.special_group_id && !t.recurrence_id
+    && t.date >= from && t.date <= trip.end_date
+  ));
+  const { during, before } = splitUntagged(rows, trip, req.query.q);
+  const present = (list) => list.map((r) => ({
+    id: r.id,
+    amount: Number(r.amount),
+    date: r.date,
+    description: r.description ?? null,
+    category_id: r.category_id,
+    original_amount: r.original_amount ?? null,
+    original_currency: r.original_currency ?? null,
+  }));
+  res.json({ during: present(during), before: present(before) });
+});
+
+app.post('/api/trips/:id/transactions', (req, res) => {
+  if (!MOCK_UUID_RE.test(req.params.id)) return res.status(404).json({ error: 'Trip not found' });
+  const parsed = bulkAddSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: 'Invalid selection', details: parsed.error.flatten() });
+  const trip = mockTripFrom(req);
+  if (!trip) return res.status(404).json({ error: 'Trip not found' });
+  let added = 0;
+  for (const t of transactions) {
+    if (!parsed.data.transactionIds.includes(t.id)) continue;
+    if (t.type !== 'expense' || t.trip_id || t.special_group_id || t.recurrence_id) continue;
+    t.trip_id = trip.id;
+    if (trip.keep_out_of_monthly) t.is_special = true;
+    added += 1;
+  }
+  res.json({ added });
 });
 
 app.get('/api/dashboard', (_req, res) => {
