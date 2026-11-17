@@ -110,12 +110,10 @@ The panel shows only while Settings → Special expenses is on, which saving a k
 City or category budgets in a local currency; Quick Add showing a city's category budget; any change to how
 spending is counted or starred; the Special panel's headline total.
 
-## Open questions for Alex
+## Alex's answers (17 Nov: all four recommended options)
 
-1. **Simple mode:** keep category budgets (whole-trip and per-city) hidden there, as today? *Recommend yes:*
-   Simple mode files everything under "Other", so they would always read £0. City totals stay visible.
-2. **Switching it off:** keep the city lines (hidden), or delete them on save? *Recommend keep*, so toggling
-   costs nothing.
-3. **The Special panel's total:** leave it as the groups' total, with trips listed under it? *Recommend yes*:
-   adding trips would count some spending twice.
-4. **The read-only database check** in step 0.
+1. **Simple mode:** category budgets, whole-trip and per-city, stay hidden there. City totals stay visible.
+2. **Switching it off:** the city lines are kept, hidden and left out of every figure.
+3. **The Special panel's total:** stays the groups' total, with trips listed under it.
+4. **Read-only check: done 17 Nov.** No `_enc` column, no barrier function, migration `trips` is the latest
+   applied, `trip_category_budgets_unique` present, **0 trips, 0 stops, 0 budget lines**. PostgreSQL 17.

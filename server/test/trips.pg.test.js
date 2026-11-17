@@ -25,6 +25,7 @@ const ALL = readdirSync(DIR).filter((f) => f.endsWith('.sql')).sort();
 const read = (file) => readFileSync(new URL(file, DIR), 'utf8');
 const LAST_BEFORE = '017a_subscription_tracking.sql';
 const M017B = '017b_trips.sql';
+const M017C = '017c_trip_city_budgets.sql';
 
 const U = '00000000-0000-4000-8000-000000000001';
 
@@ -37,6 +38,7 @@ let replayError = null;
 let category = null;
 let incomeCategory = null;
 let preGroup = null;
+let preTrip = null;
 
 async function boot() {
   let EmbeddedPostgres;
@@ -116,6 +118,19 @@ before(async () => {
     );
 
     await admin.query(read(M017B));
+
+    // A trip with a whole-trip line, made before 017c, to show 017c leaves it alone.
+    const trip = await admin.query(
+      `insert into public.trips (user_id, name, start_date, end_date)
+       values ('${U}', 'Before 017c', '2026-09-01', '2026-09-05') returning id`,
+    );
+    preTrip = trip.rows[0].id;
+    await admin.query(
+      `insert into public.trip_category_budgets (user_id, trip_id, category_id, amount_limit)
+       values ('${U}', '${preTrip}', '${category}', 75)`,
+    );
+
+    await admin.query(read(M017C));
   } catch (err) {
     replayError = err;
   }
@@ -533,4 +548,98 @@ test('CRITICAL: the encryption migrations replay on top: 22 encrypted columns, 1
   } finally {
     await db.end().catch(() => {});
   }
+});
+
+// --- 017c: category budgets inside each city ---------------------------------------
+
+const line = (tripId, stopId, cat = category, amount = 50) =>
+  attempt(
+    `insert into public.trip_category_budgets (user_id, trip_id, stop_id, category_id, amount_limit)
+     values ($1, $2, $3, $4, $5)`,
+    [U, tripId, stopId, cat, amount],
+  );
+
+test('017c applies AGAIN without error, and leaves a trip made before it alone', async (t) => {
+  if (guard(t)) return;
+  await admin.query('begin');
+  try {
+    await admin.query(read(M017C));
+  } finally {
+    await admin.query('commit');
+  }
+  const { rows } = await admin.query(
+    `select t.city_category_budgets, b.stop_id, b.amount_limit::numeric as amount
+     from public.trips t join public.trip_category_budgets b on b.trip_id = t.id where t.id = $1`,
+    [preTrip],
+  );
+  assert.deepEqual(rows, [{ city_category_budgets: false, stop_id: null, amount: '75.00' }]);
+});
+
+test('one line per category for the whole trip, and one per category in each city', async (t) => {
+  if (guard(t)) return;
+  await inTx(async () => {
+    const tripId = await newTrip();
+    const rome = await newStop(tripId);
+    const { rows } = await admin.query(
+      `insert into public.trip_stops (user_id, trip_id, name, start_date, end_date)
+       values ($1, $2, 'Naples', '2026-10-16', '2026-10-19') returning id`,
+      [U, tripId],
+    );
+    const naples = rows[0].id;
+
+    assert.equal(await line(tripId, null), null, 'the whole-trip line');
+    assert.equal(await line(tripId, null), '23505', 'a second whole-trip line for the category');
+    assert.equal(await line(tripId, rome), null, 'the same category in a city, beside the whole-trip line');
+    assert.equal(await line(tripId, rome), '23505', 'twice in the same city');
+    assert.equal(await line(tripId, naples), null, 'the same category in another city');
+  });
+});
+
+test('CRITICAL: a city line can only point at a stop of its own trip', async (t) => {
+  if (guard(t)) return;
+  await inTx(async () => {
+    const mine = await newTrip();
+    const other = await newTrip({ start_date: '2026-11-01', end_date: '2026-11-05' });
+    const otherStop = await newStop(other);
+    assert.equal(await line(mine, otherStop), '23503');
+    assert.equal(
+      await line(mine, '00000000-0000-4000-8000-0000000000ff'),
+      '23503',
+      'nor at a stop that does not exist',
+    );
+  });
+});
+
+test('deleting a stop takes its city lines and leaves the whole-trip lines', async (t) => {
+  if (guard(t)) return;
+  await inTx(async () => {
+    const tripId = await newTrip();
+    const rome = await newStop(tripId);
+    await line(tripId, null);
+    await line(tripId, rome);
+    await admin.query('delete from public.trip_stops where id = $1', [rome]);
+    const { rows } = await admin.query(
+      'select stop_id from public.trip_category_budgets where trip_id = $1',
+      [tripId],
+    );
+    assert.deepEqual(rows, [{ stop_id: null }]);
+  });
+});
+
+test('deleting a trip or an account still cascades cleanly through city lines', async (t) => {
+  if (guard(t)) return;
+  await inTx(async () => {
+    const tripId = await newTrip();
+    const rome = await newStop(tripId);
+    await line(tripId, null);
+    await line(tripId, rome);
+    assert.equal(await attempt('delete from public.trips where id = $1', [tripId]), null);
+    const left = await admin.query('select count(*)::int as n from public.trip_category_budgets where trip_id = $1', [tripId]);
+    assert.equal(left.rows[0].n, 0);
+
+    const again = await newTrip();
+    const stop = await newStop(again);
+    await line(again, stop);
+    assert.equal(await attempt('delete from auth.users where id = $1', [U]), null);
+  });
 });
