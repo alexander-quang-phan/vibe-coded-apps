@@ -1,12 +1,18 @@
-# Chat Handoff — updated 2026-11-03 (PHASE 17 + BUG FIXES LIVE AND ON GITHUB; trips in progress)
+# Chat Handoff — updated 2026-11-03 (PHASE 17 + BUG FIXES LIVE; Phase 18 trips built on a branch, not deployed)
 
 ## DUAL-AGENT BATON  (both models: update this the MOMENT you finish work)
-- Current stage:  **Phase 17 and the 13 Oct bug fixes are live.** Trips is part-built on its own branch
-                  (`claude/confident-northcutt-6cd9f9`), waiting for Alex's answers.
-- Model A is:     Claude Code. Single-model feature work per CLAUDE.md.
-- Up next:        **Alex** — answer the trips session's questions, and do the logged-in checks (next step 1).
-- Last actor did: Claude Code, 2026-11-03 — merged the goals fix for migration 019 (750/750, build passes),
-                  pushed, deployed trim-api only (no client change), verified live, this handoff.
+- Current stage:  **Phase 18 trips: built, reviewed and fixed on branch `claude/confident-northcutt-6cd9f9`.**
+                  NOT merged, NOT deployed, **017b NOT on the live database**. Rollout steps:
+                  `docs/2026-11-03-phase18-deploy-checklist.md` + PDF. Phase 17 and the 13 Oct bug fixes are live.
+- Model A is:     Claude Code. Independent review by `code-reviewer` (Codex unavailable for security work).
+- Up next:        **Alex** — decide on the deploy (checklist above) and whether archiving should turn the Special
+                  setting on. His Phase 17 logged-in checks are still outstanding too.
+- Last actor did: Claude Code, 2026-11-03 — fixed the review's P1 and four P2s (BUGS-FIXED 2026-11-03), planted
+                  bystander rows so deleted filters fail a test. `npm test` 1150/1150, 0 skipped; client build
+                  passes; clicked through in the real app against `dev:mock` with only login swapped out.
+- Last verdict:   code-reviewer FAIL (0 P0, 1 P1, 4 P2) → all fixed; P1 proved by replaying its reproduction.
+- Not verified:   a logged-in run with real data, and the routes against real PostgREST (the route suites use a
+                  fake; real PostgreSQL covers the migrations and the restore statement).
 
 ## Goal
 Alex (13 Oct): (1) trips with a set budget per category and per city; (2) "I don't see a way to mark a

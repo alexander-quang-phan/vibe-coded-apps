@@ -130,6 +130,9 @@ export function decodeRows(table, userId, rows, phase = CURRENT_PHASE) {
  * a description and forgets its index is impossible to write through here.
  */
 export function encodeWrite(table, userId, patch, phase = CURRENT_PHASE) {
+  // Per row. An array would be spread into { 0: row, 1: row } and quietly written
+  // wrong in every phase: insert with rows.map((r) => encodeWrite(table, uid, r)).
+  if (Array.isArray(patch)) throw new Error(`encodeWrite(${table}) takes one row, not an array`);
   const fields = encryptedColumnsFor(table);
   if (fields.size === 0 || !patch) return patch;
   if (!userId) throw new Error(`encodeWrite(${table}) called without a userId`);

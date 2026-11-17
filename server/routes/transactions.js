@@ -12,6 +12,8 @@ import {
   trackedPrototypes, categoryShape, repeatPrototypes, repeatingBlocks, activeTrackedFor, repeatingClash,
 } from '../lib/subscriptionRows.js';
 import { bestTrackedMatch } from '../lib/subscriptionMatch.js';
+import { TX_LIST_COLUMNS, TX_WRITE_COLUMNS } from '../lib/txColumns.js';
+import { deriveTripWrite } from '../lib/tripRules.js';
 
 const router = Router();
 
@@ -25,10 +27,6 @@ const router = Router();
 // columns, one of them (`description`) carrying the merchant blind index that
 // merchant memory reads. Every write below goes through `encodeWrite`, which is
 // what makes it impossible to change a description and forget its index.
-const TX_LIST_COLUMNS =
-  'id, amount, type, description, date, category_id, is_recurring, is_special, special_group_id, recurrence_id, original_amount, original_currency, fx_rate, created_at';
-const TX_WRITE_COLUMNS =
-  'id, amount, type, description, date, category_id, is_special, special_group_id, is_recurring, recurrence_id, original_amount, original_currency, fx_rate, created_at';
 const REC_COLUMNS = 'id, category_id, type, amount, description, interval, next_run_at';
 const PARSE_CATEGORY_COLUMNS = 'id, name, type';
 
@@ -145,6 +143,44 @@ async function ownsSpecialGroup(userId, groupId) {
   return !!data;
 }
 
+/**
+ * Phase 18 — load what lib/tripRules.js needs, then apply it. Reads nothing when the
+ * request sends no trip fields, so ordinary logging costs no extra query; the rules
+ * still run, because a type or group change can break a row's stored trip.
+ */
+async function resolveTripWrite(userId, existing, args) {
+  const { tripId, tripStopId } = args;
+  const storedTrip = existing?.trip_id ?? null;
+  const resultingTrip = tripId !== undefined ? tripId : storedTrip;
+
+  let oldTrip = null;
+  let newTrip = null;
+  const ids = [...new Set([tripId, storedTrip].filter(Boolean))];
+  if (tripId !== undefined && ids.length > 0) {
+    const { data, error } = await supabase
+      .from('trips')
+      .select('id, keep_out_of_monthly')
+      .in('id', ids)
+      .eq('user_id', userId);
+    if (error) throw error;
+    oldTrip = data.find((t) => t.id === storedTrip) ?? null;
+    newTrip = data.find((t) => t.id === tripId) ?? null;
+  }
+
+  let stops = [];
+  if (tripStopId && resultingTrip) {
+    const { data, error } = await supabase
+      .from('trip_stops')
+      .select('id, start_date, end_date, created_at')
+      .eq('trip_id', resultingTrip)
+      .eq('user_id', userId);
+    if (error) throw error;
+    stops = data;
+  }
+
+  return deriveTripWrite({ ...args, existing, oldTrip, newTrip, stops });
+}
+
 // Task 6.12a — opt-in recurring schedule, expense-only (mirrors /subscriptions,
 // which is expense-only by design). Weekly/monthly only; see lib/recurrences.js.
 const recurringSchema = z.object({
@@ -186,6 +222,10 @@ const createSchema = z.object({
   // Phase 10 B1 — optional grouping for special expenses ("Paris holiday").
   // Null clears it. Only ever valid on a special EXPENSE (guarded below).
   specialGroupId: z.string().uuid().optional().nullable(),
+  // Phase 18. While a trip is attached the client sends no isSpecial: the server
+  // derives the star (lib/tripRules.js). tripStopId is an explicit city override only.
+  tripId: z.string().uuid().optional().nullable(),
+  tripStopId: z.string().uuid().optional().nullable(),
   recurring: recurringSchema.optional(),
   // The caller's LOCAL calendar day. Used ONLY to stamp the streak, never for
   // money. The server's own clock is UTC, so a user east of UTC logging between
@@ -215,6 +255,8 @@ const updateSchema = z.object({
   date: isoDate.optional(),
   isSpecial: z.boolean().optional(),
   specialGroupId: z.string().uuid().optional().nullable(),
+  tripId: z.string().uuid().optional().nullable(),
+  tripStopId: z.string().uuid().optional().nullable(),
   // Phase 12b — change (or clear) a row's currency after the fact. Same rule as
   // create: the server DERIVES `amount` from the block and ignores any `amount`
   // sent alongside it. `null` converts the row back to a plain base-currency
@@ -304,10 +346,22 @@ router.post('/', async (req, res, next) => {
     if (parsed.data.recurring && type === 'income') {
       return res.status(400).json({ error: 'Only expenses can be recurring' });
     }
+    const tripWrite = await resolveTripWrite(req.user.id, null, {
+      tripId: parsed.data.tripId,
+      tripStopId: parsed.data.tripStopId,
+      isSpecial: parsed.data.isSpecial,
+      specialGroupId: parsed.data.specialGroupId,
+      type,
+      date: date || todayISO(),
+      recurring: !!parsed.data.recurring,
+    });
+    if (tripWrite.error) return res.status(tripWrite.status).json({ error: tripWrite.error });
+    // Before the group guard, so it judges the star the row will actually have.
+    const effectiveSpecial = parsed.data.isSpecial ?? tripWrite.fields.is_special ?? false;
     // Phase 10 B1 — a group is a label on special spending. Attaching one to a
     // non-special row would silently drop out of the group's total, which
     // filters on is_special.
-    if (parsed.data.specialGroupId && !parsed.data.isSpecial) {
+    if (parsed.data.specialGroupId && !effectiveSpecial) {
       return res.status(400).json({ error: 'Only special expenses can belong to a group' });
     }
     if (!(await ownsSpecialGroup(req.user.id, parsed.data.specialGroupId))) {
@@ -407,7 +461,9 @@ router.post('/', async (req, res, next) => {
         original_amount: foreign?.originalAmount ?? null,
         original_currency: foreign?.originalCurrency ?? null,
         fx_rate: foreign?.fxRate ?? null,
-        is_special: parsed.data.isSpecial ?? false,
+        is_special: effectiveSpecial,
+        trip_id: tripWrite.fields.trip_id ?? null,
+        trip_stop_id: tripWrite.fields.trip_stop_id ?? null,
         // Was missing entirely: the route validated and guarded specialGroupId,
         // then dropped it on the floor. A group picked in Quick Add was silently
         // discarded and the row never showed up under its group — only re-saving
@@ -551,7 +607,7 @@ router.patch('/:id', async (req, res, next) => {
     // below, know the current type when the caller isn't also changing it.
     const { data: existing, error: existingErr } = await supabase
       .from('transactions')
-      .select('type, category_id, is_special, special_group_id')
+      .select('type, category_id, is_special, special_group_id, recurrence_id, date, trip_id, trip_stop_id')
       .eq('id', id)
       .eq('user_id', req.user.id)
       .maybeSingle();
@@ -561,7 +617,17 @@ router.patch('/:id', async (req, res, next) => {
     // Guard on the RESULTING state, not just this request's fields: flipping an
     // already-special expense to income would otherwise leave a flagged income row.
     const effectiveType = parsed.data.type ?? existing.type;
-    const effectiveSpecial = parsed.data.isSpecial ?? existing.is_special;
+    const tripWrite = await resolveTripWrite(req.user.id, existing, {
+      tripId: parsed.data.tripId,
+      tripStopId: parsed.data.tripStopId,
+      isSpecial: parsed.data.isSpecial,
+      specialGroupId: parsed.data.specialGroupId,
+      type: effectiveType,
+      date: parsed.data.date ?? existing.date,
+    });
+    if (tripWrite.error) return res.status(tripWrite.status).json({ error: tripWrite.error });
+    // Before the group guard below, so it judges the star the row will actually have.
+    const effectiveSpecial = parsed.data.isSpecial ?? tripWrite.fields.is_special ?? existing.is_special;
     // The (type, category) pair, on the RESULTING state. Either half can contradict
     // the other, and POST refuses that combination at create time. This check used
     // to sit inside `if (categoryId)` AND be gated on `type`, so sending `type`
@@ -594,7 +660,9 @@ router.patch('/:id', async (req, res, next) => {
       ? null
       : parsed.data.specialGroupId !== undefined
         ? parsed.data.specialGroupId
-        : existing.special_group_id;
+        : tripWrite.fields.special_group_id === null
+          ? null
+          : existing.special_group_id;
     if (effectiveGroup && !effectiveSpecial) {
       return res.status(400).json({ error: 'Only special expenses can belong to a group' });
     }
@@ -654,6 +722,7 @@ router.patch('/:id', async (req, res, next) => {
     // Un-starring clears the group automatically — the guard above already
     // refuses the contradictory combination, this handles the honest one.
     if (parsed.data.isSpecial === false) payload.special_group_id = null;
+    Object.assign(payload, tripWrite.fields);
     if (Object.keys(payload).length === 0) return res.status(400).json({ error: 'Nothing to update' });
 
     const { data, error } = await supabase

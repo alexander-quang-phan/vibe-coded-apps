@@ -33,7 +33,7 @@ plaintext column.
 |---|---|---|---|
 | Every write returns an error | You flip to `dual` before the key is set in Vercel | Adding a transaction fails in the app | Set the key, redeploy |
 | New signups get no categories | After migration 018a | A brand-new account shows an empty category list | Covered by the test in Step 2 |
-| Every write to 10 tables is rejected | Only if the `encryption_cutover` row is deleted | Everything fails at once | One SQL line, in Rollback |
+| Every write to 13 tables is rejected | Only if the `encryption_cutover` row is deleted | Everything fails at once | One SQL line, in Rollback |
 
 **The one genuinely unrecoverable thing is losing the key** — and only *after* migration
 019, months from now. Which is why Step 1 is about backing it up, not about generating it.
@@ -151,6 +151,10 @@ Delete the Vercel variable and redeploy. Nothing depends on it yet.
 
 ## Step 2 — apply migrations 012, 018, 018a
 
+**First check that 017a and 017b are already applied** (Supabase → Database → Migrations shows
+`subscription_tracking` and `trips`). 018 adds encrypted columns to the tables 017b creates, so it
+fails if 017b has not run.
+
 **In that order.** Each one is safe to run twice — every statement is `if not exists`, so a
 run that fails halfway can simply be re-run.
 
@@ -182,7 +186,7 @@ the same). That needs looking at, not retrying.
 
 **018a** — the one with a real behaviour change. It:
 
-1. Creates the `encryption_cutover` table and installs "barrier" triggers on 10 tables.
+1. Creates the `encryption_cutover` table and installs "barrier" triggers on 13 tables.
    These do nothing until someone engages the flag, which happens only during migration 019.
 2. **Stops the database's signup trigger from creating the 12 default categories.** From
    here on, the app creates them instead (on `GET /api/me` and `GET /api/categories`),
@@ -207,7 +211,9 @@ select
   (select count(*) from public.categories) as categories;
 ```
 
-Expect: **17 enc_columns, 3 blind_index_columns, 10 barrier_triggers, barrier_engaged = false**,
+Expect: **22 enc_columns, 3 blind_index_columns, 13 barrier_triggers, barrier_engaged = false**
+(the counts include `trips`, `trip_stops` and `trip_category_budgets`, so 017a and 017b must be
+applied before 018),
 and `transactions` / `categories` **unchanged at 159 and 85**. Those last two are the point:
 the migrations added structure and touched no data.
 

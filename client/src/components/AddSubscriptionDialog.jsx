@@ -68,9 +68,9 @@ export function AddSubscriptionDialog({ open, onOpenChange, currency, onDetected
 
   const mutation = useMutation({
     mutationFn: () => runSubscriptionAction(api, picked.id, action),
-    onSuccess: () => {
+    onSuccess: (result) => {
       invalidateMoney(queryClient);
-      const m = subscriptionActionMessage(action);
+      const m = subscriptionActionMessage(action, result);
       toast.success(m.title, { description: m.description });
       onOpenChange(false);
     },
@@ -162,6 +162,7 @@ export function AddSubscriptionDialog({ open, onOpenChange, currency, onDetected
               transactionId={picked.id}
               currency={currency}
               onActionChange={setAction}
+              onTrip={!!picked.tripId}
               noteEditable={false}
               onChangeNote={() => {
                 onOpenChange(false);

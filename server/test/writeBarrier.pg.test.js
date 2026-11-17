@@ -52,6 +52,7 @@ const MIGRATION = readFileSync(new URL('../migrations/018a_encryption_write_barr
 const GUARDED = [
   'transactions', 'budgets', 'savings_goals', 'savings_contributions', 'user_stats',
   'ask_messages', 'recurrences', 'special_groups', 'subscription_overrides', 'categories',
+  'trips', 'trip_stops', 'trip_category_budgets',
 ];
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));

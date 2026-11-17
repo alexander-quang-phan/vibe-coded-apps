@@ -205,6 +205,48 @@ export function runDashboardAnalyticsRouteSuite(phase) {
     }
   });
 
+  test(`${label} dashboard: the special spend on trips reconciles with specialThisMonth, on the same rows`, async () => {
+    const tables = await seed(phase);
+    tables.user_stats[0].special_expenses_enabled = true;
+    tables.transactions[0].is_special = true; // £100, on a trip
+    tables.transactions[0].trip_id = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1';
+    tables.transactions[1].is_special = true; // £40, starred, on no trip
+    const { http } = await boot('dashboard', tables);
+    try {
+      const { body } = await http.get('/');
+      assert.equal(body.month.specialThisMonth, 140);
+      assert.equal(body.month.specialOnTripsThisMonth, 100);
+    } finally {
+      await http.close();
+    }
+  });
+
+  test(`${label} dashboard: an un-starred trip expense is not special spend; setting off gives 0`, async () => {
+    const tables = await seed(phase);
+    tables.user_stats[0].special_expenses_enabled = true;
+    tables.transactions[0].trip_id = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1'; // on a trip, not starred
+    const first = await boot('dashboard', tables);
+    try {
+      const { body } = await first.http.get('/');
+      assert.equal(body.month.specialOnTripsThisMonth, 0);
+    } finally {
+      await first.http.close();
+    }
+
+    const off = await seed(phase);
+    off.user_stats[0].special_expenses_enabled = false;
+    off.transactions[0].is_special = true;
+    off.transactions[0].trip_id = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1';
+    const second = await boot('dashboard', off);
+    try {
+      const { body } = await second.http.get('/');
+      assert.equal(body.month.specialThisMonth, 0);
+      assert.equal(body.month.specialOnTripsThisMonth, 0, 'the same gate');
+    } finally {
+      await second.http.close();
+    }
+  });
+
   test(`${label} the special-expense toggle still excludes flagged rows`, async () => {
     const tables = await seed(phase);
     tables.user_stats[0].special_expenses_enabled = true;

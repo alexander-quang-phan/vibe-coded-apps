@@ -217,11 +217,11 @@ export function runSubscriptionsRouteSuite(phase) {
   const T_REC = '55555555-5555-4555-8555-555555555555';
   const id = (n) => `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
 
-  async function txRow({ n, date, amount, description = null, rec = null, user = U, cat = CAT, type = 'expense' }) {
+  async function txRow({ n, date, amount, description = null, rec = null, user = U, cat = CAT, type = 'expense', trip = null, stop = null, special = false }) {
     const { encodeWrite } = await import('../../lib/encryptionCodec.js');
     return {
       id: id(n), user_id: user, category_id: cat, type, date, is_recurring: false,
-      recurrence_id: rec, created_at: `${date}T09:00:00Z`,
+      recurrence_id: rec, trip_id: trip, trip_stop_id: stop, is_special: special, created_at: `${date}T09:00:00Z`,
       ...encodeWrite('transactions', user, { amount, description }, phase),
     };
   }
@@ -233,9 +233,16 @@ export function runSubscriptionsRouteSuite(phase) {
       ...encodeWrite('recurrences', user, { amount, description }, phase),
     };
   }
+  const KEEP_TRIP = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1';
+  const OPEN_TRIP = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa2';
+  const A_STOP = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb1';
+  const trips = [
+    { id: KEEP_TRIP, user_id: U, keep_out_of_monthly: true },
+    { id: OPEN_TRIP, user_id: U, keep_out_of_monthly: false },
+  ];
   async function tables({ recurrences = [], transactions = [] } = {}) {
     const base = await seed(phase);
-    return { ...base, subscription_overrides: [], recurrences: [...base.recurrences, ...recurrences], transactions };
+    return { ...base, trips, subscription_overrides: [], recurrences: [...base.recurrences, ...recurrences], transactions };
   }
   const sub = (body, key) => body.subscriptions.find((x) => x.merchantKey === key);
   const autoRows = (body) => body.subscriptions.filter((x) => x.source === 'auto');
@@ -1172,6 +1179,257 @@ export function runSubscriptionsRouteSuite(phase) {
       await http.send('POST', `/manual:${T_REC}/detach`, { transactionId: id(2) });
       assert.equal(db.store.transactions.find((r) => r.id === id(1)).recurrence_id, T_REC, 'the other charge stays linked');
       assert.equal(db.store.transactions.find((r) => r.id === id(3)).recurrence_id, T_REC);
+    } finally {
+      await http.close();
+    }
+  });
+
+  // --- Phase 18: a subscription is home spending ------------------------------------
+
+  const stored = (db, n) => db.store.transactions.find((t) => t.id === id(n));
+
+  test(`${label} attach: a charge on a keep-out trip comes off it and is un-starred`, async () => {
+    const t = await tables({
+      recurrences: [await trackedRec()],
+      transactions: [await txRow({ n: 1, date: '2026-10-03', amount: 10.99, description: 'Netflix', trip: KEEP_TRIP, stop: A_STOP, special: true })],
+    });
+    const { db, http } = await boot(t);
+    try {
+      const { status, body } = await http.send('POST', `/${encodeURIComponent(`manual:${T_REC}`)}/attach`, { transactionId: id(1) });
+      assert.equal(status, 200, JSON.stringify(body));
+      assert.deepEqual(body, { ok: true, leftTrip: true, unstarred: true });
+      assert.equal(stored(db, 1).recurrence_id, T_REC);
+      assert.equal(stored(db, 1).trip_id, null);
+      assert.equal(stored(db, 1).trip_stop_id, null);
+      assert.equal(stored(db, 1).is_special, false);
+    } finally {
+      await http.close();
+    }
+  });
+
+  test(`${label} attach: a keep-out-off trip's charge comes off it and keeps its star`, async () => {
+    const t = await tables({
+      recurrences: [await trackedRec()],
+      transactions: [await txRow({ n: 1, date: '2026-10-03', amount: 10.99, description: 'Netflix', trip: OPEN_TRIP, special: true })],
+    });
+    const { db, http } = await boot(t);
+    try {
+      const { body } = await http.send('POST', `/${encodeURIComponent(`manual:${T_REC}`)}/attach`, { transactionId: id(1) });
+      assert.deepEqual(body, { ok: true, leftTrip: true, unstarred: false });
+      assert.equal(stored(db, 1).trip_id, null);
+      assert.equal(stored(db, 1).is_special, true);
+    } finally {
+      await http.close();
+    }
+  });
+
+  test(`${label} attach: a charge with no trip keeps its hand-set star, as before`, async () => {
+    const t = await tables({
+      recurrences: [await trackedRec()],
+      transactions: [await txRow({ n: 1, date: '2026-10-03', amount: 10.99, description: 'Netflix', special: true })],
+    });
+    const { db, http } = await boot(t);
+    try {
+      const { body } = await http.send('POST', `/${encodeURIComponent(`manual:${T_REC}`)}/attach`, { transactionId: id(1) });
+      assert.deepEqual(body, { ok: true, leftTrip: false, unstarred: false });
+      assert.equal(stored(db, 1).is_special, true);
+      assert.equal(db.calls.filter((c) => c.table === 'trips').length, 0);
+    } finally {
+      await http.close();
+    }
+  });
+
+  test(`${label} attach: a charge that moved trips in between is refused, not un-starred`, async () => {
+    const t = await tables({
+      recurrences: [await trackedRec()],
+      transactions: [await txRow({ n: 1, date: '2026-10-03', amount: 10.99, description: 'Netflix', trip: KEEP_TRIP, special: true })],
+    });
+    const { db, http } = await boot(t);
+    try {
+      const orig = db.from.bind(db);
+      db.from = (table) => {
+        const q = orig(table);
+        if (table === 'transactions') {
+          const update = q.update;
+          q.update = (payload) => {
+            stored(db, 1).trip_id = OPEN_TRIP; // another tab moved it after our read
+            return update(payload);
+          };
+        }
+        return q;
+      };
+      const { status } = await http.send('POST', `/${encodeURIComponent(`manual:${T_REC}`)}/attach`, { transactionId: id(1) });
+      assert.equal(status, 409);
+      assert.equal(stored(db, 1).trip_id, OPEN_TRIP);
+      assert.equal(stored(db, 1).is_special, true);
+      assert.equal(stored(db, 1).recurrence_id, null);
+    } finally {
+      await http.close();
+    }
+  });
+
+  test(`${label} attach: a charge that joined a trip in between is refused, not silently pulled off it`, async () => {
+    const t = await tables({
+      recurrences: [await trackedRec()],
+      transactions: [await txRow({ n: 1, date: '2026-10-03', amount: 10.99, description: 'Netflix' })],
+    });
+    const { db, http } = await boot(t);
+    try {
+      const orig = db.from.bind(db);
+      db.from = (table) => {
+        const q = orig(table);
+        if (table === 'transactions') {
+          const update = q.update;
+          q.update = (payload) => {
+            Object.assign(stored(db, 1), { trip_id: KEEP_TRIP, is_special: true }); // after our read
+            return update(payload);
+          };
+        }
+        return q;
+      };
+      const { status } = await http.send('POST', `/${encodeURIComponent(`manual:${T_REC}`)}/attach`, { transactionId: id(1) });
+      assert.equal(status, 409);
+      assert.equal(stored(db, 1).trip_id, KEEP_TRIP);
+      assert.equal(stored(db, 1).recurrence_id, null);
+    } finally {
+      await http.close();
+    }
+  });
+
+  test(`${label} track: linked charges come off their trips; only keep-out rows are un-starred`, async () => {
+    const t = await tables({
+      transactions: [
+        await txRow({ n: 1, date: '2026-10-03', amount: 7.99, description: 'Disney', trip: KEEP_TRIP, stop: A_STOP, special: true }),
+        await txRow({ n: 2, date: '2026-09-03', amount: 7.99, description: 'Disney', trip: OPEN_TRIP, special: true }),
+        await txRow({ n: 3, date: '2026-08-03', amount: 7.99, description: 'Disney', special: true }),
+      ],
+    });
+    const { db, http } = await boot(t);
+    try {
+      const { status, body } = await http.send('POST', '/track', {
+        transactionId: id(1), interval: 'monthly', includeTransactionIds: [id(2), id(3)],
+      });
+      assert.equal(status, 201, JSON.stringify(body));
+      assert.equal(body.leftTrip, 2);
+      assert.equal(body.unstarFailed, 0);
+      for (const n of [1, 2, 3]) {
+        assert.ok(stored(db, n).recurrence_id);
+        assert.equal(stored(db, n).trip_id, null);
+        assert.equal(stored(db, n).trip_stop_id, null);
+      }
+      assert.equal(stored(db, 1).is_special, false, 'it was on a keep-out trip');
+      assert.equal(stored(db, 2).is_special, true, 'its trip was not keeping it out');
+      assert.equal(stored(db, 3).is_special, true, 'it was on no trip');
+    } finally {
+      await http.close();
+    }
+  });
+
+  test(`${label} track: a failed un-star still answers 201, and says how many are still starred`, async () => {
+    const t = await tables({
+      transactions: [
+        await txRow({ n: 1, date: '2026-10-03', amount: 7.99, description: 'Disney', trip: KEEP_TRIP, special: true }),
+        await txRow({ n: 2, date: '2026-09-03', amount: 7.99, description: 'Disney', trip: KEEP_TRIP, special: true }),
+      ],
+    });
+    let updates = 0;
+    const { db, http } = await boot(t, {
+      failOn: (table, op) => {
+        if (table !== 'transactions' || op !== 'update') return false;
+        updates += 1;
+        return updates === 2; // the link is first; the un-star is second
+      },
+    });
+    try {
+      const { status, body } = await http.send('POST', '/track', {
+        transactionId: id(1), interval: 'monthly', includeTransactionIds: [id(2)],
+      });
+      assert.equal(status, 201, JSON.stringify(body));
+      assert.equal(body.unstarFailed, 2);
+      assert.equal(body.leftTrip, 2);
+      assert.equal(stored(db, 1).trip_id, null);
+      assert.equal(stored(db, 1).is_special, true, 'still starred, and the response says so');
+    } finally {
+      await http.close();
+    }
+  });
+
+  test(`${label} CRITICAL: a /track that loses the race puts trip tags back and never un-stars`, async () => {
+    const t = await tables({
+      transactions: [
+        await txRow({ n: 1, date: '2026-10-03', amount: 4.99, description: 'Spotify', trip: KEEP_TRIP, stop: A_STOP, special: true }),
+        await txRow({ n: 2, date: '2026-09-03', amount: 4.99, description: 'Spotify', trip: OPEN_TRIP }),
+      ],
+    });
+    const { db, http } = await boot(t);
+    const { encodeWrite } = await import('../../lib/encryptionCodec.js');
+    try {
+      // While our request inserts, a concurrent one has already created a Spotify row.
+      const origFrom = db.from.bind(db);
+      let injected = false;
+      db.from = (table) => {
+        const q = origFrom(table);
+        if (table === 'recurrences' && !injected) {
+          const origInsert = q.insert.bind(q);
+          q.insert = (payload) => {
+            injected = true;
+            db.store.recurrences.push({
+              id: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeee1', user_id: U, category_id: CAT, type: 'expense',
+              interval: 'monthly', auto_log: false, next_run_at: null, last_run_at: null, cancelled_at: null,
+              created_at: '2000-01-01T00:00:00Z',
+              ...encodeWrite('recurrences', U, { amount: 4.99, description: 'Spotify' }, phase),
+            });
+            return origInsert({ ...payload, created_at: '2026-10-14T00:00:00Z' });
+          };
+        }
+        return q;
+      };
+      const { status } = await http.send('POST', '/track', {
+        transactionId: id(1), interval: 'monthly', includeTransactionIds: [id(2)],
+      });
+      assert.equal(status, 409);
+      assert.equal(stored(db, 1).recurrence_id, null);
+      assert.equal(stored(db, 1).trip_id, KEEP_TRIP, 'the tag is back');
+      assert.equal(stored(db, 1).trip_stop_id, A_STOP);
+      assert.equal(stored(db, 1).is_special, true, 'never un-starred');
+      assert.equal(stored(db, 2).trip_id, OPEN_TRIP);
+    } finally {
+      await http.close();
+    }
+  });
+
+  test(`${label} preview and recent candidates say which charges are on a trip`, async () => {
+    const t = await tables({
+      transactions: [
+        await txRow({ n: 1, date: '2026-10-03', amount: 7.99, description: 'Disney' }),
+        await txRow({ n: 2, date: '2026-09-03', amount: 7.99, description: 'Disney', trip: KEEP_TRIP, special: true }),
+      ],
+    });
+    const { http } = await boot(t);
+    try {
+      const { body } = await http.get(`/track/preview?transactionId=${id(1)}&interval=monthly`);
+      assert.deepEqual(body.likely.map((c) => [c.id, c.tripId]), [[id(2), KEEP_TRIP]]);
+    } finally {
+      await http.close();
+    }
+  });
+
+  test(`${label} detach and delete never touch trip fields`, async () => {
+    const t = await tables({
+      recurrences: [await trackedRec()],
+      transactions: [
+        await txRow({ n: 1, date: '2026-10-03', amount: 10.99, description: 'Netflix', rec: T_REC, special: true }),
+        await txRow({ n: 2, date: '2026-09-03', amount: 10.99, description: 'Netflix', rec: T_REC, special: true }),
+      ],
+    });
+    const { db, http } = await boot(t);
+    try {
+      await http.send('POST', `/${encodeURIComponent(`manual:${T_REC}`)}/detach`, { transactionId: id(1) });
+      await http.send('DELETE', `/${encodeURIComponent(`manual:${T_REC}`)}`);
+      for (const n of [1, 2]) {
+        assert.equal(stored(db, n).recurrence_id, null);
+        assert.equal(stored(db, n).is_special, true);
+      }
     } finally {
       await http.close();
     }

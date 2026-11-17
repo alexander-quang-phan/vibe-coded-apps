@@ -50,6 +50,9 @@ const TABLES = [
   'recurrences',
   'special_groups',
   'subscription_overrides',
+  'trips',
+  'trip_stops',
+  'trip_category_budgets',
 ];
 
 const PAGE = 1000;

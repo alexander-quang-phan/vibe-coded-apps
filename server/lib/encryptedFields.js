@@ -28,6 +28,11 @@
  *                              `transactions_fx_sane` CHECK (fx_rate > 0) working
  *                              in the database, which is worth more than hiding a
  *                              number anyone can look up. See original_amount.
+ *   trips and trip_stops dates, keep_out_of_monthly, trip_stops.currency and
+ *   the FK ids                 Phase 18. A currency is a public code, and the
+ *                              routes need the dates to file spending by city.
+ *                              No trip or city is ever looked up by name in SQL,
+ *                              so these tables need no blind index either.
  */
 
 /**
@@ -110,6 +115,14 @@ export const ENCRYPTED_FIELDS = [
   // can be "Therapy", "Divorce lawyer" or anything else. The keyword lookup at
   // :112 is an exact `.eq('name', …)`, which a blind index answers exactly.
   { table: 'categories', column: 'name', enc: 'name_enc', kind: 'text', notNull: true },
+
+  // Phase 18 trips: where you went and what you set aside for it. All the arithmetic
+  // happens in JS after decoding, so nothing needs these readable in the database.
+  { table: 'trips', column: 'name', enc: 'name_enc', kind: 'text', notNull: true },
+  { table: 'trips', column: 'total_budget', enc: 'total_budget_enc', kind: 'amount' },
+  { table: 'trip_stops', column: 'name', enc: 'name_enc', kind: 'text', notNull: true },
+  { table: 'trip_stops', column: 'budget', enc: 'budget_enc', kind: 'amount' },
+  { table: 'trip_category_budgets', column: 'amount_limit', enc: 'amount_limit_enc', kind: 'amount', notNull: true },
 ];
 
 /**

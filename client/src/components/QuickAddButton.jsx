@@ -12,6 +12,8 @@ export function QuickAddButton({
   // Optional 'YYYY-MM-DD'. Passed through to the dialog so a page showing one
   // month can seed adds into it. Omit for today.
   initialDate,
+  // Phase 18: from a trip's own page, attached to it whatever the date.
+  presetTripId = null,
 }) {
   const [open, setOpen] = useState(false);
   return (
@@ -62,6 +64,7 @@ export function QuickAddButton({
         simpleMode={simpleMode}
         specialEnabled={specialEnabled}
         initialDate={initialDate}
+        presetTripId={presetTripId}
       />
     </>
   );

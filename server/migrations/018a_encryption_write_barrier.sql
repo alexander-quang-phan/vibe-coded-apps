@@ -230,7 +230,10 @@ declare
     'recurrences',
     'special_groups',
     'subscription_overrides',
-    'categories'
+    'categories',
+    'trips',
+    'trip_stops',
+    'trip_category_budgets'
   ];
 begin
   foreach t in array guarded loop

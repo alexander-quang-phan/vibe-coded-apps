@@ -5,6 +5,7 @@ import { detectSubscriptions } from '../lib/subscriptions.js';
 import { manualMerchantKey, isTracked } from '../lib/recurrences.js';
 import { normaliseMerchant } from '../lib/merchant.js';
 import { userTimeZone } from '../lib/userZone.js';
+import { readAllPages } from '../lib/readAllPages.js';
 import { dayInZone, addMonths } from '../lib/month.js';
 import {
   buildDetectedRow,
@@ -44,7 +45,7 @@ const router = Router();
 // the plaintext column while it exists, the blind index once it does not.
 // `encodeWrite` fills in `merchant_key_hmac` automatically, because the registry
 // declares it as an index derived from `merchant_key`.
-const SUB_TX_COLUMNS = 'id, amount, type, description, date, category_id, recurrence_id, created_at';
+const SUB_TX_COLUMNS = 'id, amount, type, description, date, category_id, recurrence_id, trip_id, trip_stop_id, created_at';
 const SUB_OVERRIDE_COLUMNS = 'merchant_key, status, display_name, decided_at';
 const SUB_OVERRIDE_READ_COLUMNS = 'status, display_name, decided_at';
 const SUB_CAT_COLUMNS = 'id, name, icon, color';
@@ -53,7 +54,7 @@ const SUB_CAT_COLUMNS = 'id, name, icon, color';
 const SUB_REC_COLUMNS =
   'id, category_id, type, amount, description, interval, next_run_at, last_run_at, cancelled_at, created_at, auto_log';
 const SUB_REC_PATCH_COLUMNS = 'id, amount, cancelled_at';
-const TX_ONE_COLUMNS = 'id, amount, type, description, date, category_id, recurrence_id';
+const TX_ONE_COLUMNS = 'id, amount, type, description, date, category_id, recurrence_id, trip_id, trip_stop_id';
 
 /** Match an override by its key: the plaintext column, or its hash after 019. */
 function whereMerchantKey(query, userId, merchantKey) {
@@ -121,34 +122,6 @@ const detachSchema = z.object({ transactionId: uuid });
 
 function isValidMerchantKey(key) {
   return DESCRIPTION_KEY.test(key) || SYNTHETIC_KEY.test(key) || MANUAL_KEY.test(key);
-}
-
-/**
- * Read EVERY row of a query, past PostgREST's silent max-rows cap.
- *
- * Paged by offset, advancing by the number of rows each page ACTUALLY returned
- * (so it is correct whatever the project's cap is), stopping only on an empty page,
- * and de-duplicated by id (a write landing between pages can shift one row). The
- * builder must order by a unique tie-breaker — date, then id.
- */
-const PAGE_SIZE = 500;
-const MAX_PAGES = 400; // a runaway backstop far beyond any real account
-async function readAllPages(buildQuery) {
-  const out = [];
-  const seen = new Set();
-  let offset = 0;
-  for (let page = 0; page < MAX_PAGES; page += 1) {
-    const { data, error } = await buildQuery().range(offset, offset + PAGE_SIZE - 1);
-    if (error) throw error;
-    if (!data || data.length === 0) return out;
-    for (const row of data) {
-      if (seen.has(row.id)) continue;
-      seen.add(row.id);
-      out.push(row);
-    }
-    offset += data.length;
-  }
-  throw new Error('readAllPages: page limit reached');
 }
 
 const expenseQuery = (uid) => () => supabase
@@ -244,8 +217,24 @@ async function loadRecurrence(uid, recurrenceId) {
 }
 
 const candidateShape = (t) => ({
-  id: t.id, date: t.date, amount: Number(t.amount), description: t.description ?? null,
+  id: t.id, date: t.date, amount: Number(t.amount), description: t.description ?? null, tripId: t.trip_id ?? null,
 });
+
+/**
+ * Phase 18 — the keep-out trips among these. A subscription is home spending, so linking
+ * a trip-tagged charge takes it off its trip, and un-stars it only if that trip was
+ * keeping it out of the monthly budget.
+ */
+async function keepOutTripIds(uid, tripIds) {
+  if (tripIds.length === 0) return new Set();
+  const { data, error } = await supabase
+    .from('trips')
+    .select('id, keep_out_of_monthly')
+    .in('id', [...new Set(tripIds)])
+    .eq('user_id', uid);
+  if (error) throw error;
+  return new Set(data.filter((t) => t.keep_out_of_monthly).map((t) => t.id));
+}
 
 router.get('/', async (req, res, next) => {
   try {
@@ -468,6 +457,16 @@ router.post('/track', async (req, res, next) => {
       });
     }
 
+    const ids = [...new Set([transactionId, ...includeTransactionIds])];
+    // What each charge was on, before the link below takes it off, so a rollback can
+    // put it back and only keep-out rows get un-starred.
+    const wasOnTrip = new Map();
+    for (const tid of ids) {
+      const row = state.txRows.find((t) => t.id === tid);
+      if (row?.trip_id) wasOnTrip.set(tid, { trip_id: row.trip_id, trip_stop_id: row.trip_stop_id ?? null });
+    }
+    const keepOut = await keepOutTripIds(uid, [...wasOnTrip.values()].map((w) => w.trip_id));
+
     const { data: rec, error: recErr } = await supabase
       .from('recurrences')
       .insert(encodeWrite('recurrences', uid, {
@@ -495,18 +494,38 @@ router.post('/track', async (req, res, next) => {
           .eq('user_id', uid)
           .eq('recurrence_id', rec.id);
         if (unlinkErr) console.error('[subscriptions:track] rollback unlink failed', { userId: uid, recurrenceId: rec.id, message: unlinkErr.message });
+        // The link took these off their trips. One update per (trip, stop) pair, so a
+        // double-tapped "Track it" can't silently strip a trip's tags.
+        const byPair = new Map();
+        for (const tid of linkedIds) {
+          const was = wasOnTrip.get(tid);
+          if (!was) continue;
+          const pair = `${was.trip_id}|${was.trip_stop_id}`;
+          if (!byPair.has(pair)) byPair.set(pair, { was, ids: [] });
+          byPair.get(pair).ids.push(tid);
+        }
+        for (const { was, ids: pairIds } of byPair.values()) {
+          const { error: tagErr } = await supabase
+            .from('transactions')
+            .update({ trip_id: was.trip_id, trip_stop_id: was.trip_stop_id })
+            .in('id', pairIds)
+            .eq('user_id', uid)
+            .is('trip_id', null);
+          if (tagErr) console.error('[subscriptions:track] rollback trip tags failed', { userId: uid, recurrenceId: rec.id, message: tagErr.message });
+        }
       }
       const { error: delErr } = await supabase.from('recurrences').delete().eq('id', rec.id).eq('user_id', uid);
       if (delErr) console.error('[subscriptions:track] rollback delete failed', { userId: uid, recurrenceId: rec.id, message: delErr.message });
     };
 
-    const ids = [...new Set([transactionId, ...includeTransactionIds])];
     // One conditional update. Ids that are not this user's, are income, or are
     // already linked are simply not matched — and the rows it DID link come back.
     // is_recurring false: a tracked charge is never "logged by a schedule" (see attach).
     const { data: linked, error: linkErr } = await supabase
       .from('transactions')
-      .update(encodeWrite('transactions', uid, { recurrence_id: rec.id, is_recurring: false }))
+      .update(encodeWrite('transactions', uid, {
+        recurrence_id: rec.id, is_recurring: false, trip_id: null, trip_stop_id: null,
+      }))
       .in('id', ids)
       .eq('user_id', uid)
       .eq('type', 'expense')
@@ -555,8 +574,28 @@ router.post('/track', async (req, res, next) => {
       }
     }
 
+    // Only now the race re-check has passed: nothing above this line can have un-starred.
+    const linkedIds = linked.map((r) => r.id);
+    const toUnstar = linkedIds.filter((tid) => keepOut.has(wasOnTrip.get(tid)?.trip_id));
+    let unstarFailed = 0;
+    if (toUnstar.length > 0) {
+      const { error: unstarErr } = await supabase
+        .from('transactions')
+        .update({ is_special: false })
+        .in('id', toUnstar)
+        .eq('user_id', uid);
+      if (unstarErr) {
+        console.error('[subscriptions:track] un-star failed', { userId: uid, recurrenceId: rec.id, message: unstarErr.message });
+        unstarFailed = toUnstar.length;
+      }
+    }
+
     console.log('[subscriptions:track]', { userId: uid, recurrenceId: rec.id, linked: linked.length });
-    res.status(201).json({ subscription: { merchantKey: manualMerchantKey(rec.id), linkedCount: linked.length } });
+    res.status(201).json({
+      subscription: { merchantKey: manualMerchantKey(rec.id), linkedCount: linked.length },
+      leftTrip: linkedIds.filter((tid) => wasOnTrip.has(tid)).length,
+      unstarFailed,
+    });
   } catch (err) {
     next(err);
   }
@@ -607,16 +646,24 @@ router.post('/:merchantKey/attach', async (req, res, next) => {
         repeating: subRef(clash, state.recurrenceRows, catsById),
       });
     }
-    const { data, error } = await supabase
+    const tripId = expense?.trip_id ?? null;
+    const unstar = tripId ? (await keepOutTripIds(uid, [tripId])).has(tripId) : false;
+    const link = supabase
       .from('transactions')
       // is_recurring false: a tracked charge is never "logged by a schedule", even
       // one orphaned from a deleted Repeat-this schedule (its pill would lie).
-      .update(encodeWrite('transactions', uid, { recurrence_id: rec.id, is_recurring: false }))
+      .update(encodeWrite('transactions', uid, {
+        recurrence_id: rec.id,
+        is_recurring: false,
+        ...(tripId ? { trip_id: null, trip_stop_id: null } : {}),
+        ...(unstar ? { is_special: false } : {}),
+      }))
       .eq('id', parsed.data.transactionId)
       .eq('user_id', uid)
       .eq('type', 'expense')
-      .is('recurrence_id', null)
-      .select('id');
+      .is('recurrence_id', null);
+    // On the trip it read, so the un-star can't apply to a row that has since moved.
+    const { data, error } = await (tripId ? link.eq('trip_id', tripId) : link.is('trip_id', null)).select('id');
     if (error) throw error;
     if (!data?.length) {
       return res.status(409).json({ error: "That expense can't be added — it may already be part of a subscription" });
@@ -629,7 +676,7 @@ router.post('/:merchantKey/attach', async (req, res, next) => {
         .eq('user_id', uid);
       if (reErr) throw reErr;
     }
-    res.json({ ok: true });
+    res.json({ ok: true, leftTrip: !!tripId, unstarred: unstar });
   } catch (err) {
     next(err);
   }

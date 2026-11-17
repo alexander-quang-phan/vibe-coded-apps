@@ -26,28 +26,8 @@ import { useApi } from '@/hooks/useApi';
 import { formatMoney } from '@/lib/format';
 import { cn } from '@/lib/utils';
 import { invalidateMoney } from '@/lib/invalidate';
-
-function progressTone(percent) {
-  if (percent >= 1)
-    return {
-      bar: 'from-rose-400 to-rose-500',
-      copy: "You've gone over — want to adjust next month?",
-    };
-  if (percent >= 0.9)
-    return {
-      bar: 'from-amber-300 to-amber-500',
-      copy: 'Getting close — tread lightly.',
-    };
-  if (percent >= 0.75)
-    return {
-      bar: 'from-amber-200 to-amber-400',
-      copy: 'On track, but watch the last stretch.',
-    };
-  return {
-    bar: 'from-emerald-400 to-primary',
-    copy: 'You have room to breathe.',
-  };
-}
+import { progressTone } from '@/lib/progressTone';
+import { TripTrackedLine } from '@/components/TripTrackedLine';
 
 /**
  * Phase 10 (A5) — the overall monthly budget. Every expense category counts
@@ -502,6 +482,8 @@ export default function Budgets() {
           <span className="hidden sm:inline">New budget</span>
         </Button>
       </header>
+
+      <TripTrackedLine />
 
       {!isLoading && !isError ? (
         <OverallBudgetCard

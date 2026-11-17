@@ -48,6 +48,9 @@ export function ConversionLine({
   rate,
   rateState,
   onRateChange,
+  // Phase 18: the date of a remembered rate in use, shown in full so it's never mistaken
+  // for today's.
+  rememberedOn = null,
 }) {
   const originalAmount = Number(amountStr);
   const converted = previewConvert({ originalAmount, fxRate: Number(rate), baseCurrency });
@@ -69,6 +72,15 @@ export function ConversionLine({
           <span>
             No rate available for {entryCurrency}/{baseCurrency} — type the rate you were charged.
           </span>
+        </p>
+      ) : null}
+
+      {rememberedOn ? (
+        <p className="text-xs text-muted-foreground">
+          Rate from{' '}
+          {new Date(`${rememberedOn}T00:00:00`).toLocaleDateString('en-GB', {
+            day: 'numeric', month: 'short', year: 'numeric',
+          })}
         </p>
       ) : null}
 

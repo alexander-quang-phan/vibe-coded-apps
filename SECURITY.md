@@ -61,6 +61,8 @@ No route is exposed without `requireAuth` except `/api/health` **and `/api/cron/
 
 `GET /api/subscriptions/track/preview`, `GET /track/recent`, `POST /track`, `POST /:key/attach`, `POST /:key/detach` and `DELETE /:key` sit under the existing authenticated `/api/subscriptions` mount — no new mount, no new data class (they read and link the user's own `transactions` and `recurrences`). Every query is scoped by `req.user.id`; every client-supplied transaction or recurrence id is ownership-checked by that scope, and the link updates are conditional (`.eq('user_id').eq('type','expense').is('recurrence_id', null)`), so another user's or an income row is simply not matched. attach/detach/DELETE accept only tracked `manual:` keys (`isTracked` fails closed: a row read without `auto_log` is never treated as tracked). None of them award XP. Reads go through `selectFor`/`decodeRows`; responses are built field by field.
 
+**Trips (Phase 18).** `GET/POST /api/trips`, `GET/PATCH/DELETE /api/trips/:id`, `GET /api/trips/:id/untagged`, `POST /api/trips/:id/transactions` and `POST /api/trips/from-group` sit under a new authenticated mount (`app.use('/api/trips', requireAuth, …)`, listed in `routeMountTable.test.js`). Every query is scoped by `req.user.id`. Every client-supplied id is ownership-checked: a trip or group by reading it scoped, a stop by `diffStops` against this trip's own stops, a category by `checkTripCategories`, and bulk-add's transaction ids by one conditional update (`.eq('user_id').eq('type','expense').is('trip_id', null).is('special_group_id', null).is('recurrence_id', null)`), so another user's, an income, or an already-filed row is simply not matched. `POST`/`PATCH /api/transactions` check `tripId` and `tripStopId` the same way, on the resulting row (`lib/tripRules.js`). Zod validates every body (`lib/tripRules.js`), including real calendar dates, which a bare regex would let reach Postgres as a 500. Reads go through `selectFor`/`decodeRows`, writes through `encodeWrite` per row, and responses are built field by field (`presentTrip`), so no ciphertext or `user_id` reaches the browser. A browser-only remembered exchange rate (`trim:fx-rates` in localStorage) holds a currency pair, a rate and a date, never an amount or a merchant. Migration 017b adds RLS and four own-row policies per table, and CHECKs for one-trip-or-one-group and expense-only.
+
 `DELETE /api/categories/:id` now counts and reassigns `recurrences` too, and validates the reassign target whenever one is used — previously the ON DELETE CASCADE silently deleted every subscription in a deleted category.
 
 ## Input validation
@@ -213,7 +215,8 @@ total, answer an Ask Trim question, or detect a subscription. So:
 
 **Money:** `transactions.amount` and `.original_amount`, `budgets.amount_limit`,
 `savings_goals.target_amount` and `.current_amount`, `savings_contributions.amount`,
-`user_stats.monthly_limit`, `recurrences.amount`.
+`user_stats.monthly_limit`, `recurrences.amount`, `trips.total_budget`,
+`trip_stops.budget`, `trip_category_budgets.amount_limit`.
 
 `transactions.original_amount` is encrypted because `amount = original_amount ×
 fx_rate` — encrypting only `amount` left every foreign-currency expense
@@ -222,9 +225,13 @@ reconstructable by one multiplication.
 **Free text:** `transactions.description`, `recurrences.description`,
 `ask_messages.content`, `savings_goals.name`, `savings_contributions.note`,
 `special_groups.name`, `subscription_overrides.display_name`, `categories.name`,
-and `subscription_overrides.merchant_key` (which keeps an encrypted copy beside
+`trips.name`, `trip_stops.name`, and `subscription_overrides.merchant_key` (which keeps an encrypted copy beside
 its hash, because a one-way hash alone could never be recomputed after a key
 rotation — and it is that table's primary key).
+
+Trip dates, `trips.keep_out_of_monthly`, `trip_stops.currency` (a public code) and the
+foreign keys stay plaintext: the routes need the dates to file spending by city, and a
+currency code reveals no amount.
 
 **Blind indexes** (keyed hashes, not ciphertext — searchable but unreadable):
 `transactions.merchant_prefix_hmacs` — a `text[]` of one hash per prefix of the

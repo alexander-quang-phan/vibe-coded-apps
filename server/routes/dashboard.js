@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { supabase } from '../lib/supabase.js';
 import { titleForLevel, levelProgress } from '../lib/gamification.js';
-import { excludeSpecial, sumSpecial } from '../lib/special.js';
+import { excludeSpecial, sumSpecial, sumSpecialOnTrips } from '../lib/special.js';
 import { monthBounds } from '../lib/month.js';
 import { userTimeZone } from '../lib/userZone.js';
 
@@ -16,7 +16,7 @@ const router = Router();
 // `_enc` column too, and `decodeRow` fills the plaintext name back in. That
 // matters here because line ~161 returns `stats.monthly_limit`, which at phase
 // `enc` would otherwise be `undefined` and serialise as NaN.
-const DASH_TX_COLUMNS = 'id, amount, type, category_id, date, is_special';
+const DASH_TX_COLUMNS = 'id, amount, type, category_id, date, is_special, trip_id';
 const DASH_CAT_COLUMNS = 'id, name, icon, color, type';
 const DASH_BUDGET_COLUMNS = 'id, category_id, amount_limit, period';
 const DASH_RECENT_COLUMNS =
@@ -143,6 +143,7 @@ router.get('/', async (req, res, next) => {
         balance: Number((income - expenses).toFixed(2)),
         transactionCount: txs.length,
         specialThisMonth: Number(sumSpecial(txs, specialEnabled).toFixed(2)),
+        specialOnTripsThisMonth: Number(sumSpecialOnTrips(txs, specialEnabled).toFixed(2)),
       },
       categoryBreakdown,
       budgetAlerts,

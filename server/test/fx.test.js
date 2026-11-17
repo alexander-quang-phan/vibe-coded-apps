@@ -1,6 +1,17 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { decimalsFor, convertToBase, describeConversion } from '../lib/fx.js';
+import { readFileSync } from 'node:fs';
+import { decimalsFor, convertToBase, describeConversion, QUOTABLE_CURRENCIES } from '../lib/fx.js';
+
+test('the server and client quotable-currency lists are identical', () => {
+  // Read as text so the check fails on drift, not on an import of client code.
+  const source = readFileSync(new URL('../../client/src/lib/fx.js', import.meta.url), 'utf8');
+  const block = source.match(/QUOTABLE_CURRENCIES = \[([\s\S]*?)\]/);
+  assert.ok(block, 'client/src/lib/fx.js no longer declares QUOTABLE_CURRENCIES');
+  assert.deepEqual(QUOTABLE_CURRENCIES, block[1].match(/[A-Z]{3}/g));
+  assert.equal(QUOTABLE_CURRENCIES.length, 31);
+  assert.ok(!QUOTABLE_CURRENCIES.includes('VND'), 'VND has no rate to quote');
+});
 
 test('decimals follow the currency, and VND has none', () => {
   assert.equal(decimalsFor('GBP'), 2);

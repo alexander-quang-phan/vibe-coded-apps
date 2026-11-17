@@ -150,6 +150,17 @@ alter table public.categories
 alter table public.special_groups
   drop column if exists name;
 
+alter table public.trips
+  drop column if exists name,
+  drop column if exists total_budget;
+
+alter table public.trip_stops
+  drop column if exists name,
+  drop column if exists budget;
+
+alter table public.trip_category_budgets
+  drop column if exists amount_limit;
+
 -- subscription_overrides needs its PRIMARY KEY moved before the plaintext
 -- merchant_key can go. The unique index created by migration 018 is what makes
 -- this safe: if two merchant keys had collided under one user, that index would
@@ -209,11 +220,15 @@ alter table public.categories        alter column name_enc           set not nul
 alter table public.categories        alter column name_hmac          set not null;
 alter table public.subscription_overrides alter column merchant_key_enc  set not null;
 alter table public.subscription_overrides alter column merchant_key_hmac set not null;
+alter table public.trips             alter column name_enc           set not null;
+alter table public.trip_stops        alter column name_enc           set not null;
+alter table public.trip_category_budgets alter column amount_limit_enc set not null;
 
 -- Deliberately still nullable, because their plaintext originals were:
 --   transactions.original_amount_enc, transactions.description_enc,
 --   recurrences.description_enc, savings_contributions.note_enc,
---   subscription_overrides.display_name_enc, user_stats.monthly_limit_enc.
+--   subscription_overrides.display_name_enc, user_stats.monthly_limit_enc,
+--   trips.total_budget_enc, trip_stops.budget_enc.
 
 -- --- what the database can NO LONGER enforce ---------------------------------
 --
@@ -228,6 +243,9 @@ alter table public.subscription_overrides alter column merchant_key_hmac set not
 --   recurrences.amount            > 0
 --   transactions.original_amount  > 0
 --   ask_messages.content          char_length between 1 and 8000
+--   trips.total_budget            > 0
+--   trip_stops.budget             > 0
+--   trip_category_budgets.amount_limit > 0
 --
 -- This is an unavoidable consequence of encrypting the values, not an oversight.
 -- It is the strongest argument for keeping the API-boundary validation tested.
