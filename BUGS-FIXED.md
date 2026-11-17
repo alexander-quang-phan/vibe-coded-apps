@@ -7,6 +7,25 @@ After fixing any real bug, append one row: what it was, why it mattered, how it 
 
 ---
 
+## 2026-11-17 — Route tests failed about 1 run in 25 with a stray `404` (the test harness, not the app)
+
+**What it was.** `test/helpers/routeHarness.js` started every test server with `app.listen(0)`, which
+binds all addresses. macOS hands out ports in order and, for an all-addresses bind, does not skip a port
+another program holds on 127.0.0.1 only. The harness then called `127.0.0.1:<port>`, and the more specific
+listener (another app on the Mac) answered with a non-JSON 404, so a random route test saw `404 !== 200`
+with `body: null`. Seen 2 times in about 50 runs on 2026-11-03.
+
+**Why it mattered.** A random red run blocks a deploy and invites "fixes" to code that isn't broken. It
+cost an evening on 2026-11-03 before the cause was found.
+
+**How it was fixed.** Bind the address the harness calls: `app.listen(0, '127.0.0.1', …)`. Proved under
+the same conditions (another process holding 572 scattered 127.0.0.1 ports, 18,000 paced requests through
+the real harness): old line, 18 landings on a held port and 20 wrong answers, all `404 body=null` (the 2
+extra apparently from another app on the Mac); new line, 0 and 0. Over the whole port range, the old bind
+was handed all 1,500 held ports and the new one none. Full suite 750/750 on six runs with the fix. **Lesson:**
+a test server must bind exactly the address its client calls. A 404 with an empty body means something
+else answered, not that the route is wrong. Look at who replied before changing app code.
+
 ## 2026-11-01 — Simple mode showed Special / "Repeat this" on a pre-dated add, then threw the choice away
 
 **What it was.** `QuickAddDialog` hid its details panel in simple mode only when `initialDate ===

@@ -193,8 +193,10 @@ export async function serve(router, { userId, mountAt = '/api' } = {}) {
   // Mirror server/index.js: never leak a raw database message to the client.
   app.use((err, _req, res, _next) => res.status(500).json({ error: err.message }));
 
+  // Bind the address `base` calls. Bound to all addresses, macOS can hand out a port
+  // another app holds on 127.0.0.1, and that app then answers (a stray `404`, body null).
   const server = await new Promise((resolve) => {
-    const s = app.listen(0, () => resolve(s));
+    const s = app.listen(0, '127.0.0.1', () => resolve(s));
   });
   const base = `http://127.0.0.1:${server.address().port}${mountAt}`;
 

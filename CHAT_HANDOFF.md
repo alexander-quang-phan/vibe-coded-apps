@@ -87,8 +87,9 @@ hand it a port another app already holds on 127.0.0.1 (Cursor holds two here), a
 wins, so the request never reaches the test's server. Proven: with two of my own processes, the 127.0.0.1 one
 answered; `listen(0)` was handed one of Cursor's ports 1 time in 6,000. Inferred, not observed: that Cursor sent
 the 404 (no request was sent to it). The route's own 404s are JSON, so a `null` body isn't the route.
-Not a product bug, and it can't happen on Vercel. **Likely one-line fix, not applied or tested:**
-`app.listen(0, '127.0.0.1', …)`. If a failure looks different from this, investigate it properly.
+Not a product bug, and it can't happen on Vercel. **FIXED 17 Nov:** the harness now binds
+`app.listen(0, '127.0.0.1', …)`. Proof and details are in BUGS-FIXED.md (2026-11-17). If a stray 404
+ever comes back, investigate it properly: it isn't this one.
 
 **DECIDED 1 Nov — trips first** (Alex: "Trips first"). The trips spec edits the UNAPPLIED 018/018a/019
 in place, so encryption runbook Steps 1–4 (which apply 012/018/018a) wait until trips is merged and
