@@ -1,16 +1,17 @@
-# Chat Handoff — updated 2026-11-03 (PHASE 17 + BUG FIXES LIVE; Phase 18 trips built on a branch, not deployed)
+# Chat Handoff — updated 2026-11-17 (PHASE 18 TRIPS LIVE; encryption still off)
 
 ## DUAL-AGENT BATON  (both models: update this the MOMENT you finish work)
-- Current stage:  **Phase 18 trips: built, reviewed and fixed on branch `claude/confident-northcutt-6cd9f9`.**
-                  NOT merged, NOT deployed, **017b NOT on the live database**. Rollout steps:
-                  `docs/2026-11-03-phase18-deploy-checklist.md` + PDF. Phase 17 and the 13 Oct bug fixes are live.
+- Current stage:  **Phase 18 trips is LIVE (17 Nov).** 017b applied (Supabase migration `trips`), merged as
+                  `c0f7f52`, trim-api then client deployed, each step checked (BUILD_PLAN 18.11). Phase 17 and the
+                  13 Oct bug fixes are live. **Encryption (9.5) is still OFF**, and its runbook is unblocked now.
 - Model A is:     Claude Code. Independent review by `code-reviewer` (Codex unavailable for security work).
-- Up next:        **Alex** — decide on the deploy (checklist above) and whether archiving should turn the Special
-                  setting on. His Phase 17 logged-in checks are still outstanding too.
-- Last actor did: Claude Code, 2026-11-03 — fixed the review's P1 and four P2s (BUGS-FIXED 2026-11-03), planted
-                  bystander rows so deleted filters fail a test. `npm test` 1150/1150, 0 skipped; client build
-                  passes; clicked through in the real app against `dev:mock` with only login swapped out.
-- Last verdict:   code-reviewer FAIL (0 P0, 1 P1, 4 P2) → all fixed; P1 proved by replaying its reproduction.
+- Up next:        **Alex** — the logged-in checks (trips: checklist section 6; Phase 17 and earlier: next step 1),
+                  and whether archiving should turn the Special setting on. Then, when he wants it, encryption
+                  runbook Step 1 (he creates and backs up the key; only he should).
+- Last actor did: Claude Code, 2026-11-17 — fixed the test harness (BUGS-FIXED 2026-11-17), then shipped trips:
+                  read-only check, 017b, merge, 1150/1150 with 0 skipped, build, push, API, client, live checks.
+- Rollback:       promote trim-api `trim-o3f5huyc9…` and client `trim-budget-d5x19bctp…` (the 3 Nov builds);
+                  LEAVE 017b in place (the old API ignores the new columns).
 - Not verified:   a logged-in run with real data, and the routes against real PostgREST (the route suites use a
                   fake; real PostgreSQL covers the migrations and the restore statement).
 

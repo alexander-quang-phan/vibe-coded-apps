@@ -1313,10 +1313,10 @@ final validation pass). Plan: `docs/superpowers/plans/2026-10-14-subscription-ma
 
 Still unverified: a logged-in click-through on the live site (Claude can't sign in). Alex's 2-minute check: Transactions → pencil on an expense → Subscription section; Subscriptions → Add a subscription.
 
-## Phase 18 — trips (BUILT on a branch, NOT merged, NOT deployed)
+## Phase 18 — trips — SHIPPED AND LIVE 2026-11-17
 
 Spec: `docs/superpowers/specs/2026-10-13-trips-design.md`. Plan, with Alex's answers: `docs/superpowers/plans/2026-11-01-trips.md`.
-Branch `claude/confident-northcutt-6cd9f9`. **017b is NOT applied to the live database.** Rollout: `docs/2026-11-03-phase18-deploy-checklist.md`.
+Merged to `main` as `c0f7f52`. 017b applied as Supabase migration `trips`. Rollout followed `docs/2026-11-03-phase18-deploy-checklist.md`.
 
 - [x] **18.1** Live database re-checked 3 Nov with Alex's yes: through 017a applied, no `_enc` column, no barrier, no trip objects.
 - [x] **18.2** `lib/trips.js` + `client/src/lib/trips.js`; the parity test runs the same cases on both, plus Quick Add's currency rules.
@@ -1328,7 +1328,8 @@ Branch `claude/confident-northcutt-6cd9f9`. **017b is NOT applied to the live da
 - [x] **18.8** Client: Trips, TripDetail, TripEditor, TripCard, TripTag, TripPicker, TripChip, TripTrackedLine, `TransactionEditDialog` extracted, Quick Add trip mode, nav to `lg`.
 - [x] **18.9** Clicked through in the real app (real router and nav, only login swapped out) against `npm run dev:mock`: the spec's 7 manual checks, at 375, 768 and 1024px.
 - [x] **18.10** Independent review by `code-reviewer`: 0 P0, 1 P1 (a Quick Add open past midnight held a foreign entry at rate 1), 4 P2. All fixed, the P1 proved by replaying the reviewer's reproduction. Route tests gained bystander rows, and a mutation sweep now catches every filter in `routes/trips.js` that can change a result. See BUGS-FIXED 2026-11-03.
-- [ ] **18.11** Apply 017b, merge to `main`, deploy `trim-api`, deploy client. Not verified until then: a logged-in click-through with real data.
+- [x] **18.11** Shipped 2026-11-17 in the gated order, with Alex's "Yes, deploy trips". Read-only check: 0 `_enc` columns, 0 barrier functions, 0 trip tables, 017a present. Applied 017b, then checked it: 3 tables, 2 CHECKs, 2 columns, RLS on all 3 (12 policies), 0 tagged rows; 447 transactions before and after, 84 in special groups before and after. Merged (`c0f7f52`), `npm test` 1150/1150 with 0 skipped, client build passes, encryption env vars still absent. Pushed, deployed `trim-api` (`/api/health` 200, `/api/trips` 401, not 404), then the client (live bundle `index-DXSwvD4k.js` contains "Planning a getaway" and "Not trip spending"; `/trips` logged out redirects to login, no console errors).
+- [ ] **18.12 — Alex:** the logged-in check in the checklist's section 6. Still unverified: real data, and the routes against real PostgREST (the route suites use a fake).
 
 ## Deferred further (flagged in FEATURES.md, don't start without explicit ask)
 

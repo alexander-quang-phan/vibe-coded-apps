@@ -1,6 +1,6 @@
 # Phase 18 (trips): deploy checklist
 
-**Nothing here has been done yet.** Trips is built on the branch `claude/confident-northcutt-6cd9f9`. It is not on `main`, it is not deployed, and migration 017b is not on the live database.
+**Steps 1–5 were done on 17 Nov 2026** (results in BUILD_PLAN.md 18.11). Only section 6, Alex's logged-in check, is left. The text below is kept as written, for the record and for rollback.
 
 **Why the order matters.** The new API reads `trip_id` on every transaction. If it deploys before the migration, every transaction read and create fails. So: database first, then API, then client. The old API and old client both ignore the new columns, so step 2 is safe to do first and to leave in place.
 
