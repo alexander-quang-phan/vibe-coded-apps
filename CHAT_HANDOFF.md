@@ -5,15 +5,33 @@
                   `c0f7f52`, trim-api then client deployed, each step checked (BUILD_PLAN 18.11). Phase 17 and the
                   13 Oct bug fixes are live. **Encryption (9.5) is still OFF**, and its runbook is unblocked now.
 - Model A is:     Claude Code. Independent review by `code-reviewer` (Codex unavailable for security work).
-- Up next:        **Alex** — the logged-in checks (trips: checklist section 6; Phase 17 and earlier: next step 1),
-                  and whether archiving should turn the Special setting on. Then, when he wants it, encryption
-                  runbook Step 1 (he creates and backs up the key; only he should).
+- Up next:        **Trips session** (`local_b40d0ad3…`) — plan the 17 Nov requests below and show Alex before coding.
+                  **Alex** — reopen the app (Trips is the 4th tab), the logged-in checks, and approve that plan.
+                  Encryption runbook Step 1 waits until those changes ship: they may edit 018/018a/019 in place.
 - Last actor did: Claude Code, 2026-11-17 — fixed the test harness (BUGS-FIXED 2026-11-17), then shipped trips:
                   read-only check, 017b, merge, 1150/1150 with 0 skipped, build, push, API, client, live checks.
 - Rollback:       promote trim-api `trim-o3f5huyc9…` and client `trim-budget-d5x19bctp…` (the 3 Nov builds);
                   LEAVE 017b in place (the old API ignores the new columns).
 - Not verified:   a logged-in run with real data, and the routes against real PostgREST (the route suites use a
                   fake; real PostgreSQL covers the migrations and the restore statement).
+
+## Requested 17 Nov — not built yet (handed to the trips session; this is the durable record)
+Alex's words: "I still don't see the trips feature, and trips are special expenses, and within each trip I want
+to be able to set a budget for each city on the trip and category" · "I also want the special expenses total to
+be for every new month, while the dropdown shows the different special expense groups and totals so I can see
+the whole breakdown. And the trips will go into this dropdown and into special expenses"
+His answers to the follow-up questions:
+1. **Budgets inside a trip: "Do both and give me the option to toggle the simple version on and off".** Keep
+   city budgets and whole-trip category budgets (live today), add category budgets inside each city, with a
+   switch between the two. Still open for the plan: is the switch per trip, and how does it behave in Simple
+   mode? (`TripEditor.jsx` hides category budgets in Simple mode today.)
+2. **"Show trips under Special".** Trips stay on their tab and are also listed in the Dashboard's Special panel.
+3. **Special panel: "All-time totals only"** for the rows. The header becomes **this month's** special spend,
+   resetting on the 1st (today it's the lifetime sum of group totals). Each group and each trip is a row with
+   its **all-time** total, so the rows won't add up to the header. That's chosen, so label it clearly.
+4. **"Keep the switch, on by default"**: "Keep this trip out of my monthly budget" stays.
+"Not visible" was checked: Trips is the 4th nav item, fully visible at 375px, with no flag hiding it and no
+service worker. Most likely a stale open tab or home-screen app; not confirmed with Alex yet.
 
 ## Goal
 Alex (13 Oct): (1) trips with a set budget per category and per city; (2) "I don't see a way to mark a
