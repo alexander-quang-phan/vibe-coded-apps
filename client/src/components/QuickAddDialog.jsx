@@ -783,7 +783,7 @@ export function QuickAddDialog({
               </Button>
             ) : null}
 
-            {/* Step 3: category chips — auto-submits on tap */}
+            {/* Step 3: category chips — the first tap selects, the second logs */}
             <div className={simpleMode ? 'hidden' : 'space-y-2'}>
               <Label>Category</Label>
               <div className="grid grid-cols-3 gap-2 sm:grid-cols-4">

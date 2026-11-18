@@ -11,7 +11,7 @@
 ## Core philosophy
 
 1. **Dopamine > guilt.** Every interaction should lean toward positive reinforcement.
-2. **Max 3 taps to log a transaction.** Amount → Category → Done. The category tap auto-submits. Anything extra (date, note) is progressive disclosure.
+2. **Max 3 taps to log a transaction.** Amount → tap a category → tap it again to log. The first tap selects the chip ("tap again to log"), the second logs it (Phase 10 A2). Anything extra (date, note) is progressive disclosure.
 3. **Celebrate wins loudly, fail quietly.** Confetti, toasts, level-ups, shield banners when things go well. Amber→rose gradients and friendly copy ("want to adjust next month?") when things don't.
 4. **Simple mode exists.** New users can opt for "one total monthly limit, no categories" — stored on `user_stats.simple_mode`.
 5. **Mobile-first.** Everything must feel great on a phone. Safe-area bottom padding, big tap targets, FAB for quick-add.

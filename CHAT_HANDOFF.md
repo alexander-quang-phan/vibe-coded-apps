@@ -105,8 +105,9 @@ session is waiting for Alex's answers; see that session, not this file, for the 
 3. ✅ **Fixed, on `main` 3 Nov** — backfill skipped half-encrypted rows (it was real). Not yet run on a real
    database; the runbook PDF still needs regenerating after trips merges.
 4. ✅ **Fixed and live 3 Nov** — AI parse route now reads categories through the codec.
-5. **STILL OPEN: stale docs** — FEATURES.md says "The category tap auto-submits" (it's two taps) and "No FX"
-   (Phase 12 added foreign-currency entry); more items in the 13 Oct brief. Docs-only.
+5. **Partly fixed 18 Nov: stale docs.** The "category tap auto-submits" line in FEATURES.md and the matching
+   comment in `QuickAddDialog.jsx` now say two taps. Not yet checked: the rest of the 13 Oct brief, such as
+   "No FX" (true only for the base currency), the detector description, and ARCHITECTURE's schema list. Docs-only.
 
 ## Known flaky test — a FALSE ALARM, don't chase it (found 3 Nov)
 **Symptom:** roughly 1 `npm test` run in 25 fails a random route test with `404 !== 200` and a `null` body (seen
