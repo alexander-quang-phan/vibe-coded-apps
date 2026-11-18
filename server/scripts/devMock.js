@@ -42,6 +42,7 @@ import { sumSpecialOnTrips } from '../lib/special.js';
 import {
   deriveTripWrite, tripCreateSchema, tripPatchSchema, fromGroupSchema, bulkAddSchema, DELETE_MODES,
   checkTripPlan, checkTripCategories, stopRow, diffStops, diffCategoryBudgets,
+  allCategoryLines, diffCityBudgets, cityLinesFor,
 } from '../lib/tripRules.js';
 import {
   summariseTrip, presentTrip, splitUntagged, untaggedWindowStart,
@@ -669,7 +670,8 @@ function seedTrips() {
   const now = new Date().toISOString();
   const italy = {
     id: randomUUID(), name: 'Italy', start_date: daysAgoISO(2), end_date: daysAgoISO(-5),
-    total_budget: 1200, keep_out_of_monthly: true, source_group_id: null, archived_at: null, created_at: now,
+    total_budget: 1200, keep_out_of_monthly: true, city_category_budgets: true, source_group_id: null,
+    archived_at: null, created_at: now,
   };
   const rome = {
     id: randomUUID(), trip_id: italy.id, name: 'Rome', start_date: daysAgoISO(2), end_date: daysAgoISO(-1),
@@ -681,9 +683,9 @@ function seedTrips() {
   };
   trips.push(italy);
   tripStops.push(rome, naples);
-  for (const [name, amount_limit] of [['Food', 200], ['Shopping', 150]]) {
+  for (const [name, amount_limit, stop] of [['Food', 200, null], ['Shopping', 150, null], ['Food', 120, rome], ['Shopping', 60, naples]]) {
     tripCategoryBudgets.push({
-      id: randomUUID(), trip_id: italy.id, category_id: cat(name).id, amount_limit, created_at: now,
+      id: randomUUID(), trip_id: italy.id, stop_id: stop?.id ?? null, category_id: cat(name).id, amount_limit, created_at: now,
     });
   }
 
@@ -801,15 +803,23 @@ function mockTurnOnSpecial(keepOut) {
   return true;
 }
 
-function mockInsertChildren(tripId, stopRows, budgetRows) {
+/** New stops (each with its own city lines, as routes/trips.js insertStop) and budget lines. */
+function mockInsertChildren(tripId, newStops, budgetRows) {
   const now = new Date().toISOString();
-  for (const row of stopRows) tripStops.push({ id: randomUUID(), trip_id: tripId, created_at: now, ...row });
-  for (const row of budgetRows) tripCategoryBudgets.push({ id: randomUUID(), trip_id: tripId, created_at: now, ...row });
+  const lines = [...budgetRows];
+  for (const stop of newStops) {
+    const id = randomUUID();
+    tripStops.push({ id, trip_id: tripId, created_at: now, ...stopRow(stop) });
+    lines.push(...cityLinesFor(stop, id));
+  }
+  for (const row of lines) {
+    tripCategoryBudgets.push({ id: randomUUID(), trip_id: tripId, stop_id: null, created_at: now, ...row });
+  }
 }
 
 function mockCreateTrip(body, sourceGroupId = null) {
   const refused = checkTripPlan({ ...body, baseCurrency: stats.currency })
-    ?? checkTripCategories(body.categoryBudgets, categories);
+    ?? checkTripCategories(allCategoryLines(body), categories);
   if (refused) return { refused };
   const specialEnabledNow = mockTurnOnSpecial(body.keepOutOfMonthly);
   const trip = {
@@ -819,6 +829,7 @@ function mockCreateTrip(body, sourceGroupId = null) {
     end_date: body.endDate,
     total_budget: body.totalBudget ?? null,
     keep_out_of_monthly: body.keepOutOfMonthly,
+    city_category_budgets: body.cityCategoryBudgets,
     source_group_id: sourceGroupId,
     archived_at: null,
     created_at: new Date().toISOString(),
@@ -826,7 +837,7 @@ function mockCreateTrip(body, sourceGroupId = null) {
   trips.push(trip);
   mockInsertChildren(
     trip.id,
-    body.stops.map(stopRow),
+    body.stops,
     body.categoryBudgets.map((b) => ({ category_id: b.categoryId, amount_limit: b.amount })),
   );
   return { trip, specialEnabledNow };
@@ -910,16 +921,18 @@ app.patch('/api/trips/:id', (req, res) => {
     stops: desiredStops,
     categoryBudgets: body.categoryBudgets ?? [],
     baseCurrency: body.stops ? stats.currency : null,
-  }) ?? checkTripCategories(body.categoryBudgets ?? [], categories);
+  }) ?? checkTripCategories(allCategoryLines(body), categories);
   if (refused) return res.status(refused.status).json({ error: refused.error });
 
   const stopDiff = body.stops ? diffStops(existingStops, body.stops) : null;
   if (stopDiff?.error) return res.status(stopDiff.status).json({ error: stopDiff.error });
   const budgetDiff = body.categoryBudgets ? diffCategoryBudgets(existingBudgets, body.categoryBudgets) : null;
+  const cityDiff = body.stops ? diffCityBudgets(existingBudgets, body.stops) : null;
 
   const specialEnabledNow = mockTurnOnSpecial(body.keepOutOfMonthly ?? trip.keep_out_of_monthly);
 
   if (stopDiff) {
+    tripCategoryBudgets = tripCategoryBudgets.filter((b) => !stopDiff.removedIds.includes(b.stop_id));
     for (const t of transactions) {
       if (t.trip_id === trip.id && stopDiff.removedIds.includes(t.trip_stop_id)) t.trip_stop_id = null;
     }
@@ -928,13 +941,23 @@ app.patch('/api/trips/:id', (req, res) => {
   }
   if (budgetDiff) {
     tripCategoryBudgets = tripCategoryBudgets.filter(
-      (b) => b.trip_id !== trip.id || !budgetDiff.removedCategoryIds.includes(b.category_id),
+      (b) => b.trip_id !== trip.id || b.stop_id != null || !budgetDiff.removedCategoryIds.includes(b.category_id),
     );
     for (const { id, amount_limit } of budgetDiff.toUpdate) {
       tripCategoryBudgets.find((b) => b.id === id).amount_limit = amount_limit;
     }
   }
-  mockInsertChildren(trip.id, stopDiff?.toInsert ?? [], budgetDiff?.toInsert ?? []);
+  if (cityDiff) {
+    tripCategoryBudgets = tripCategoryBudgets.filter((b) => !cityDiff.removedIds.includes(b.id));
+    for (const { id, amount_limit } of cityDiff.toUpdate) {
+      tripCategoryBudgets.find((b) => b.id === id).amount_limit = amount_limit;
+    }
+  }
+  mockInsertChildren(
+    trip.id,
+    (body.stops ?? []).filter((s) => !s.id),
+    [...(budgetDiff?.toInsert ?? []), ...(cityDiff?.toInsert ?? [])],
+  );
 
   if (body.keepOutOfMonthly !== undefined && body.keepOutOfMonthly !== trip.keep_out_of_monthly) {
     for (const t of mockTxsOf(trip.id)) t.is_special = body.keepOutOfMonthly;
@@ -942,6 +965,7 @@ app.patch('/api/trips/:id', (req, res) => {
   if (body.startDate !== undefined) trip.start_date = body.startDate;
   if (body.endDate !== undefined) trip.end_date = body.endDate;
   if (body.keepOutOfMonthly !== undefined) trip.keep_out_of_monthly = body.keepOutOfMonthly;
+  if (body.cityCategoryBudgets !== undefined) trip.city_category_budgets = body.cityCategoryBudgets;
   if (body.archived !== undefined) trip.archived_at = body.archived ? new Date().toISOString() : null;
   if (body.name !== undefined) trip.name = body.name;
   if (body.totalBudget !== undefined) trip.total_budget = body.totalBudget;

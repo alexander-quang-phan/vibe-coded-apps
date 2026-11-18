@@ -1,6 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { tripStatus, stopForDate, tripForDate, cityOf, summariseTrip } from '../lib/trips.js';
+import { tripStatus, stopForDate, tripForDate, cityOf, summariseTrip, presentTrip } from '../lib/trips.js';
+import {
+  checkTripPlan, allCategoryLines, diffCategoryBudgets, diffCityBudgets, cityLinesFor, tripCreateSchema, tripPatchSchema,
+} from '../lib/tripRules.js';
 
 const italy = { id: 't1', start_date: '2026-10-12', end_date: '2026-10-19', total_budget: 1000 };
 const rome = { id: 's1', start_date: '2026-10-12', end_date: '2026-10-15', budget: 400, created_at: '2026-10-01T10:00:00Z' };
@@ -141,9 +144,10 @@ test('summariseTrip: city totals and category totals add up to spent exactly', (
 test('summariseTrip: decoded string amounts are summed as numbers, and buckets are right', () => {
   const s = summariseTrip(italy, [rome, milan], budgets, txs, '2026-10-14');
   assert.equal(s.spent, 259.1);
+  const off = { byCategory: null, otherCategoriesSpent: null };
   assert.deepEqual(s.byStop, [
-    { stopId: 's1', budget: 400, spent: 19.99 },
-    { stopId: 's2', budget: null, spent: 150.01 },
+    { stopId: 's1', budget: 400, spent: 19.99, ...off },
+    { stopId: 's2', budget: null, spent: 150.01, ...off },
   ]);
   assert.equal(s.noCitySpent, 89.1, 'the pre-trip flight lands under No city');
   assert.equal(s.count, 4);
@@ -202,5 +206,116 @@ test('summariseTrip: a trip with no expenses is all zeroes, never NaN', () => {
   assert.equal(s.noCitySpent, 0);
   assert.equal(s.otherCategoriesSpent, 0);
   assert.equal(s.count, 0);
-  assert.deepEqual(s.byStop, [{ stopId: 's1', budget: 400, spent: 0 }]);
+  assert.deepEqual(s.byStop, [{ stopId: 's1', budget: 400, spent: 0, byCategory: null, otherCategoriesSpent: null }]);
+});
+
+// --- round 2: category budgets inside each city -------------------------------------
+
+const cityLines = [
+  { id: 'w1', category_id: food, amount_limit: 200, stop_id: null },
+  { id: 'r1', category_id: food, amount_limit: '120', stop_id: 's1' },
+  { id: 'r2', category_id: fun, amount_limit: 40, stop_id: 's1' },
+  { id: 'n1', category_id: food, amount_limit: 60, stop_id: 's2' },
+];
+
+test('city lines: with the switch on, each city gets its own bars and its own Other', () => {
+  const s = summariseTrip({ ...italy, city_category_budgets: true }, [rome, milan], cityLines, txs, '2026-10-14');
+  const [romeBars, milanBars] = s.byStop;
+  assert.deepEqual(romeBars.byCategory, [
+    { categoryId: food, limit: 120, spent: 19.99 },
+    { categoryId: fun, limit: 40, spent: 0 },
+  ]);
+  assert.equal(romeBars.otherCategoriesSpent, 0);
+  // Milan holds the 0.01 food row by date and the 150 fun row by override.
+  assert.deepEqual(milanBars.byCategory, [
+    { categoryId: food, limit: 60, spent: 0.01 },
+    { categoryId: fun, limit: null, spent: 150 },
+  ]);
+  assert.equal(milanBars.otherCategoriesSpent, 150);
+  for (const b of s.byStop) {
+    const total = b.byCategory.reduce((sum, c) => sum + Math.round(c.spent * 100), 0);
+    assert.equal(total, Math.round(b.spent * 100), 'a city’s bars add up to the city');
+  }
+});
+
+test('city lines never leak into the whole-trip bars', () => {
+  const s = summariseTrip({ ...italy, city_category_budgets: true }, [rome, milan], cityLines, txs, '2026-10-14');
+  assert.deepEqual(s.byCategory.filter((b) => b.limit !== null), [{ categoryId: food, limit: 200, spent: 20 }]);
+});
+
+test('switch off: city lines are kept but leave every figure alone', () => {
+  const on = summariseTrip({ ...italy, city_category_budgets: true }, [rome, milan], cityLines, txs, '2026-10-14');
+  const off = summariseTrip({ ...italy, city_category_budgets: false }, [rome, milan], cityLines, txs, '2026-10-14');
+  const plain = summariseTrip(italy, [rome, milan], cityLines.filter((b) => !b.stop_id), txs, '2026-10-14');
+  assert.ok(off.byStop.every((b) => b.byCategory === null && b.otherCategoriesSpent === null));
+  assert.deepEqual(off.byCategory, plain.byCategory);
+  assert.deepEqual(off.byCategory, on.byCategory);
+  assert.equal(off.spent, on.spent);
+});
+
+test('presentTrip: whole-trip lines at the top, each city’s under its stop, sent even with the switch off', () => {
+  const trip = { ...italy, created_at: 'x', keep_out_of_monthly: true, city_category_budgets: false };
+  const summary = summariseTrip(trip, [rome, milan], cityLines, [], '2026-10-14');
+  const p = presentTrip(trip, [rome, milan], cityLines, summary, '2026-10-14');
+  assert.equal(p.cityCategoryBudgets, false);
+  assert.deepEqual(p.categoryBudgets, [{ id: 'w1', categoryId: food, amount: 200 }]);
+  assert.deepEqual(p.stops[0].categoryBudgets, [
+    { id: 'r1', categoryId: food, amount: 120 },
+    { id: 'r2', categoryId: fun, amount: 40 },
+  ]);
+  assert.deepEqual(p.stops[1].categoryBudgets, [{ id: 'n1', categoryId: food, amount: 60 }]);
+});
+
+const plan = (stops, categoryBudgets = []) => ({ startDate: '2026-10-12', endDate: '2026-10-19', stops, categoryBudgets });
+const stopIn = (name, categoryBudgets) => ({ name, startDate: '2026-10-12', endDate: '2026-10-13', categoryBudgets });
+
+test('checkTripPlan: one line per category in each city, and the same category may sit in several', () => {
+  const twice = checkTripPlan(plan([stopIn('Rome', [{ categoryId: food, amount: 1 }, { categoryId: food, amount: 2 }])]));
+  assert.equal(twice.status, 409);
+  assert.match(twice.error, /in Rome/);
+  assert.equal(
+    checkTripPlan(plan(
+      [stopIn('Rome', [{ categoryId: food, amount: 1 }]), stopIn('Naples', [{ categoryId: food, amount: 1 }])],
+      [{ categoryId: food, amount: 5 }],
+    )),
+    null,
+  );
+});
+
+test('allCategoryLines: city lines are ownership-checked too', () => {
+  const ids = allCategoryLines(plan(
+    [stopIn('Rome', [{ categoryId: 'c-city', amount: 1 }]), stopIn('Naples', undefined)],
+    [{ categoryId: 'c-trip', amount: 1 }],
+  )).map((b) => b.categoryId);
+  assert.deepEqual(ids, ['c-trip', 'c-city']);
+});
+
+test('diffCategoryBudgets ignores city lines, so removing a whole-trip line never touches a city', () => {
+  const d = diffCategoryBudgets(cityLines, []);
+  assert.deepEqual(d.removedCategoryIds, [food], 'only the whole-trip food line');
+  const kept = diffCategoryBudgets(cityLines, [{ categoryId: food, amount: 200 }]);
+  assert.deepEqual(kept, { removedCategoryIds: [], toUpdate: [], toInsert: [] });
+});
+
+test('diffCityBudgets: per city by category; absent lines are left alone; new stops are skipped', () => {
+  const d = diffCityBudgets(cityLines, [
+    { id: 's1', categoryBudgets: [{ categoryId: food, amount: 130 }, { categoryId: 'cat-new', amount: 9 }] },
+    { id: 's2' },
+    { name: 'New', categoryBudgets: [{ categoryId: food, amount: 1 }] },
+  ]);
+  assert.deepEqual(d.removedIds, ['r2'], 'Rome’s Fun line goes');
+  assert.deepEqual(d.toUpdate, [{ id: 'r1', amount_limit: 130 }]);
+  assert.deepEqual(d.toInsert, [{ stop_id: 's1', category_id: 'cat-new', amount_limit: 9 }]);
+  assert.ok(!d.removedIds.includes('n1'), 'Naples sent no lines, so its lines stay');
+  assert.deepEqual(cityLinesFor({ categoryBudgets: [{ categoryId: food, amount: 1 }] }, 'new-id'), [
+    { stop_id: 'new-id', category_id: food, amount_limit: 1 },
+  ]);
+});
+
+test('schemas: the switch defaults off on create and is optional on edit; a city takes at most 30 lines', () => {
+  const base = { name: 'x', startDate: '2026-10-12', endDate: '2026-10-13' };
+  assert.equal(tripCreateSchema.parse(base).cityCategoryBudgets, false);
+  assert.equal(tripPatchSchema.parse({ name: 'x' }).cityCategoryBudgets, undefined);
+  const many = Array.from({ length: 31 }, (_, i) => ({ categoryId: `00000000-0000-4000-8000-${String(i).padStart(12, '0')}`, amount: 1 }));
+  assert.equal(tripCreateSchema.safeParse({ ...base, stops: [{ ...stopIn('Rome'), categoryBudgets: many }] }).success, false);
 });

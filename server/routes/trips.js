@@ -20,15 +20,17 @@ import {
 import {
   tripCreateSchema, tripPatchSchema, fromGroupSchema, bulkAddSchema, DELETE_MODES,
   checkTripPlan, checkTripCategories, stopRow, diffStops, diffCategoryBudgets,
+  allCategoryLines, diffCityBudgets, cityLinesFor,
 } from '../lib/tripRules.js';
 
 const router = Router();
 
 const UUID_RE = /^[0-9a-f-]{36}$/i;
 
-const TRIP_COLUMNS = 'id, name, start_date, end_date, total_budget, keep_out_of_monthly, source_group_id, archived_at, created_at';
+const TRIP_COLUMNS = 'id, name, start_date, end_date, total_budget, keep_out_of_monthly, city_category_budgets, source_group_id, archived_at, created_at';
 const STOP_COLUMNS = 'id, trip_id, name, start_date, end_date, budget, currency, created_at';
-const BUDGET_COLUMNS = 'id, trip_id, category_id, amount_limit, created_at';
+// stop_id NULL is a whole-trip line; set, it's that city's (017c).
+const BUDGET_COLUMNS = 'id, trip_id, stop_id, category_id, amount_limit, created_at';
 // Lean: what the figures need, for every trip at once. `id` because paging orders by it.
 const FIGURE_TX_COLUMNS = 'id, trip_id, amount, date, category_id, trip_stop_id';
 const UNTAGGED_COLUMNS = 'id, amount, date, description, category_id, original_amount, original_currency, created_at';
@@ -118,23 +120,27 @@ async function turnOnSpecialIfNeeded(uid, keepOut, prefs) {
   return true;
 }
 
-async function readOwnedCategories(uid, categoryBudgets) {
-  if (categoryBudgets.length === 0) return [];
+/** `lines` is every whole-trip and city line in the save (allCategoryLines). */
+async function readOwnedCategories(uid, lines) {
+  if (lines.length === 0) return [];
   const { data, error } = await supabase
     .from('categories')
     .select('id, type')
-    .in('id', categoryBudgets.map((b) => b.categoryId))
+    .in('id', [...new Set(lines.map((b) => b.categoryId))])
     .eq('user_id', uid);
   if (error) throw error;
   return data;
 }
 
-async function insertStops(uid, tripId, rows) {
-  if (rows.length === 0) return;
-  const { error } = await supabase
+/** One stop at a time, because its city lines need the id it gets. A trip has 30 at most. */
+async function insertStop(uid, tripId, stop) {
+  const { data, error } = await supabase
     .from('trip_stops')
-    .insert(rows.map((row) => encodeWrite('trip_stops', uid, { ...row, user_id: uid, trip_id: tripId })));
+    .insert(encodeWrite('trip_stops', uid, { ...stopRow(stop), user_id: uid, trip_id: tripId }))
+    .select('id')
+    .single();
   if (error) throw error;
+  await insertBudgets(uid, tripId, cityLinesFor(stop, data.id));
 }
 
 async function insertBudgets(uid, tripId, rows) {
@@ -149,10 +155,10 @@ async function insertBudgets(uid, tripId, rows) {
 async function createTrip(uid, body, sourceGroupId = null) {
   const [prefs, owned] = await Promise.all([
     readPrefs(uid),
-    readOwnedCategories(uid, body.categoryBudgets),
+    readOwnedCategories(uid, allCategoryLines(body)),
   ]);
   const refused = checkTripPlan({ ...body, baseCurrency: prefs.currency })
-    ?? checkTripCategories(body.categoryBudgets, owned);
+    ?? checkTripCategories(allCategoryLines(body), owned);
   if (refused) return { refused };
 
   const specialEnabledNow = await turnOnSpecialIfNeeded(uid, body.keepOutOfMonthly, prefs);
@@ -166,6 +172,7 @@ async function createTrip(uid, body, sourceGroupId = null) {
       end_date: body.endDate,
       total_budget: body.totalBudget ?? null,
       keep_out_of_monthly: body.keepOutOfMonthly,
+      city_category_budgets: body.cityCategoryBudgets,
       source_group_id: sourceGroupId,
     }))
     .select('id')
@@ -173,7 +180,7 @@ async function createTrip(uid, body, sourceGroupId = null) {
   if (error) throw error;
 
   try {
-    await insertStops(uid, created.id, body.stops.map(stopRow));
+    for (const stop of body.stops) await insertStop(uid, created.id, stop);
     await insertBudgets(uid, created.id, body.categoryBudgets.map((b) => ({
       category_id: b.categoryId,
       amount_limit: b.amount,
@@ -397,7 +404,7 @@ router.patch('/:id', async (req, res, next) => {
       readStops(uid, id),
       readBudgets(uid, id),
       readPrefs(uid),
-      readOwnedCategories(uid, body.categoryBudgets ?? []),
+      readOwnedCategories(uid, allCategoryLines(body)),
     ]);
 
     const startDate = body.startDate ?? trip.start_date;
@@ -411,18 +418,28 @@ router.patch('/:id', async (req, res, next) => {
       stops: desiredStops,
       categoryBudgets: body.categoryBudgets ?? [],
       baseCurrency: body.stops ? prefs.currency : null,
-    }) ?? checkTripCategories(body.categoryBudgets ?? [], owned);
+    }) ?? checkTripCategories(allCategoryLines(body), owned);
     if (refused) return res.status(refused.status).json({ error: refused.error });
 
     const stopDiff = body.stops ? diffStops(existingStops, body.stops) : null;
     if (stopDiff?.error) return res.status(stopDiff.status).json({ error: stopDiff.error });
     const budgetDiff = body.categoryBudgets ? diffCategoryBudgets(existingBudgets, body.categoryBudgets) : null;
+    const cityDiff = body.stops ? diffCityBudgets(existingBudgets, body.stops) : null;
 
     const keepOut = body.keepOutOfMonthly ?? trip.keep_out_of_monthly;
     const specialEnabledNow = await turnOnSpecialIfNeeded(uid, keepOut, prefs);
 
     if (stopDiff?.removedIds.length) {
-      // Overrides first, so a tagged expense goes back to deriving its city.
+      // The database cascades these, but only once the stop goes; deleting them first keeps
+      // the order the same everywhere, including the test database, which has no cascade.
+      const { error: linesErr } = await supabase
+        .from('trip_category_budgets')
+        .delete()
+        .in('stop_id', stopDiff.removedIds)
+        .eq('trip_id', id)
+        .eq('user_id', uid);
+      if (linesErr) throw linesErr;
+      // Overrides next, so a tagged expense goes back to deriving its city.
       const { error: overrideErr } = await supabase
         .from('transactions')
         .update({ trip_stop_id: null })
@@ -443,6 +460,18 @@ router.patch('/:id', async (req, res, next) => {
         .from('trip_category_budgets')
         .delete()
         .in('category_id', budgetDiff.removedCategoryIds)
+        // Whole-trip lines only: without this, removing Food from the trip would also
+        // remove every city's Food line.
+        .is('stop_id', null)
+        .eq('trip_id', id)
+        .eq('user_id', uid);
+      if (error) throw error;
+    }
+    if (cityDiff?.removedIds.length) {
+      const { error } = await supabase
+        .from('trip_category_budgets')
+        .delete()
+        .in('id', cityDiff.removedIds)
         .eq('trip_id', id)
         .eq('user_id', uid);
       if (error) throw error;
@@ -459,7 +488,7 @@ router.patch('/:id', async (req, res, next) => {
         .eq('user_id', uid);
       if (error) throw error;
     }
-    for (const { id: budgetId, amount_limit } of budgetDiff?.toUpdate ?? []) {
+    for (const { id: budgetId, amount_limit } of [...(budgetDiff?.toUpdate ?? []), ...(cityDiff?.toUpdate ?? [])]) {
       const { error } = await supabase
         .from('trip_category_budgets')
         .update(encodeWrite('trip_category_budgets', uid, { amount_limit }))
@@ -469,8 +498,8 @@ router.patch('/:id', async (req, res, next) => {
       if (error) throw error;
     }
 
-    await insertStops(uid, id, stopDiff?.toInsert ?? []);
-    await insertBudgets(uid, id, budgetDiff?.toInsert ?? []);
+    for (const stop of (body.stops ?? []).filter((s) => !s.id)) await insertStop(uid, id, stop);
+    await insertBudgets(uid, id, [...(budgetDiff?.toInsert ?? []), ...(cityDiff?.toInsert ?? [])]);
 
     if (body.keepOutOfMonthly !== undefined && body.keepOutOfMonthly !== trip.keep_out_of_monthly) {
       const { error } = await supabase
@@ -486,6 +515,7 @@ router.patch('/:id', async (req, res, next) => {
     if (body.startDate !== undefined) payload.start_date = body.startDate;
     if (body.endDate !== undefined) payload.end_date = body.endDate;
     if (body.keepOutOfMonthly !== undefined) payload.keep_out_of_monthly = body.keepOutOfMonthly;
+    if (body.cityCategoryBudgets !== undefined) payload.city_category_budgets = body.cityCategoryBudgets;
     if (body.archived !== undefined) payload.archived_at = body.archived ? new Date().toISOString() : null;
     if (body.name !== undefined || body.totalBudget !== undefined) {
       // Every encrypted field whenever either changes, for the same backfill reason.

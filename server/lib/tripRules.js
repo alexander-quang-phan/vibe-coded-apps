@@ -86,6 +86,11 @@ const day = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Expected YYYY-MM-DD').refin
   return !Number.isNaN(parsed.getTime()) && parsed.toISOString().slice(0, 10) === v;
 }, 'Not a real date');
 
+const categoryBudgetSchema = z.object({
+  categoryId: z.string().uuid(),
+  amount: money,
+});
+
 const stopSchema = z.object({
   id: z.string().uuid().optional(),
   name: tripName,
@@ -93,11 +98,10 @@ const stopSchema = z.object({
   endDate: day,
   budget: money.nullable().optional(),
   currency: z.string().regex(/^[A-Z]{3}$/).nullable().optional(),
-});
-
-const categoryBudgetSchema = z.object({
-  categoryId: z.string().uuid(),
-  amount: money,
+  // This city's own category lines, nested because a new stop has no id yet. Absent leaves
+  // a kept stop's lines as they are (the editor omits them in Simple mode, or with the
+  // switch off); present is the full desired list for that city.
+  categoryBudgets: z.array(categoryBudgetSchema).max(30).optional(),
 });
 
 export const tripCreateSchema = z.object({
@@ -106,6 +110,7 @@ export const tripCreateSchema = z.object({
   endDate: day,
   totalBudget: money.nullable().optional(),
   keepOutOfMonthly: z.boolean().default(true),
+  cityCategoryBudgets: z.boolean().default(false),
   stops: z.array(stopSchema).max(30).default([]),
   categoryBudgets: z.array(categoryBudgetSchema).max(60).default([]),
 });
@@ -116,6 +121,7 @@ export const tripPatchSchema = z.object({
   endDate: day.optional(),
   totalBudget: money.nullable().optional(),
   keepOutOfMonthly: z.boolean().optional(),
+  cityCategoryBudgets: z.boolean().optional(),
   archived: z.boolean().optional(),
   // When present these are the FULL desired lists, validated with the new dates.
   stops: z.array(stopSchema).max(30).optional(),
@@ -155,7 +161,22 @@ export function checkTripPlan({ startDate, endDate, stops = [], categoryBudgets 
     if (seen.has(categoryId)) return refuse(409, 'That category already has a budget on this trip');
     seen.add(categoryId);
   }
+  for (const stop of stops) {
+    const inCity = new Set();
+    for (const { categoryId } of stop.categoryBudgets ?? []) {
+      if (inCity.has(categoryId)) return refuse(409, `That category already has a budget in ${stop.name}`);
+      inCity.add(categoryId);
+    }
+  }
   return null;
+}
+
+/** Every category line in a save, whole-trip and city alike: the ones to ownership-check. */
+export function allCategoryLines(body) {
+  return [
+    ...(body.categoryBudgets ?? []),
+    ...(body.stops ?? []).flatMap((s) => s.categoryBudgets ?? []),
+  ];
 }
 
 /** Every budgeted category must be one of this user's expense categories. */
@@ -212,6 +233,8 @@ export function diffStops(existing, desired) {
  * updates, and the unique (trip, category) constraint can never trip midway.
  */
 export function diffCategoryBudgets(existing, desired) {
+  // Whole-trip lines only. City lines are diffed per stop by diffCityBudgets.
+  existing = existing.filter((b) => b.stop_id == null);
   const stored = new Map(existing.map((b) => [b.category_id, b]));
   const wanted = new Set(desired.map((b) => b.categoryId));
   return {
@@ -223,4 +246,32 @@ export function diffCategoryBudgets(existing, desired) {
       .filter((b) => !stored.has(b.categoryId))
       .map((b) => ({ category_id: b.categoryId, amount_limit: b.amount })),
   };
+}
+
+/**
+ * City lines for the stops a save KEEPS and sent lines for, compared by category within
+ * each city. Removed stops' lines go with the stop; a new stop's lines are inserted after
+ * it, once it has an id.
+ */
+export function diffCityBudgets(existing, desiredStops) {
+  const removedIds = [];
+  const toUpdate = [];
+  const toInsert = [];
+  for (const stop of desiredStops) {
+    if (!stop.id || !stop.categoryBudgets) continue;
+    const stored = new Map(existing.filter((b) => b.stop_id === stop.id).map((b) => [b.category_id, b]));
+    const wanted = new Set(stop.categoryBudgets.map((b) => b.categoryId));
+    for (const [categoryId, b] of stored) if (!wanted.has(categoryId)) removedIds.push(b.id);
+    for (const b of stop.categoryBudgets) {
+      const had = stored.get(b.categoryId);
+      if (!had) toInsert.push({ stop_id: stop.id, category_id: b.categoryId, amount_limit: b.amount });
+      else if (Number(had.amount_limit) !== b.amount) toUpdate.push({ id: had.id, amount_limit: b.amount });
+    }
+  }
+  return { removedIds, toUpdate, toInsert };
+}
+
+/** A new stop's own lines, ready to insert once the stop exists. */
+export function cityLinesFor(stop, stopId) {
+  return (stop.categoryBudgets ?? []).map((b) => ({ stop_id: stopId, category_id: b.categoryId, amount_limit: b.amount }));
 }

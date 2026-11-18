@@ -98,15 +98,40 @@ export function cityOf(tx, stops) {
   return stopForDate(stops, tx.date);
 }
 
+// A line with no stop_id is for the whole trip; one with a stop_id is that city's.
+const isTripLine = (b) => b.stop_id == null;
+
+/** Budgeted categories first, in the order given, then any other spending, biggest first. */
+function categoryBars(lines, spentByCategory) {
+  const budgeted = new Set(lines.map((b) => b.category_id));
+  const other = [...spentByCategory].filter(([categoryId]) => !budgeted.has(categoryId));
+  return {
+    byCategory: [
+      ...lines.map((b) => ({
+        categoryId: b.category_id,
+        limit: Number(b.amount_limit),
+        spent: fromCents(spentByCategory.get(b.category_id) ?? 0),
+      })),
+      ...other
+        .map(([categoryId, cents]) => ({ categoryId, limit: null, spent: fromCents(cents) }))
+        .sort((a, b) => b.spent - a.spent),
+    ],
+    otherCategoriesSpent: fromCents(other.reduce((sum, [, cents]) => sum + cents, 0)),
+  };
+}
+
 /**
  * Every figure for one trip. `txs` are the trip's expenses; amounts may be decoded
- * strings. `remaining` is floored at 0 and `overBy` carries the excess. `perDayLeft`
+ * strings. `categoryBudgets` may hold city lines (a `stop_id`) as well as whole-trip
+ * ones; city lines are counted only while the trip's switch is on, and are kept, unused,
+ * while it's off. `remaining` is floored at 0 and `overBy` carries the excess. `perDayLeft`
  * is non-null only while active and budgeted: what is left divided by the days left,
  * including today. It is deliberately not the monthly pace comparison, because
  * pre-paid flights and hotels would read as "over pace" on day 1.
  */
 export function summariseTrip(trip, stops, categoryBudgets, txs, today) {
   const stopCents = new Map(stops.map((s) => [s.id, 0]));
+  const stopCategoryCents = new Map(stops.map((s) => [s.id, new Map()]));
   const categoryCents = new Map();
   let spentCents = 0;
   let noCityCents = 0;
@@ -119,18 +144,17 @@ export function summariseTrip(trip, stops, categoryBudgets, txs, today) {
     categoryCents.set(categoryId, (categoryCents.get(categoryId) ?? 0) + cents);
 
     const city = cityOf(tx, stops);
-    if (city) stopCents.set(city.id, stopCents.get(city.id) + cents);
-    else noCityCents += cents;
+    if (city) {
+      stopCents.set(city.id, stopCents.get(city.id) + cents);
+      const inCity = stopCategoryCents.get(city.id);
+      inCity.set(categoryId, (inCity.get(categoryId) ?? 0) + cents);
+    } else {
+      noCityCents += cents;
+    }
   }
 
-  const budgetedIds = new Set(categoryBudgets.map((b) => b.category_id));
-  const unbudgeted = [...categoryCents]
-    .filter(([categoryId]) => !budgetedIds.has(categoryId))
-    .map(([categoryId, cents]) => ({ categoryId, limit: null, spent: fromCents(cents) }))
-    .sort((a, b) => b.spent - a.spent);
-  const otherCents = [...categoryCents]
-    .filter(([categoryId]) => !budgetedIds.has(categoryId))
-    .reduce((sum, [, cents]) => sum + cents, 0);
+  const whole = categoryBars(categoryBudgets.filter(isTripLine), categoryCents);
+  const byCity = !!trip.city_category_budgets;
 
   const spent = fromCents(spentCents);
   const totalBudget = trip.total_budget == null ? null : Number(trip.total_budget);
@@ -144,20 +168,21 @@ export function summariseTrip(trip, stops, categoryBudgets, txs, today) {
     perDayLeft:
       left !== null && status === 'active' ? round2(Math.max(left, 0) / daysLeft) : null,
     overBy: left !== null && left < 0 ? round2(-left) : 0,
-    byCategory: [
-      ...categoryBudgets.map((b) => ({
-        categoryId: b.category_id,
-        limit: Number(b.amount_limit),
-        spent: fromCents(categoryCents.get(b.category_id) ?? 0),
-      })),
-      ...unbudgeted,
-    ],
-    otherCategoriesSpent: fromCents(otherCents),
-    byStop: stops.map((s) => ({
-      stopId: s.id,
-      budget: s.budget == null ? null : Number(s.budget),
-      spent: fromCents(stopCents.get(s.id)),
-    })),
+    byCategory: whole.byCategory,
+    otherCategoriesSpent: whole.otherCategoriesSpent,
+    byStop: stops.map((s) => {
+      const city = byCity
+        ? categoryBars(categoryBudgets.filter((b) => b.stop_id === s.id), stopCategoryCents.get(s.id))
+        : null;
+      return {
+        stopId: s.id,
+        budget: s.budget == null ? null : Number(s.budget),
+        spent: fromCents(stopCents.get(s.id)),
+        // Only while the switch is on: null says "not budgeting this city by category".
+        byCategory: city?.byCategory ?? null,
+        otherCategoriesSpent: city?.otherCategoriesSpent ?? null,
+      };
+    }),
     noCitySpent: fromCents(noCityCents),
     count: txs.length,
   };
@@ -176,6 +201,7 @@ export function presentTrip(trip, stops, categoryBudgets, summary, today) {
     startDate: trip.start_date,
     endDate: trip.end_date,
     keepOutOfMonthly: trip.keep_out_of_monthly,
+    cityCategoryBudgets: !!trip.city_category_budgets,
     sourceGroupId: trip.source_group_id ?? null,
     archivedAt: trip.archived_at ?? null,
     createdAt: trip.created_at,
@@ -198,13 +224,15 @@ export function presentTrip(trip, stops, categoryBudgets, summary, today) {
       budget: s.budget == null ? null : Number(s.budget),
       currency: s.currency ?? null,
       createdAt: s.created_at,
+      // Always sent, even with the switch off, so switching it back on shows them again.
+      categoryBudgets: categoryBudgets.filter((b) => b.stop_id === s.id).map(presentLine),
     })),
-    categoryBudgets: categoryBudgets.map((b) => ({
-      id: b.id,
-      categoryId: b.category_id,
-      amount: Number(b.amount_limit),
-    })),
+    categoryBudgets: categoryBudgets.filter(isTripLine).map(presentLine),
   };
+}
+
+function presentLine(b) {
+  return { id: b.id, categoryId: b.category_id, amount: Number(b.amount_limit) };
 }
 
 // Rows are stored under the trip's id, so one read can feed every trip.

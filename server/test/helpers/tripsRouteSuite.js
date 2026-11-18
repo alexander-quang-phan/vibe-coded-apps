@@ -88,6 +88,10 @@ async function seed(phase, { specialOn = false } = {}) {
         id: 'spy-budget', user_id: OTHER, trip_id: ITALY, category_id: FUN, created_at: '2026-10-01T10:00:02Z',
         ...encodeWrite('trip_category_budgets', OTHER, { amount_limit: 999 }, phase),
       },
+      {
+        id: 'spy-city', user_id: OTHER, trip_id: ITALY, stop_id: ROME, category_id: FOOD, created_at: '2026-10-01T10:00:03Z',
+        ...encodeWrite('trip_category_budgets', OTHER, { amount_limit: 999 }, phase),
+      },
     ],
     transactions: [
       tx(1, 186.4, day(-30), 'Flights', { trip_id: ITALY, is_special: true, category_id: FUN }),
@@ -1111,6 +1115,177 @@ export function runTripsRouteSuite(phase) {
       assert.ok(!ids.includes('b2'), 'this trip’s Fun line goes');
       assert.ok(ids.includes('past-fun'), 'another trip’s Fun line stays');
       assert.ok(ids.includes('spy-budget'), 'another user’s row stays');
+    }, { tables });
+  });
+
+  // --- round 2: category budgets inside each city ------------------------------------
+
+  const cityLine = async (id, stopId, categoryId, amount, tripId = ITALY, user = U) => {
+    const { encodeWrite } = await import('../../lib/encryptionCodec.js');
+    return {
+      id, user_id: user, trip_id: tripId, stop_id: stopId, category_id: categoryId, created_at: '2026-10-02T10:00:00Z',
+      ...encodeWrite('trip_category_budgets', user, { amount_limit: amount }, phase),
+    };
+  };
+  const linesOf = (db, stopId) => db.store.trip_category_budgets
+    .filter((b) => b.user_id === U && b.trip_id === ITALY && (b.stop_id ?? null) === stopId)
+    .map((b) => b.category_id)
+    .sort();
+
+  async function withCityLines(on = true) {
+    const tables = await seed(phase);
+    tables.trips[0].city_category_budgets = on;
+    tables.trip_category_budgets.push(
+      await cityLine('rome-food', ROME, FOOD, 120),
+      await cityLine('rome-fun', ROME, FUN, 40),
+      await cityLine('naples-food', NAPLES, FOOD, 60),
+    );
+    return tables;
+  }
+
+  test(`${label} city lines: a new trip's cities get their own lines, encrypted per phase`, async () => {
+    await run(async (db, http) => {
+      const { status, body } = await http.send('POST', '/', newTrip({
+        cityCategoryBudgets: true,
+        stops: [
+          { name: 'Madrid', startDate: day(10), endDate: day(12), categoryBudgets: [{ categoryId: FOOD, amount: 90 }] },
+          { name: 'Seville', startDate: day(13), endDate: day(14) },
+        ],
+        categoryBudgets: [{ categoryId: FOOD, amount: 150 }],
+      }));
+      assert.equal(status, 201, JSON.stringify(body));
+      clean(body);
+      assert.equal(body.trip.cityCategoryBudgets, true);
+      assert.deepEqual(body.trip.categoryBudgets.map((b) => [b.categoryId, b.amount]), [[FOOD, 150]]);
+      const madrid = body.trip.stops.find((st) => st.name === 'Madrid');
+      assert.deepEqual(madrid.categoryBudgets.map((b) => [b.categoryId, b.amount]), [[FOOD, 90]]);
+      assert.deepEqual(body.trip.stops.find((st) => st.name === 'Seville').categoryBudgets, []);
+
+      const stored = db.store.trip_category_budgets.find((b) => b.stop_id === madrid.id);
+      assert.equal(stored.user_id, U);
+      assert.equal(stored.trip_id, body.trip.id);
+      if (phase === 'off') assert.equal(stored.amount_limit, 90);
+      else assert.match(String(stored.amount_limit_enc), /^v2:/);
+    });
+  });
+
+  test(`${label} city lines: the trip's page has each city's bars, and they add up to the city`, async () => {
+    await run(async (_db, http) => {
+      const { body } = await http.get(`/${ITALY}`);
+      const rome = body.summary.byStop.find((b) => b.stopId === ROME);
+      assert.deepEqual(rome.byCategory, [
+        { categoryId: FOOD, limit: 120, spent: 38.5 },
+        { categoryId: FUN, limit: 40, spent: 0 },
+      ]);
+      assert.equal(rome.otherCategoriesSpent, 0);
+      const naples = body.summary.byStop.find((b) => b.stopId === NAPLES);
+      assert.deepEqual(naples.byCategory, [{ categoryId: FOOD, limit: 60, spent: 64 }]);
+      assert.ok(!JSON.stringify(body).includes('spy-city'), "another user's line never shows");
+      const { body: list } = await http.get('/');
+      const italy = list.trips.find((t) => t.id === ITALY);
+      assert.deepEqual(italy.stops.find((st) => st.id === ROME).categoryBudgets.map((b) => b.id), ['rome-food', 'rome-fun']);
+    }, { tables: await withCityLines() });
+  });
+
+  test(`${label} city lines: switching off keeps them but takes them out of every figure; on brings them back`, async () => {
+    await run(async (db, http) => {
+      const off = await http.send('PATCH', `/${ITALY}`, { cityCategoryBudgets: false });
+      assert.equal(off.status, 200, JSON.stringify(off.body));
+      assert.equal(off.body.trip.cityCategoryBudgets, false);
+      assert.deepEqual(linesOf(db, ROME), [FOOD, FUN].sort(), 'nothing deleted');
+      const { body } = await http.get(`/${ITALY}`);
+      assert.ok(body.summary.byStop.every((b) => b.byCategory === null));
+      assert.equal(body.trip.stops.find((st) => st.id === ROME).categoryBudgets.length, 2, 'still sent, for switching back');
+      const on = await http.send('PATCH', `/${ITALY}`, { cityCategoryBudgets: true });
+      assert.equal(on.body.trip.cityCategoryBudgets, true);
+      const again = await http.get(`/${ITALY}`);
+      assert.equal(again.body.summary.byStop.find((b) => b.stopId === ROME).byCategory.length, 2);
+    }, { tables: await withCityLines() });
+  });
+
+  test(`${label} CRITICAL: removing a whole-trip line never removes a city's line for that category`, async () => {
+    await run(async (db, http) => {
+      const { status } = await http.send('PATCH', `/${ITALY}`, { categoryBudgets: [{ categoryId: FUN, amount: 100 }] });
+      assert.equal(status, 200);
+      assert.deepEqual(linesOf(db, null), [FUN], 'the whole-trip Food line is gone');
+      assert.deepEqual(linesOf(db, ROME), [FOOD, FUN].sort(), "Rome's Food line stays");
+      assert.deepEqual(linesOf(db, NAPLES), [FOOD]);
+    }, { tables: await withCityLines() });
+  });
+
+  test(`${label} city lines: a save edits, adds and removes per city; a city sending none is left alone`, async () => {
+    await run(async (db, http) => {
+      const stops = stopsAs(-2);
+      stops[0].categoryBudgets = [{ categoryId: FOOD, amount: 130 }];
+      // Naples (stops[1]) sends no categoryBudgets, as the editor does in Simple mode.
+      const { status, body } = await http.send('PATCH', `/${ITALY}`, { stops });
+      assert.equal(status, 200, JSON.stringify(body));
+      assert.deepEqual(linesOf(db, ROME), [FOOD]);
+      const romeFood = db.store.trip_category_budgets.find((b) => b.id === 'rome-food');
+      if (phase === 'off') assert.equal(romeFood.amount_limit, 130);
+      assert.deepEqual(linesOf(db, NAPLES), [FOOD], 'untouched');
+      assert.ok(db.store.trip_category_budgets.some((b) => b.id === 'spy-city'), "another user's line stays");
+
+      const added = stopsAs(-2);
+      added[1].categoryBudgets = [{ categoryId: FOOD, amount: 60 }, { categoryId: FUN, amount: 10 }];
+      await http.send('PATCH', `/${ITALY}`, { stops: added });
+      assert.deepEqual(linesOf(db, NAPLES), [FOOD, FUN].sort());
+    }, { tables: await withCityLines() });
+  });
+
+  test(`${label} city lines: a removed city takes its lines; a new city in an edit gets its own`, async () => {
+    await run(async (db, http) => {
+      const stops = [
+        { id: ROME, name: 'Rome', startDate: day(-2), endDate: day(1), budget: 500, currency: 'EUR' },
+        { name: 'Pompeii', startDate: day(2), endDate: day(2), categoryBudgets: [{ categoryId: FUN, amount: 25 }] },
+      ];
+      const { status, body } = await http.send('PATCH', `/${ITALY}`, { stops });
+      assert.equal(status, 200, JSON.stringify(body));
+      assert.deepEqual(linesOf(db, NAPLES), [], "Naples' lines went with it");
+      const pompeii = body.trip.stops.find((st) => st.name === 'Pompeii');
+      assert.deepEqual(pompeii.categoryBudgets.map((b) => [b.categoryId, b.amount]), [[FUN, 25]]);
+      assert.deepEqual(linesOf(db, ROME), [FOOD, FUN].sort(), 'Rome sent none, so they stay');
+    }, { tables: await withCityLines() });
+  });
+
+  test(`${label} city lines: one per category in a city (409), and every category must be mine and for spending`, async () => {
+    await run(async (db, http) => {
+      const dup = stopsAs(-2);
+      dup[0].categoryBudgets = [{ categoryId: FOOD, amount: 1 }, { categoryId: FOOD, amount: 2 }];
+      const r1 = await http.send('PATCH', `/${ITALY}`, { stops: dup });
+      assert.equal(r1.status, 409);
+      assert.match(r1.body.error, /in Rome/);
+
+      const theirs = stopsAs(-2);
+      theirs[0].categoryBudgets = [{ categoryId: THEIR_CAT, amount: 1 }];
+      assert.equal((await http.send('PATCH', `/${ITALY}`, { stops: theirs })).status, 404);
+
+      const income = newTrip({ stops: [{ name: 'M', startDate: day(10), endDate: day(11), categoryBudgets: [{ categoryId: SALARY, amount: 1 }] }] });
+      assert.equal((await http.send('POST', '/', income)).status, 400);
+      assert.deepEqual(linesOf(db, ROME), [FOOD, FUN].sort(), 'nothing written');
+    }, { tables: await withCityLines() });
+  });
+
+  test(`${label} city lines: a save never reaches another trip's city lines`, async () => {
+    const tables = await withCityLines();
+    const { encodeWrite } = await import('../../lib/encryptionCodec.js');
+    const SKYE_STOP = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb7';
+    tables.trip_stops.push({
+      id: SKYE_STOP, user_id: U, trip_id: PAST, start_date: '2026-03-01', end_date: '2026-03-05', currency: null,
+      created_at: '2026-03-01T00:00:00Z', ...encodeWrite('trip_stops', U, { name: 'Portree', budget: null }, phase),
+    });
+    tables.trip_category_budgets.push(await cityLine('skye-food', SKYE_STOP, FOOD, 30, PAST));
+    await run(async (db, http) => {
+      const stops = stopsAs(-2).map((st) => ({ ...st, categoryBudgets: [] }));
+      await http.send('PATCH', `/${ITALY}`, { stops, categoryBudgets: [] });
+      assert.deepEqual(linesOf(db, ROME), []);
+      assert.ok(db.store.trip_category_budgets.some((b) => b.id === 'skye-food'), "Skye's line stays");
+      assert.ok(db.store.trip_category_budgets.some((b) => b.id === 'spy-city'));
+      // A stop of another trip can't be smuggled in by id either.
+      const smuggled = await http.send('PATCH', `/${ITALY}`, {
+        stops: [{ id: SKYE_STOP, name: 'Portree', startDate: day(-2), endDate: day(-1), categoryBudgets: [] }],
+      });
+      assert.equal(smuggled.status, 404);
     }, { tables });
   });
 }
