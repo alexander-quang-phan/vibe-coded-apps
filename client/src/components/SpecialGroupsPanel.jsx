@@ -4,19 +4,26 @@ import { Link } from 'react-router-dom';
 import { ChevronDown, Star } from 'lucide-react';
 import { Card, CardContent } from '@/components/ui/card';
 import { useApi } from '@/hooks/useApi';
+import { useTrips } from '@/hooks/useTrips';
+import { tripDates } from '@/lib/trips';
 import { formatMoney, formatDate } from '@/lib/format';
 import { cn } from '@/lib/utils';
 
 /**
- * Phase 10 (B1) — "Special expenses" panel on the Dashboard.
+ * The Dashboard's "Special expenses" panel. Phase 10 (B1), reworked for trips (17 Nov).
  *
- * Each group shows its LIFETIME total, because the case this exists for is a
- * trip paid across several months ("September 2026 Paris holiday"). A total
- * that reset on the 1st would answer the wrong question.
+ * The HEADER is this month's special spend, so it starts again on the 1st (in the user's
+ * own time zone: it's the dashboard's `specialThisMonth`). Alex asked for that: the number
+ * at a glance should be this month's.
  *
- * The "Ungrouped" row is what makes the panel trustworthy: grouping is
- * optional, so without it the rows would quietly fail to add up to the month's
- * special spend and the user would have no way to tell.
+ * The ROWS are every special group and every keep-out trip at its LIFETIME total, because
+ * the case they exist for is a trip paid across several months ("September 2026 Paris
+ * holiday"). A row total that reset on the 1st would answer the wrong question. The rows
+ * therefore won't add up to the header, and the panel says so ("All-time totals").
+ *
+ * A trip with "Keep this trip out of my monthly budget" off isn't listed: its spending
+ * isn't special. The panel shows at £0 too, so the breakdown is always reachable; with
+ * nothing to list and nothing spent, it stays out of the way.
  */
 export function SpecialGroupsPanel({ currency, specialThisMonth = 0, specialOnTripsThisMonth = 0 }) {
   const api = useApi();
@@ -26,13 +33,15 @@ export function SpecialGroupsPanel({ currency, specialThisMonth = 0, specialOnTr
     queryKey: ['special-groups'],
     queryFn: () => api.get('/api/special-groups'),
   });
-  // An archived group with nothing left in it was converted into a trip: no use here.
+  const { data: tripsData } = useTrips();
+  // An archived group or trip with nothing in it (a group converted into a trip) is no use here.
   const groups = (data?.groups ?? []).filter((g) => !g.archivedAt || g.count > 0);
+  const trips = (tripsData?.trips ?? [])
+    .filter((t) => t.keepOutOfMonthly && (!t.archivedAt || t.count > 0))
+    .sort((x, y) => y.startDate.localeCompare(x.startDate));
 
-  // Nothing to show and nothing to explain — stay out of the way entirely.
-  if (groups.length === 0 && specialThisMonth === 0) return null;
+  if (groups.length === 0 && trips.length === 0 && specialThisMonth === 0) return null;
 
-  const groupedTotal = groups.reduce((sum, g) => sum + g.total, 0);
   const active = groups.filter((g) => !g.archivedAt);
   const archived = groups.filter((g) => g.archivedAt);
 
@@ -50,8 +59,11 @@ export function SpecialGroupsPanel({ currency, specialThisMonth = 0, specialOnTr
             Special expenses
           </span>
           <span className="flex items-center gap-2">
-            <span className="nums text-sm font-semibold text-amber-600 dark:text-amber-400">
-              {formatMoney(groupedTotal, currency)}
+            <span className="text-sm">
+              <span className="nums font-semibold text-amber-600 dark:text-amber-400">
+                {formatMoney(specialThisMonth, currency)}
+              </span>{' '}
+              <span className="text-xs text-muted-foreground">this month</span>
             </span>
             <ChevronDown
               className={cn('h-4 w-4 text-muted-foreground transition-transform', open && 'rotate-180')}
@@ -62,13 +74,40 @@ export function SpecialGroupsPanel({ currency, specialThisMonth = 0, specialOnTr
 
         {open ? (
           <div className="mt-3 space-y-1 border-t border-border/60 pt-3">
-            {active.length === 0 && archived.length === 0 ? (
+            {specialOnTripsThisMonth > 0 ? (
+              <p className="px-2 pb-1 text-[11px] text-muted-foreground">
+                <span className="nums font-medium text-foreground">{formatMoney(specialOnTripsThisMonth, currency)}</span>{' '}
+                of this month’s is on trips
+              </p>
+            ) : null}
+
+            {groups.length === 0 && trips.length === 0 ? (
               <p className="text-xs text-muted-foreground">
                 No groups yet — tick "Special expense" when logging one and you can file it under an
                 occasion. Going away?{' '}
                 <Link to="/trips" className="font-medium text-primary hover:underline">Give it its own trip →</Link>
               </p>
-            ) : null}
+            ) : (
+              <p className="px-2 text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">
+                All-time totals
+              </p>
+            )}
+
+            {trips.map((t) => (
+              <Link
+                key={t.id}
+                to={`/trips/${t.id}`}
+                className="flex items-center justify-between gap-3 rounded-lg px-2 py-1.5 transition-colors hover:bg-accent/50"
+              >
+                <span className="min-w-0">
+                  <span className={cn('block truncate text-sm', t.archivedAt && 'text-muted-foreground line-through')}>
+                    ✈️ {t.name} <span className="text-xs text-muted-foreground">(trip)</span>
+                  </span>
+                  <span className="block text-[11px] text-muted-foreground">{tripDates(t.startDate, t.endDate)}</span>
+                </span>
+                <span className="nums shrink-0 text-sm font-medium">{formatMoney(t.spent, currency)}</span>
+              </Link>
+            ))}
 
             {[...active, ...archived].map((g) => (
               <Link
@@ -90,28 +129,6 @@ export function SpecialGroupsPanel({ currency, specialThisMonth = 0, specialOnTr
                 </span>
               </Link>
             ))}
-
-            {/* Keeps the panel honest — grouping is optional, so this is what
-                the group rows don't cover this month. */}
-            {specialThisMonth > 0 ? (
-              <p className="border-t border-border/60 px-2 pt-2 text-[11px] text-muted-foreground">
-                <span className="nums font-medium text-foreground">
-                  {formatMoney(specialThisMonth, currency)}
-                </span>{' '}
-                of special spend this month
-                {groupedTotal > 0 ? ' · group totals above are lifetime, not monthly' : ''}
-              </p>
-            ) : null}
-            {/* So the hero chip, this panel and the trip card can always be reconciled. */}
-            {specialOnTripsThisMonth > 0 ? (
-              <p className="px-2 text-[11px] text-muted-foreground">
-                <span className="nums font-medium text-foreground">
-                  {formatMoney(specialOnTripsThisMonth, currency)}
-                </span>{' '}
-                of this month's special spend is on trips{' '}
-                <Link to="/trips" className="font-medium text-primary hover:underline">→ Trips</Link>
-              </p>
-            ) : null}
           </div>
         ) : null}
       </CardContent>

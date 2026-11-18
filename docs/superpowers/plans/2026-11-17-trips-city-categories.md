@@ -76,15 +76,26 @@ statement can run twice.
   `summary.byStop[].byCategory` and `.otherCategoriesSpent`.
 - devMock mirrors all of it through the shared `lib/trips.js` and `lib/tripRules.js`.
 
-## Change 2 — trips under Special expenses on the Dashboard
+## Change 2 — the Special expenses panel: this month at the top, every group and trip below
 
-The Dashboard's **Special expenses** panel gains a **Trips** list under its groups. It shows each trip that
-isn't archived, newest first: name, dates and what's been spent, each linking to the trip. Then
-"All trips →". Its collapsed header adds "· 2 trips", so trips show without opening it. The existing line
-"£X of this month's special spend is on trips" stays. The panel's headline total stays the groups' lifetime
-total, so it doesn't count trip spending twice (question 3).
+Revised 17 Nov with Alex's later answers (they replace the first version of this section and answer 3):
+"I also want the special expenses total to be for every new month, while the dropdown shows the different
+special expense groups and totals so I can see the whole breakdown. And the trips will go into this dropdown."
 
-The panel shows only while Settings → Special expenses is on, which saving a keep-out trip already turns on.
+- **Header: this month's special spend**, labelled "this month" (`£410 this month ▾`). It resets on the 1st
+  in his timezone, because it's the dashboard's existing `specialThisMonth`, which already uses his month.
+  Today the header shows the groups' lifetime total.
+- **Rows: every special group and every keep-out trip, each with its all-time total**, labelled
+  "all-time totals", so nobody expects them to add up to the header. Trips are marked ✈️ and link to the
+  trip, and groups keep linking to Transactions. Trips come first, newest first. Archived ones show muted,
+  as archived groups do today. An archived group or trip with nothing in it is hidden.
+- **A trip with "Keep this trip out of my monthly budget" off is not listed**, because its spending isn't
+  special. The switch stays, on by default (Alex).
+- **The monthly breakdown stays honest:** under the header, "£300 of it on trips" when any of this month's
+  special spend is on a trip. The old "£X of special spend this month" footer goes: the header says it now.
+- **The panel shows at £0 too** when there are groups or keep-out trips, so the breakdown is always reachable.
+  With nothing at all, it stays hidden as today.
+- It shows only while Settings → Special expenses is on, as today. Saving a keep-out trip turns that on.
 
 ## Steps (one builder; one agent at a time; commit after each green step)
 
@@ -98,8 +109,8 @@ The panel shows only while Settings → Special expenses is on, which saving a k
    another user's city lines) so a dropped filter fails a test, then a mutation sweep of the new filters.
 4. **Client:** the editor switch and per-city lines, the per-city bars on the trip page, and the Trips list in
    the Special panel.
-5. **Click through in the real app** (only login swapped out) at 375, 768 and 1024px. Simple mode as you
-   answer.
+5. **Click through in the real app** (only login swapped out) at 375, 768 and 1024px, including Simple mode
+   and a month with no special spend.
 6. **Docs:** FEATURES, ARCHITECTURE, BUILD_PLAN, SECURITY, handoff.
 7. **Independent review**, one agent. It also covers the trips red-team pass that never finished on 3 Nov:
    trips went live without it.
@@ -114,6 +125,7 @@ spending is counted or starred; the Special panel's headline total.
 
 1. **Simple mode:** category budgets, whole-trip and per-city, stay hidden there. City totals stay visible.
 2. **Switching it off:** the city lines are kept, hidden and left out of every figure.
-3. **The Special panel's total:** stays the groups' total, with trips listed under it.
+3. **The Special panel's total:** ~~stays the groups' total~~ **replaced 17 Nov: this month's special spend**
+   ("This month's total"), with every group and keep-out trip listed under it at its all-time total.
 4. **Read-only check: done 17 Nov.** No `_enc` column, no barrier function, migration `trips` is the latest
    applied, `trip_category_budgets_unique` present, **0 trips, 0 stops, 0 budget lines**. PostgreSQL 17.

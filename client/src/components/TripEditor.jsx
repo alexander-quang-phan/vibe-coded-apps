@@ -30,7 +30,65 @@ let nextKey = 0;
 const rowKey = () => `row-${(nextKey += 1)}`;
 
 function blankStop() {
-  return { key: rowKey(), name: '', startDate: '', endDate: '', budget: '', currency: '' };
+  return { key: rowKey(), name: '', startDate: '', endDate: '', budget: '', currency: '', lines: [] };
+}
+
+const toLines = (budgets) => (budgets ?? []).map((b) => ({ key: rowKey(), categoryId: b.categoryId, amount: String(b.amount) }));
+const fromLines = (lines) => lines.map((b) => ({ categoryId: b.categoryId, amount: Number(b.amount) }));
+
+/** Category + amount rows, one per category. Used for the whole trip and for each city. */
+function BudgetLines({ lines, onChange, categories, currency, addLabel, children }) {
+  const edit = (key, patch) => onChange(lines.map((b) => (b.key === key ? { ...b, ...patch } : b)));
+  return (
+    <div className="space-y-2">
+      {lines.map((b) => (
+        <div key={b.key} className="flex items-center gap-2">
+          <select
+            aria-label="Category"
+            value={b.categoryId ?? ''}
+            onChange={(e) => edit(b.key, { categoryId: e.target.value })}
+            className="h-10 min-w-0 flex-1 rounded-md border border-input bg-background px-2 text-sm"
+          >
+            <option value="">Category…</option>
+            {categories
+              .filter((c) => c.id === b.categoryId || !lines.some((x) => x.categoryId === c.id))
+              .map((c) => (
+                <option key={c.id} value={c.id}>{c.icon} {c.name}</option>
+              ))}
+          </select>
+          <MoneyInput
+            aria-label="Category budget"
+            currency={currency}
+            value={b.amount}
+            onValueChange={(v) => edit(b.key, { amount: v })}
+            className="no-spin w-28"
+          />
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            className="h-9 w-9 shrink-0"
+            aria-label="Remove this budget"
+            onClick={() => onChange(lines.filter((x) => x.key !== b.key))}
+          >
+            <Trash2 className="h-3.5 w-3.5" />
+          </Button>
+        </div>
+      ))}
+      <div className="flex flex-wrap gap-2">
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          onClick={() => onChange([...lines, { key: rowKey(), categoryId: '', amount: '' }])}
+        >
+          <Plus className="h-3.5 w-3.5" aria-hidden />
+          {addLabel}
+        </Button>
+        {children}
+      </div>
+    </div>
+  );
 }
 
 /**
@@ -58,6 +116,8 @@ export function TripEditor({
   const [totalBudget, setTotalBudget] = useState('');
   const [keepOut, setKeepOut] = useState(true);
   const [stops, setStops] = useState([]);
+  // Budget each city by category. Off keeps a city's lines, hidden and out of every figure.
+  const [cityBudgets, setCityBudgets] = useState(false);
   const [budgets, setBudgets] = useState([]);
   const [confirmingFlip, setConfirmingFlip] = useState(false);
   const [newCategoryOpen, setNewCategoryOpen] = useState(false);
@@ -78,6 +138,7 @@ export function TripEditor({
     setEndDate(trip?.endDate ?? '');
     setTotalBudget(trip?.totalBudget != null ? String(trip.totalBudget) : '');
     setKeepOut(trip?.keepOutOfMonthly ?? true);
+    setCityBudgets(trip?.cityCategoryBudgets ?? false);
     setStops((trip?.stops ?? []).map((s) => ({
       key: rowKey(),
       id: s.id,
@@ -86,12 +147,9 @@ export function TripEditor({
       endDate: s.endDate,
       budget: s.budget != null ? String(s.budget) : '',
       currency: s.currency ?? '',
+      lines: toLines(s.categoryBudgets),
     })));
-    setBudgets((trip?.categoryBudgets ?? []).map((b) => ({
-      key: rowKey(),
-      categoryId: b.categoryId,
-      amount: String(b.amount),
-    })));
+    setBudgets(toLines(trip?.categoryBudgets));
   }, [open, trip, fromGroup]);
 
   const { data: catsData } = useQuery({
@@ -116,12 +174,22 @@ export function TripEditor({
       if (s.startDate < startDate || s.endDate > endDate) return `${s.name.trim()} has to sit inside the trip’s dates.`;
       if (s.budget !== '' && !isValidMoney(s.budget)) return `Check the budget for ${s.name.trim()}.`;
     }
-    for (const b of budgets) {
-      if (!b.categoryId) return 'Pick a category for every budget line.';
-      if (!isValidMoney(b.amount)) return 'Check the category budgets.';
+    if (!simpleMode) {
+      for (const b of budgets) {
+        if (!b.categoryId) return 'Pick a category for every budget line.';
+        if (!isValidMoney(b.amount)) return 'Check the category budgets.';
+      }
+    }
+    if (!simpleMode && cityBudgets) {
+      for (const s of stops) {
+        for (const b of s.lines) {
+          if (!b.categoryId) return `Pick a category for every budget line in ${s.name.trim() || 'each city'}.`;
+          if (!isValidMoney(b.amount)) return `Check the category budgets in ${s.name.trim() || 'each city'}.`;
+        }
+      }
     }
     return null;
-  }, [name, startDate, endDate, totalBudget, stops, budgets]);
+  }, [name, startDate, endDate, totalBudget, stops, budgets, simpleMode, cityBudgets]);
 
   function body() {
     return {
@@ -137,12 +205,14 @@ export function TripEditor({
         endDate: s.endDate,
         budget: s.budget === '' ? null : Number(s.budget),
         currency: s.currency || null,
+        // Only while they're shown. Left out, a city's lines stay exactly as they are.
+        ...(!simpleMode && cityBudgets ? { categoryBudgets: fromLines(s.lines) } : {}),
       })),
       // Simple mode files everything under "Other", so it has no budget lines to send,
       // and an empty list on a PATCH would delete the ones already there.
       ...(simpleMode
         ? {}
-        : { categoryBudgets: budgets.map((b) => ({ categoryId: b.categoryId, amount: Number(b.amount) })) }),
+        : { categoryBudgets: fromLines(budgets), cityCategoryBudgets: cityBudgets }),
     };
   }
 
@@ -204,7 +274,6 @@ export function TripEditor({
   }
 
   const editStop = (key, patch) => setStops((list) => list.map((s) => (s.key === key ? { ...s, ...patch } : s)));
-  const editBudget = (key, patch) => setBudgets((list) => list.map((b) => (b.key === key ? { ...b, ...patch } : b)));
 
   const groupDates = fromGroup?.dates ?? [];
   const outsideDates = startDate && endDate
@@ -358,12 +427,42 @@ export function TripEditor({
                       ))}
                     </select>
                   </div>
+                  {!simpleMode && cityBudgets ? (
+                    <div className="space-y-1.5 border-t border-border/60 pt-2">
+                      <p className="text-xs text-muted-foreground">Category budgets in {s.name.trim() || 'this city'}</p>
+                      <BudgetLines
+                        lines={s.lines}
+                        onChange={(lines) => editStop(s.key, { lines })}
+                        categories={expenseCategories}
+                        currency={currency}
+                        addLabel="Add one"
+                      />
+                    </div>
+                  ) : null}
                 </div>
               ))}
               <Button type="button" variant="outline" size="sm" onClick={() => setStops((list) => [...list, blankStop()])}>
                 <Plus className="h-3.5 w-3.5" aria-hidden />
                 Add a stop
               </Button>
+              {simpleMode || stops.length === 0 ? null : (
+                <label className="flex items-start justify-between gap-3 rounded-lg border border-border/60 bg-secondary/30 px-3 py-2">
+                  <span>
+                    <span className="block text-sm font-medium">Budget each city by category</span>
+                    <span className="block text-xs text-muted-foreground">
+                      {cityBudgets
+                        ? 'Each city gets its own category lines, on top of the ones for the whole trip.'
+                        : 'Off: one total per city. Lines you set before are kept for when you switch it back on.'}
+                    </span>
+                  </span>
+                  <input
+                    type="checkbox"
+                    className="mt-1 h-4 w-4 shrink-0 accent-primary"
+                    checked={cityBudgets}
+                    onChange={(e) => setCityBudgets(e.target.checked)}
+                  />
+                </label>
+              )}
               {stops.length > 0 && currency !== 'VND' ? (
                 <p className="text-xs text-muted-foreground">
                   Quick Add switches to a stop’s currency for you. VND isn’t offered yet: Trim can’t get a rate for it.
@@ -373,56 +472,19 @@ export function TripEditor({
 
             {simpleMode ? null : (
               <div className="space-y-2">
-                <Label>Category budgets (optional)</Label>
-                {budgets.map((b) => (
-                  <div key={b.key} className="flex items-center gap-2">
-                    <select
-                      aria-label="Category"
-                      value={b.categoryId ?? ''}
-                      onChange={(e) => editBudget(b.key, { categoryId: e.target.value })}
-                      className="h-10 min-w-0 flex-1 rounded-md border border-input bg-background px-2 text-sm"
-                    >
-                      <option value="">Category…</option>
-                      {expenseCategories
-                        .filter((c) => c.id === b.categoryId || !budgets.some((x) => x.categoryId === c.id))
-                        .map((c) => (
-                          <option key={c.id} value={c.id}>{c.icon} {c.name}</option>
-                        ))}
-                    </select>
-                    <MoneyInput
-                      aria-label="Category budget"
-                      currency={currency}
-                      value={b.amount}
-                      onValueChange={(v) => editBudget(b.key, { amount: v })}
-                      className="no-spin w-28"
-                    />
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      size="icon"
-                      className="h-9 w-9 shrink-0"
-                      aria-label="Remove this budget"
-                      onClick={() => setBudgets((list) => list.filter((x) => x.key !== b.key))}
-                    >
-                      <Trash2 className="h-3.5 w-3.5" />
-                    </Button>
-                  </div>
-                ))}
-                <div className="flex flex-wrap gap-2">
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    onClick={() => setBudgets((list) => [...list, { key: rowKey(), categoryId: '', amount: '' }])}
-                  >
-                    <Plus className="h-3.5 w-3.5" aria-hidden />
-                    Add a category budget
-                  </Button>
+                <Label>{cityBudgets && stops.length > 0 ? 'Category budgets for the whole trip (optional)' : 'Category budgets (optional)'}</Label>
+                <BudgetLines
+                  lines={budgets}
+                  onChange={setBudgets}
+                  categories={expenseCategories}
+                  currency={currency}
+                  addLabel="Add a category budget"
+                >
                   <Button type="button" variant="ghost" size="sm" onClick={() => setNewCategoryOpen(true)}>
                     <Plus className="h-3.5 w-3.5" aria-hidden />
                     New category
                   </Button>
-                </div>
+                </BudgetLines>
               </div>
             )}
           </div>

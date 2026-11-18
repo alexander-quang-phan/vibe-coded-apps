@@ -375,13 +375,34 @@ export default function TripDetail() {
           <CardContent className="space-y-3 p-5">
             <h2 className="text-sm font-semibold">By city</h2>
             {summary.byStop.map((b) => (
-              <Bar
-                key={b.stopId}
-                label={stopsById.get(b.stopId)?.name ?? 'City'}
-                spent={b.spent}
-                limit={b.budget}
-                currency={currency}
-              />
+              <div key={b.stopId} className="space-y-2">
+                <Bar
+                  label={stopsById.get(b.stopId)?.name ?? 'City'}
+                  spent={b.spent}
+                  limit={b.budget}
+                  currency={currency}
+                />
+                {/* Only with "Budget each city by category" on; null otherwise. */}
+                {!simpleMode && b.byCategory ? (
+                  <div className="space-y-2 border-l border-border/60 pl-3">
+                    {b.byCategory.filter((c) => c.limit !== null).map((c) => {
+                      const cat = categoriesById.get(c.categoryId);
+                      return (
+                        <Bar
+                          key={c.categoryId}
+                          label={cat ? `${cat.icon} ${cat.name}` : 'Category'}
+                          spent={c.spent}
+                          limit={c.limit}
+                          currency={currency}
+                        />
+                      );
+                    })}
+                    {b.otherCategoriesSpent > 0 ? (
+                      <Bar label="Other categories" spent={b.otherCategoriesSpent} limit={null} currency={currency} />
+                    ) : null}
+                  </div>
+                ) : null}
+              </div>
             ))}
             {summary.noCitySpent > 0 ? (
               <Bar label="No city" spent={summary.noCitySpent} limit={null} currency={currency} />
