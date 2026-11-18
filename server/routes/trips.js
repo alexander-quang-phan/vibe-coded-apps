@@ -25,7 +25,8 @@ import {
 
 const router = Router();
 
-const UUID_RE = /^[0-9a-f-]{36}$/i;
+// A real UUID: the looser [0-9a-f-]{36} let 36 dashes through to PostgreSQL as a 500.
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 const TRIP_COLUMNS = 'id, name, start_date, end_date, total_budget, keep_out_of_monthly, city_category_budgets, source_group_id, archived_at, created_at';
 const STOP_COLUMNS = 'id, trip_id, name, start_date, end_date, budget, currency, created_at';
@@ -216,24 +217,27 @@ async function cleanUpTrip(uid, tripId) {
 router.get('/', async (req, res, next) => {
   try {
     const uid = req.user.id;
-    const [tripsRes, stopsRes, budgetsRes, txRaw, today] = await Promise.all([
+    // Stops and lines are paged too: city lines can outnumber the database's row cap.
+    const [tripsRes, stopRows, budgetRows, txRaw, today] = await Promise.all([
       supabase
         .from('trips')
         .select(selectFor('trips', TRIP_COLUMNS))
         .eq('user_id', uid)
         .order('start_date', { ascending: false })
         .order('created_at', { ascending: true }),
-      supabase
+      readAllPages(() => supabase
         .from('trip_stops')
         .select(selectFor('trip_stops', STOP_COLUMNS))
         .eq('user_id', uid)
         .order('start_date', { ascending: true })
-        .order('created_at', { ascending: true }),
-      supabase
+        .order('created_at', { ascending: true })
+        .order('id', { ascending: true })),
+      readAllPages(() => supabase
         .from('trip_category_budgets')
         .select(selectFor('trip_category_budgets', BUDGET_COLUMNS))
         .eq('user_id', uid)
-        .order('created_at', { ascending: true }),
+        .order('created_at', { ascending: true })
+        .order('id', { ascending: true })),
       readAllPages(() => supabase
         .from('transactions')
         .select(selectFor('transactions', FIGURE_TX_COLUMNS))
@@ -244,10 +248,10 @@ router.get('/', async (req, res, next) => {
         .order('id', { ascending: true })),
       todayFor(uid),
     ]);
-    for (const r of [tripsRes, stopsRes, budgetsRes]) if (r.error) throw r.error;
+    if (tripsRes.error) throw tripsRes.error;
 
-    const stopsByTrip = groupByTrip(decodeRows('trip_stops', uid, stopsRes.data));
-    const budgetsByTrip = groupByTrip(decodeRows('trip_category_budgets', uid, budgetsRes.data));
+    const stopsByTrip = groupByTrip(decodeRows('trip_stops', uid, stopRows));
+    const budgetsByTrip = groupByTrip(decodeRows('trip_category_budgets', uid, budgetRows));
     const txsByTrip = groupByTrip(decodeRows('transactions', uid, txRaw));
 
     res.json({

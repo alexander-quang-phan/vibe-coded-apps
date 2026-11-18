@@ -1,21 +1,28 @@
-# Chat Handoff — updated 2026-11-17 (PHASE 18 TRIPS LIVE; encryption still off)
+# Chat Handoff — updated 2026-11-18 (TRIPS LIVE; trips round 2 built on a branch; encryption still off)
 
 ## DUAL-AGENT BATON  (both models: update this the MOMENT you finish work)
-- Current stage:  **Phase 18 trips is LIVE (17 Nov).** 017b applied (Supabase migration `trips`), merged as
-                  `c0f7f52`, trim-api then client deployed, each step checked (BUILD_PLAN 18.11). Phase 17 and the
-                  13 Oct bug fixes are live. **Encryption (9.5) is still OFF**, and its runbook is unblocked now.
+- Current stage:  **Trips round 2 (the 17 Nov requests) is BUILT, reviewed and fixed** on branch
+                  `claude/trips-city-categories`: category budgets inside each city (switch "Budget each city by
+                  category"), and the Special panel led by this month's spend with every group and keep-out trip at
+                  its all-time total. NOT merged, NOT deployed, **017c NOT applied**. Plan + Alex's answers:
+                  `docs/superpowers/plans/2026-11-17-trips-city-categories.md`. Rollout:
+                  `docs/2026-11-18-trips-round2-deploy-checklist.md` + PDF. Phase 18 trips itself is LIVE (17 Nov).
+                  **Encryption (9.5) is still OFF**; 017c needed no edit to 018/018a/019.
 - Model A is:     Claude Code. Independent review by `code-reviewer` (Codex unavailable for security work).
-- Up next:        **Trips session** (`local_b40d0ad3…`) — plan the 17 Nov requests below and show Alex before coding.
-                  **Alex** — reopen the app (Trips is the 4th tab), the logged-in checks, and approve that plan.
-                  Encryption runbook Step 1 waits until those changes ship: they may edit 018/018a/019 in place.
-- Last actor did: Claude Code, 2026-11-17 — fixed the test harness (BUGS-FIXED 2026-11-17), then shipped trips:
-                  read-only check, 017b, merge, 1150/1150 with 0 skipped, build, push, API, client, live checks.
-- Rollback:       promote trim-api `trim-o3f5huyc9…` and client `trim-budget-d5x19bctp…` (the 3 Nov builds);
-                  LEAVE 017b in place (the old API ignores the new columns).
-- Not verified:   a logged-in run with real data, and the routes against real PostgREST (the route suites use a
-                  fake; real PostgreSQL covers the migrations and the restore statement).
+- Up next:        **Alex** — whether to run a short independent re-check of the two P1 fixes first, then the deploy
+                  (checklist above). Still open: his logged-in checks, and whether archiving should turn Special on.
+- Last actor did: Claude Code, 2026-11-18 — built round 2 (live DB re-checked with his yes: 0 trips existed), clicked
+                  through in the real app, then the red-team pass that never finished on 3 Nov, resumed over trips
+                  and round 2: FAIL, 2 P1 + 1 P2 + 4 P3, all fixed and pinned (BUGS-FIXED 2026-11-18). `npm test`
+                  1203/1203, 0 skipped; client build passes.
+- Last red-team:  2026-11-18 FAIL (0 P0, 2 P1 reproduced) → fixed, each fix re-run by its reproduction; not yet
+                  re-attacked by an independent agent (round 2 of 2 not run).
+- Rollback:       for round 2, promote the 17 Nov trim-api and client deployments and LEAVE 017c in place.
+- Not verified:   a logged-in run with real data, and the routes against real PostgREST.
+- Noted, not fixed: older routes still use the loose id check `/^[0-9a-f-]{36}$/i` (36 dashes pass, then a generic
+                  500); `?q=` search text sits in URLs that the error log records. Both pre-date trips.
 
-## Requested 17 Nov — not built yet (handed to the trips session; this is the durable record)
+## Requested 17 Nov — BUILT on `claude/trips-city-categories`, not deployed (the durable record of the ask)
 Alex's words: "I still don't see the trips feature, and trips are special expenses, and within each trip I want
 to be able to set a budget for each city on the trip and category" · "I also want the special expenses total to
 be for every new month, while the dropdown shows the different special expense groups and totals so I can see

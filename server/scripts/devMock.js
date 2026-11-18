@@ -780,7 +780,8 @@ app.delete('/api/special-groups/:id', (req, res) => {
 // Trips — mirrors routes/trips.js, on the same schemas, rules and figures.
 // ---------------------------------------------------------------------------
 
-const MOCK_UUID_RE = /^[0-9a-f-]{36}$/i;
+// As routes/trips.js: a real UUID, not 36 of anything.
+const MOCK_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 const mockStopsOf = (tripId) => tripStops
   .filter((s) => s.trip_id === tripId)

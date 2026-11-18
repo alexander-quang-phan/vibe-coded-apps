@@ -1288,4 +1288,77 @@ export function runTripsRouteSuite(phase) {
       assert.equal(smuggled.status, 404);
     }, { tables });
   });
+
+  // --- the 18 Nov red team: refuse what PostgreSQL would refuse, before any write ------
+
+  test(`${label} CRITICAL: a value PostgreSQL would refuse is a 400 before anything is written`, async () => {
+    await run(async (db, http) => {
+      const before = {
+        trips: JSON.stringify(db.store.trips),
+        stops: JSON.stringify(db.store.trip_stops),
+        lines: JSON.stringify(db.store.trip_category_budgets),
+        txs: JSON.stringify(db.store.transactions),
+        stats: JSON.stringify(db.store.user_stats),
+      };
+      const onlyRome = [{ id: ROME, name: 'Rome', startDate: day(-2), endDate: day(1), budget: 500, currency: 'EUR' }];
+      const refused = [
+        { keepOutOfMonthly: false, totalBudget: 0.004, stops: onlyRome }, // the reproduction
+        { totalBudget: 12.345 },
+        { name: 'It\u0000aly', keepOutOfMonthly: false },
+        { name: 'Line\nbreak' },
+        { startDate: '0000-01-01' },
+        { stops: [{ ...onlyRome[0], budget: 0.001 }] },
+        { categoryBudgets: [{ categoryId: FOOD, amount: 0.005 }] },
+      ];
+      for (const body of refused) {
+        const res = await http.send('PATCH', `/${ITALY}`, body);
+        assert.equal(res.status, 400, JSON.stringify(body));
+      }
+      const post = await http.send('POST', '/', newTrip({ keepOutOfMonthly: true, totalBudget: 0.004 }));
+      assert.equal(post.status, 400);
+      assert.equal(JSON.stringify(db.store.trips), before.trips);
+      assert.equal(JSON.stringify(db.store.trip_stops), before.stops);
+      assert.equal(JSON.stringify(db.store.trip_category_budgets), before.lines);
+      assert.equal(JSON.stringify(db.store.transactions), before.txs, 'no star was flipped');
+      assert.equal(JSON.stringify(db.store.user_stats), before.stats, 'the Special setting was not turned on');
+    });
+  });
+
+  test(`${label} whole pence and real dates still pass`, async () => {
+    await run(async (_db, http) => {
+      const ok = await http.send('POST', '/', newTrip({ totalBudget: 0.01, stops: [{ name: 'Café Ñ', startDate: day(10), endDate: day(11), budget: 19.99 }] }));
+      assert.equal(ok.status, 201, JSON.stringify(ok.body));
+      assert.equal(ok.body.trip.totalBudget, 0.01);
+      assert.equal(ok.body.trip.stops[0].name, 'Café Ñ');
+    });
+  });
+
+  test(`${label} at most 100 city lines in one save`, async () => {
+    await run(async (_db, http) => {
+      const cats = Array.from({ length: 30 }, (_, i) => ({ categoryId: `11111111-1111-4111-8111-${String(500 + i).padStart(12, '0')}`, amount: 1 }));
+      const stops = Array.from({ length: 4 }, (_, i) => ({ name: `C${i}`, startDate: day(10), endDate: day(11), categoryBudgets: cats }));
+      const res = await http.send('POST', '/', newTrip({ stops }));
+      assert.equal(res.status, 400);
+      assert.match(JSON.stringify(res.body), /At most 100 city budget lines/);
+    });
+  });
+
+  test(`${label} an id of 36 dashes is a 404, not a database error`, async () => {
+    await run(async (_db, http) => {
+      const dashes = '-'.repeat(36);
+      assert.equal((await http.get(`/${dashes}`)).status, 404);
+      assert.equal((await http.send('PATCH', `/${dashes}`, { name: 'x' })).status, 404);
+      assert.equal((await http.send('DELETE', `/${dashes}?expenses=keep`)).status, 404);
+    });
+  });
+
+  test(`${label} GET / reads every stop and line past the row cap`, async () => {
+    await run(async (_db, http) => {
+      const { body } = await http.get('/');
+      const italy = body.trips.find((t) => t.id === ITALY);
+      assert.deepEqual(italy.stops.map((st) => st.id).sort(), [ROME, NAPLES].sort());
+      assert.equal(italy.categoryBudgets.length, 2);
+      assert.equal(italy.stops.find((st) => st.id === ROME).categoryBudgets.length, 2);
+    }, { tables: await withCityLines(), opts: { maxRows: 1 } });
+  });
 }

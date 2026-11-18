@@ -76,15 +76,31 @@ export function deriveTripWrite({
 
 // --- the trip editor's one save ---------------------------------------------------
 
+// Everything below refuses what PostgreSQL would refuse, BEFORE anything is written. A save
+// writes in steps, so a value the database turns down at the last step left a half-applied
+// trip that no retry could finish (BUGS-FIXED 2026-11-18).
 const MAX_MONEY = 1_000_000_000;
-const money = z.number().positive().finite().max(MAX_MONEY);
-const tripName = z.string().trim().min(1).max(60);
+// Whole pence and at least 0.01: numeric(14,2) rounds 0.004 to 0.00, which breaks `> 0`.
+const money = z.number().finite().max(MAX_MONEY)
+  .refine((v) => v >= 0.01 && Math.abs(v * 100 - Math.round(v * 100)) < 1e-6, 'At least 0.01, in whole pence');
+// PostgreSQL text can't hold U+0000, and a name has no use for any control character.
+const tripName = z.string().trim().min(1).max(60)
+  .refine((v) => !/[\u0000-\u001f\u007f]/.test(v), 'No control characters');
 
-// A real calendar day: a bare regex would let "2026-13-45" reach Postgres as a 500.
+// A real calendar day: a bare regex would let "2026-13-45" reach Postgres as a 500, and
+// PostgreSQL has no year 0000.
 const day = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Expected YYYY-MM-DD').refine((v) => {
   const parsed = new Date(`${v}T00:00:00Z`);
-  return !Number.isNaN(parsed.getTime()) && parsed.toISOString().slice(0, 10) === v;
+  const year = Number(v.slice(0, 4));
+  return !Number.isNaN(parsed.getTime()) && parsed.toISOString().slice(0, 10) === v
+    && year >= 1900 && year <= 2999;
 }, 'Not a real date');
+
+// Every city line is a statement in a save. Capped well above real use, so one request
+// can't run hundreds of writes one after another.
+const MAX_CITY_LINES = 100;
+const cityLineCount = (d) => (d.stops ?? []).reduce((n, s) => n + (s.categoryBudgets?.length ?? 0), 0);
+const fewCityLines = [(d) => cityLineCount(d) <= MAX_CITY_LINES, { message: `At most ${MAX_CITY_LINES} city budget lines in one trip` }];
 
 const categoryBudgetSchema = z.object({
   categoryId: z.string().uuid(),
@@ -113,7 +129,7 @@ export const tripCreateSchema = z.object({
   cityCategoryBudgets: z.boolean().default(false),
   stops: z.array(stopSchema).max(30).default([]),
   categoryBudgets: z.array(categoryBudgetSchema).max(60).default([]),
-});
+}).refine(...fewCityLines);
 
 export const tripPatchSchema = z.object({
   name: tripName.optional(),
@@ -126,7 +142,7 @@ export const tripPatchSchema = z.object({
   // When present these are the FULL desired lists, validated with the new dates.
   stops: z.array(stopSchema).max(30).optional(),
   categoryBudgets: z.array(categoryBudgetSchema).max(60).optional(),
-}).refine((d) => Object.keys(d).length > 0, { message: 'Nothing to update' });
+}).refine((d) => Object.keys(d).length > 0, { message: 'Nothing to update' }).refine(...fewCityLines);
 
 export const fromGroupSchema = z.object({
   groupId: z.string().uuid(),

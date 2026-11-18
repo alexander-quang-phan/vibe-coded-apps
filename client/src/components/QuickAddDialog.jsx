@@ -24,6 +24,7 @@ import { useTrips } from '@/hooks/useTrips';
 import { cn } from '@/lib/utils';
 import { todayISO } from '@/lib/format';
 import { invalidateMoney } from '@/lib/invalidate';
+import { currencyOptions } from '@/lib/fx';
 import {
   tagFor, tripSubmitFields, seedCurrency, mayRevertCurrency, recallRate, rememberRate,
 } from '@/lib/trips';
@@ -100,6 +101,10 @@ export function QuickAddDialog({
   // so an effect in that commit would read the previous entry's amount and flags.
   const justReset = useRef(false);
   const skipStaleRate = useRef(false);
+  const isOpen = useRef(false);
+  // Bumped by every reset, so an AI draft that lands after the dialog was closed and
+  // reopened is dropped instead of filling the new entry.
+  const parseGen = useRef(0);
   // For what happens later than the render that started it: a rate that fails after
   // Alex has typed must see what he typed, or £4,500 forints (the Phase 12 bug class).
   const latest = useRef({});
@@ -153,7 +158,12 @@ export function QuickAddDialog({
       const seeded = seedCurrency({ stop: seedTag?.stop, base: currency }) ?? currency;
       setEntryCurrency(seeded);
       justReset.current = true;
-      skipStaleRate.current = true;
+      // Only on the commit that OPENS the dialog does the rate effect run beside this one
+      // with a stale closure. A reset while already open (initialDate changing under it)
+      // must not swallow the rate effect's next run, or the entry waits on a rate forever.
+      skipStaleRate.current = !isOpen.current;
+      isOpen.current = true;
+      parseGen.current += 1;
       latest.current = {
         amountTyped: false,
         armed: false,
@@ -167,6 +177,8 @@ export function QuickAddDialog({
       setRateState(seeded === currency ? 'idle' : 'loading');
       setResetCount((n) => n + 1);
       setTimeout(() => amountRef.current?.focus(), 80);
+    } else {
+      isOpen.current = false;
     }
   }, [open, initialDate, currency, presetTripId, queryClient]);
 
@@ -421,13 +433,24 @@ export function QuickAddDialog({
   });
 
   const parseMutation = useMutation({
-    mutationFn: (text) => api.post('/api/transactions/parse', { text }),
-    onSuccess: (res) => {
+    mutationFn: ({ text }) => api.post('/api/transactions/parse', { text }),
+    onSuccess: (res, { gen }) => {
+      if (gen !== parseGen.current) return;
       const p = res?.parsed;
       if (!p) {
         setParseError("couldn't quite read that — mind trying again?");
         return;
       }
+      // The amount is in the PARSER's currency (its default is the home currency), so the
+      // entry takes that currency, as if picked by hand. Leaving a stop's euros selected
+      // under it logged "12 quid" as €12, and "120000 dong" with a pounds home currency
+      // was stored as £120,000 (BUGS-FIXED 2026-11-18).
+      if (!currencyOptions(currency).includes(p.currency)) {
+        setParseError(`Trim can't log ${p.currency} here yet. Use the chips, in a currency it offers.`);
+        return;
+      }
+      setCurrencyTouched(true);
+      setEntryCurrency(p.currency);
       const allCategories = categoriesData?.categories ?? [];
       const matched = p.categoryId
         ? allCategories.find((c) => c.id === p.categoryId)
@@ -446,7 +469,8 @@ export function QuickAddDialog({
       setParseError(null);
       setMode('structured');
     },
-    onError: (err) => {
+    onError: (err, { gen }) => {
+      if (gen !== parseGen.current) return;
       const status = err?.status;
       if (status === 503) {
         setParseError("AI parsing isn't available right now — try the chips instead.");
@@ -530,7 +554,7 @@ export function QuickAddDialog({
     const text = freeformText.trim();
     if (!text || parseMutation.isPending) return;
     setParseError(null);
-    parseMutation.mutate(text);
+    parseMutation.mutate({ text, gen: parseGen.current });
   }
 
   function switchToFreeform() {

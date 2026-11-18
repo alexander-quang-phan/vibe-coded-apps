@@ -1342,7 +1342,7 @@ be able to set a budget for each city on the trip and category". Plan with his a
 - [x] **18b.3** Shared rules and figures, route and devMock: nested city lines, diff by (city, category), the whole-trip delete kept off city lines, the switch. Three encryption phases; the mock matches the route.
 - [x] **18b.4** Client: the editor switch and per-city lines, per-city bars on the trip page, the Special panel led by this month with every group and keep-out trip at its all-time total.
 - [x] **18b.5** Clicked through in the real app (only login swapped out): switch on, off and on again, a new trip with city lines, Simple mode, a £0 month, phone width.
-- [ ] **18b.6** Independent review.
+- [x] **18b.6** Independent review: the red-team pass that never finished on 3 Nov, resumed over trips and this round. FAIL, 2 P1 (the AI parser's currency in Quick Add, older than trips; values PostgreSQL refuses mid-save), plus 1 P2 and 4 P3. All fixed and pinned (BUGS-FIXED 2026-11-18). City lines, cross-trip and cross-user access, removals, retries after a failure at each of a PATCH's 25 statements, Simple mode and double counting all came back clean. Not yet independently re-attacked after the fixes.
 - [ ] **18b.7** Apply 017c, merge, deploy API then client.
 
 ## Deferred further (flagged in FEATURES.md, don't start without explicit ask)

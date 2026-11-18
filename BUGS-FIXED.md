@@ -7,6 +7,23 @@ After fixing any real bug, append one row: what it was, why it mattered, how it 
 
 ---
 
+## 2026-11-18 — The red team on trips: the AI parser's currency, and values PostgreSQL refuses mid-save
+
+**What they were.**
+1. **P1, older than trips.** Quick Add's "type it instead" set the amount from the parser's currency but never set the entry's currency. With trips pre-selecting a city's currency on open, "spent 12 quid on tacos" in a HUF city became 12 forints (£0.03). Without trips, with pounds as home currency, "120000 dong" was stored as £120,000.
+2. **P1.** Values the save schema accepted but PostgreSQL refuses: £0.004 (`numeric(14,2)` rounds it to 0.00, breaking `> 0`), a U+0000 in a name, year 0000. A trip save writes in steps, so the refusal came at the last step. Stops were already deleted and every star flipped while the trip still said keep-out. Resending the same body failed the same way forever, and a create had already turned on the Special setting. Reachable only through the API: the app's money field allows two decimals.
+3. **Smaller ones.** One save could run about 900 statements (30 cities × 30 lines). `GET /api/trips` read stops and lines unpaged. A reset while Quick Add was open could leave it stuck on "Getting today's rate". An AI draft could land in the next entry. An id of 36 dashes passed the id check.
+
+**Why it mattered.** (1) and (2) are wrong stored money, or a half-saved trip that counts expenses in the monthly budget while saying it doesn't. Both visible, but a wrong row skews every total.
+
+**How it was fixed.**
+- (1) After a draft, Quick Add takes the parser's currency as if picked by hand. The parser falls back to the home currency when the text names none, so the amount and the visible currency always agree. A currency Trim can't price there is refused with a message.
+- (2) `lib/tripRules.js` refuses each value before anything is written: money must be whole pence and at least 0.01, names have no control characters, years run 1900 to 2999. The reviewer's exact request is a test, with every table checked unchanged.
+- (3) At most 100 city lines per save; stops and lines read with `readAllPages`; the stale-rate skip only on the commit that opens the dialog; drafts carry the reset they started in; a real UUID pattern.
+- (1), (5) and (6) were re-run in the real app with the parser's answer stubbed.
+
+**Lesson:** a schema that accepts what the database refuses turns a multi-step write into a trap. Validate to the database's rules, not just the type.
+
 ## 2026-11-17 — Route tests failed about 1 run in 25 with a stray `404` (the test harness, not the app)
 
 **What it was.** `test/helpers/routeHarness.js` started every test server with `app.listen(0)`, which
