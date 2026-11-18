@@ -1,13 +1,18 @@
 # Chat Handoff — updated 2026-11-18 (TRIPS LIVE; trips round 2 built on a branch; encryption still off)
 
 ## DUAL-AGENT BATON  (both models: update this the MOMENT you finish work)
-- Current stage:  **Trips round 2 (the 17 Nov requests) is BUILT, reviewed and fixed** on branch
-                  `claude/trips-city-categories`: category budgets inside each city (switch "Budget each city by
-                  category"), and the Special panel led by this month's spend with every group and keep-out trip at
-                  its all-time total. NOT merged, NOT deployed, **017c NOT applied**. Plan + Alex's answers:
-                  `docs/superpowers/plans/2026-11-17-trips-city-categories.md`. Rollout:
-                  `docs/2026-11-18-trips-round2-deploy-checklist.md` + PDF. Phase 18 trips itself is LIVE (17 Nov).
-                  **Encryption (9.5) is still OFF**; 017c needed no edit to 018/018a/019.
+- Current stage:  **Trips round 2 DEPLOY IN PROGRESS (18 Nov), stopped at a safe point by Alex's usage limit.**
+                  DONE: Alex said "Deploy now"; read-only check passed (0 `_enc`, 0 barrier, 0 trips, 447 transactions);
+                  **017c APPLIED** as Supabase migration `trip_city_budgets`, verified (switch 1, stop_id 1, keys 2,
+                  uniques 2, old unique 0, city lines 0, transactions still 447). Local `main` fast-forwarded to
+                  `2eedea6`; `npm test` 1203/1203 on main, client build passes, no secrets in the diff.
+                  NOT DONE: **`git push` hung** (keychain helper again; the 3 Nov "use my gh login" OK was one-off, so
+                  ask Alex before using `gh auth git-credential`). **trim-api and client NOT deployed.** Safe as is:
+                  the live 17 Nov API and client ignore 017c's new columns. Production env: ENCRYPTION_PHASE and
+                  DATA_ENCRYPTION_KEY still absent (re-checked).
+                  NEXT: from the main checkout, `cd server && vercel deploy --prod --yes` → `/api/health` 200 and
+                  `/api/trips` 401 → `cd client && vercel deploy --prod --yes` → bundle contains "Budget each city
+                  by category" and "All-time totals" → then the push, then BUILD_PLAN 18b.7 and this baton.
 - Model A is:     Claude Code. Independent review by `code-reviewer` (Codex unavailable for security work).
 - Up next:        **Alex** — whether to run a short independent re-check of the two P1 fixes first, then the deploy
                   (checklist above). Still open: his logged-in checks, and whether archiving should turn Special on.
