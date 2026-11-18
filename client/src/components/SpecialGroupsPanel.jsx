@@ -58,8 +58,8 @@ export function SpecialGroupsPanel({ currency, specialThisMonth = 0, specialOnTr
             <Star className="h-3.5 w-3.5 text-amber-600 dark:text-amber-400" aria-hidden />
             Special expenses
           </span>
-          <span className="flex items-center gap-2">
-            <span className="text-sm">
+          <span className="flex shrink-0 items-center gap-2">
+            <span className="whitespace-nowrap text-sm">
               <span className="nums font-semibold text-amber-600 dark:text-amber-400">
                 {formatMoney(specialThisMonth, currency)}
               </span>{' '}

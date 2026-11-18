@@ -1331,6 +1331,20 @@ Merged to `main` as `c0f7f52`. 017b applied as Supabase migration `trips`. Rollo
 - [x] **18.11** Shipped 2026-11-17 in the gated order, with Alex's "Yes, deploy trips". Read-only check: 0 `_enc` columns, 0 barrier functions, 0 trip tables, 017a present. Applied 017b, then checked it: 3 tables, 2 CHECKs, 2 columns, RLS on all 3 (12 policies), 0 tagged rows; 447 transactions before and after, 84 in special groups before and after. Merged (`c0f7f52`), `npm test` 1150/1150 with 0 skipped, client build passes, encryption env vars still absent. Pushed, deployed `trim-api` (`/api/health` 200, `/api/trips` 401, not 404), then the client (live bundle `index-DXSwvD4k.js` contains "Planning a getaway" and "Not trip spending"; `/trips` logged out redirects to login, no console errors).
 - [ ] **18.12 — Alex:** the logged-in check in the checklist's section 6. Still unverified: real data, and the routes against real PostgREST (the route suites use a fake).
 
+## Phase 18b — trips round 2: city category budgets, trips under Special (BUILT on a branch, NOT merged)
+
+Alex, 17 Nov: "I still don't see the trips feature, and trips are special expenses, and within each trip I want to
+be able to set a budget for each city on the trip and category". Plan with his answers:
+`docs/superpowers/plans/2026-11-17-trips-city-categories.md`. Branch `claude/trips-city-categories`. **017c NOT applied.**
+
+- [x] **18b.1** Live database re-checked with Alex's yes: `trips` is the latest migration, no `_enc` column, no barrier, 0 trips.
+- [x] **18b.2** `017c_trip_city_budgets.sql`: the switch, `stop_id` with a composite key to its own trip's stop, two partial uniques. Real PostgreSQL: 017c twice, cross-trip refusal, stop deletion cascades only its lines, 001→019 still replays.
+- [x] **18b.3** Shared rules and figures, route and devMock: nested city lines, diff by (city, category), the whole-trip delete kept off city lines, the switch. Three encryption phases; the mock matches the route.
+- [x] **18b.4** Client: the editor switch and per-city lines, per-city bars on the trip page, the Special panel led by this month with every group and keep-out trip at its all-time total.
+- [x] **18b.5** Clicked through in the real app (only login swapped out): switch on, off and on again, a new trip with city lines, Simple mode, a £0 month, phone width.
+- [ ] **18b.6** Independent review.
+- [ ] **18b.7** Apply 017c, merge, deploy API then client.
+
 ## Deferred further (flagged in FEATURES.md, don't start without explicit ask)
 
 **Deferred during Phase 6 plan review (2026-05-08):**
