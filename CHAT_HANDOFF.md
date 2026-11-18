@@ -1,33 +1,25 @@
-# Chat Handoff — updated 2026-11-18 (TRIPS LIVE; trips round 2 built on a branch; encryption still off)
+# Chat Handoff — updated 2026-11-18 (TRIPS + ROUND 2 LIVE; encryption still off)
 
 ## DUAL-AGENT BATON  (both models: update this the MOMENT you finish work)
-- Current stage:  **Trips round 2 DEPLOY IN PROGRESS (18 Nov), stopped at a safe point by Alex's usage limit.**
-                  DONE: Alex said "Deploy now"; read-only check passed (0 `_enc`, 0 barrier, 0 trips, 447 transactions);
-                  **017c APPLIED** as Supabase migration `trip_city_budgets`, verified (switch 1, stop_id 1, keys 2,
-                  uniques 2, old unique 0, city lines 0, transactions still 447). Local `main` fast-forwarded to
-                  `2eedea6`; `npm test` 1203/1203 on main, client build passes, no secrets in the diff.
-                  NOT DONE: **`git push` hung** (keychain helper again; the 3 Nov "use my gh login" OK was one-off, so
-                  ask Alex before using `gh auth git-credential`). **trim-api and client NOT deployed.** Safe as is:
-                  the live 17 Nov API and client ignore 017c's new columns. Production env: ENCRYPTION_PHASE and
-                  DATA_ENCRYPTION_KEY still absent (re-checked).
-                  NEXT: from the main checkout, `cd server && vercel deploy --prod --yes` → `/api/health` 200 and
-                  `/api/trips` 401 → `cd client && vercel deploy --prod --yes` → bundle contains "Budget each city
-                  by category" and "All-time totals" → then the push, then BUILD_PLAN 18b.7 and this baton.
+- Current stage:  **Trips round 2 is LIVE (18 Nov):** category budgets inside each city ("Budget each city by
+                  category") and the Special panel led by this month's spend, every group and keep-out trip listed at
+                  its all-time total. 017c applied (Supabase migration `trip_city_budgets`), `main` pushed, trim-api
+                  `trim-2l68yz48s…` then client `trim-budget-omr3vq6v9…` deployed, each checked (BUILD_PLAN 18b.7).
+                  **Encryption (9.5) is still OFF** and its runbook is unblocked: 017c needed no edit to 018/018a/019.
+- Up next:        **Alex** — the logged-in check (round-2 checklist section 6: close and reopen the app first), and
+                  whether archiving a trip should turn Special on. Then, when he wants it, encryption runbook Step 1.
+- Rollback:       promote the 17 Nov trim-api and client deployments in Vercel; LEAVE 017c in place.
 - Model A is:     Claude Code. Independent review by `code-reviewer` (Codex unavailable for security work).
-- Up next:        **Alex** — whether to run a short independent re-check of the two P1 fixes first, then the deploy
-                  (checklist above). Still open: his logged-in checks, and whether archiving should turn Special on.
 - Last actor did: Claude Code, 2026-11-18 — built round 2 (live DB re-checked with his yes: 0 trips existed), clicked
-                  through in the real app, then the red-team pass that never finished on 3 Nov, resumed over trips
-                  and round 2: FAIL, 2 P1 + 1 P2 + 4 P3, all fixed and pinned (BUGS-FIXED 2026-11-18). `npm test`
-                  1203/1203, 0 skipped; client build passes.
+                  through in the real app, red-team pass (FAIL, 2 P1 + 1 P2 + 4 P3, all fixed and pinned, BUGS-FIXED
+                  2026-11-18), then shipped it on his "Deploy now": 017c, push, API, client, live checks.
 - Last red-team:  2026-11-18 FAIL (0 P0, 2 P1 reproduced) → fixed, each fix re-run by its reproduction; not yet
-                  re-attacked by an independent agent (round 2 of 2 not run).
-- Rollback:       for round 2, promote the 17 Nov trim-api and client deployments and LEAVE 017c in place.
+                  re-attacked by an independent agent (Alex chose to deploy instead).
 - Not verified:   a logged-in run with real data, and the routes against real PostgREST.
 - Noted, not fixed: older routes still use the loose id check `/^[0-9a-f-]{36}$/i` (36 dashes pass, then a generic
                   500); `?q=` search text sits in URLs that the error log records. Both pre-date trips.
 
-## Requested 17 Nov — BUILT on `claude/trips-city-categories`, not deployed (the durable record of the ask)
+## Requested 17 Nov — LIVE since 18 Nov (the durable record of the ask)
 Alex's words: "I still don't see the trips feature, and trips are special expenses, and within each trip I want
 to be able to set a budget for each city on the trip and category" · "I also want the special expenses total to
 be for every new month, while the dropdown shows the different special expense groups and totals so I can see
@@ -281,9 +273,6 @@ unchanged; only its baton has been demoted, since the current baton is at the to
                   (batch 1 `e9dfbc4`, batch 2 `62ab15f`, both 2026-08-19). No code work remains in
                   Part A. What is left is Alex's four manual steps — see "WHAT ALEX DOES NEXT".**
 - Model A is:     Claude Code (build + revise). Model B / verifier: **Codex — CURRENTLY UNAVAILABLE**
-- Up next:        **Alex** — generate `DATA_ENCRYPTION_KEY`, apply 012/018/018a, set
-                  `ENCRYPTION_PHASE=dual`, run the backfill. Codex verifies Part A whenever it
-                  becomes usable — as ordinary feature code, not as security machinery.
 - Last actor did: Started Part A. Built the query-boundary codec (`lib/encryptionCodec.js`) and swept
                   the first TWO routes through it. Added a reusable route-test harness that mounts
                   the REAL router on Express and speaks HTTP to it over a fake PostgREST, and proved

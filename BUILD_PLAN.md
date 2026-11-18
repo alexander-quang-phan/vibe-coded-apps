@@ -1331,7 +1331,7 @@ Merged to `main` as `c0f7f52`. 017b applied as Supabase migration `trips`. Rollo
 - [x] **18.11** Shipped 2026-11-17 in the gated order, with Alex's "Yes, deploy trips". Read-only check: 0 `_enc` columns, 0 barrier functions, 0 trip tables, 017a present. Applied 017b, then checked it: 3 tables, 2 CHECKs, 2 columns, RLS on all 3 (12 policies), 0 tagged rows; 447 transactions before and after, 84 in special groups before and after. Merged (`c0f7f52`), `npm test` 1150/1150 with 0 skipped, client build passes, encryption env vars still absent. Pushed, deployed `trim-api` (`/api/health` 200, `/api/trips` 401, not 404), then the client (live bundle `index-DXSwvD4k.js` contains "Planning a getaway" and "Not trip spending"; `/trips` logged out redirects to login, no console errors).
 - [ ] **18.12 — Alex:** the logged-in check in the checklist's section 6. Still unverified: real data, and the routes against real PostgREST (the route suites use a fake).
 
-## Phase 18b — trips round 2: city category budgets, trips under Special (BUILT on a branch, NOT merged)
+## Phase 18b — trips round 2: city category budgets, trips under Special — SHIPPED AND LIVE 2026-11-18
 
 Alex, 17 Nov: "I still don't see the trips feature, and trips are special expenses, and within each trip I want to
 be able to set a budget for each city on the trip and category". Plan with his answers:
@@ -1343,7 +1343,8 @@ be able to set a budget for each city on the trip and category". Plan with his a
 - [x] **18b.4** Client: the editor switch and per-city lines, per-city bars on the trip page, the Special panel led by this month with every group and keep-out trip at its all-time total.
 - [x] **18b.5** Clicked through in the real app (only login swapped out): switch on, off and on again, a new trip with city lines, Simple mode, a £0 month, phone width.
 - [x] **18b.6** Independent review: the red-team pass that never finished on 3 Nov, resumed over trips and this round. FAIL, 2 P1 (the AI parser's currency in Quick Add, older than trips; values PostgreSQL refuses mid-save), plus 1 P2 and 4 P3. All fixed and pinned (BUGS-FIXED 2026-11-18). City lines, cross-trip and cross-user access, removals, retries after a failure at each of a PATCH's 25 statements, Simple mode and double counting all came back clean. Not yet independently re-attacked after the fixes.
-- [ ] **18b.7** Apply 017c, merge, deploy API then client.
+- [x] **18b.7** Shipped 2026-11-18 in the gated order, on Alex's "Deploy now". Read-only check: 0 `_enc`, 0 barrier, 0 trips, 447 transactions. Applied 017c as Supabase migration `trip_city_budgets`, then checked it: switch 1, `stop_id` 1, keys 2, partial uniques 2, old unique 0, city lines 0, transactions still 447. `main` fast-forwarded to `2eedea6`: `npm test` 1203/1203 with 0 skipped, build passes, no secrets in the diff, encryption env vars still absent. Pushed. Deployed `trim-api` (`trim-2l68yz48s…`: `/api/health` 200 with fresh uptime, `/api/trips` 401), then the client (`trim-budget-omr3vq6v9…`, bundle `index-BAqeZr5x.js` contains "Budget each city by category" and "All-time totals", still points at trim-api-jade; `/trips` logged out goes to login, no console errors).
+- [ ] **18b.8 — Alex:** the logged-in check in `docs/2026-11-18-trips-round2-deploy-checklist.md`, section 6. Not verified: real data, and the routes against real PostgREST.
 
 ## Deferred further (flagged in FEATURES.md, don't start without explicit ask)
 
